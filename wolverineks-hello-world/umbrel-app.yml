@@ -1,21 +1,22 @@
 manifestVersion: 1
 id: wolverineks-hello-world
 name: Hello World
-tagline: A minimal test web page
+tagline: Hello World plus the latest Bitcoin block header
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.0.4"
+version: "1.1.0"
 port: 4000
 description: >-
-  Simple Hello World web page for testing Umbrel apps.
+  Simple Hello World page that fetches the latest block header from your Umbrel Bitcoin Core node.
 developer: Wolverineks
 website: https://github.com/wolverineks
 repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fix install by using a pullable python image that serves site/index.html from app data.
-dependencies: []
+  Fetch and display the latest Bitcoin block header from Bitcoin Core via RPC.
+dependencies:
+  - bitcoin
 path: ""
 defaultUsername: ""
 defaultPassword: ""
