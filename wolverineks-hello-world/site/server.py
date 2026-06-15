@@ -3,13 +3,9 @@ import base64
 import html
 import json
 import os
-import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
-INDEX_PATH = os.environ.get("OP_RETURN_INDEX_PATH", "/data/op_return_index.json")
-SCAN_BUDGET_SECONDS = float(os.environ.get("SCAN_BUDGET_SECONDS", "8"))
 
 
 def load_rpc_credentials():
@@ -73,11 +69,6 @@ def bitcoin_rpc(method, params=None, timeout=60):
     return body["result"]
 
 
-def latest_block_header():
-    block_hash = bitcoin_rpc("getbestblockhash")
-    return bitcoin_rpc("getblockheader", [block_hash, True])
-
-
 def has_op_return_output(vout):
     script = vout.get("scriptPubKey", {})
     if script.get("type") == "nulldata":
@@ -86,37 +77,13 @@ def has_op_return_output(vout):
     return asm.startswith("OP_RETURN")
 
 
-def load_index():
-    if not os.path.isfile(INDEX_PATH):
-        return None
-    with open(INDEX_PATH, encoding="utf-8") as index_file:
-        return json.load(index_file)
+def latest_block_header():
+    block_hash = bitcoin_rpc("getbestblockhash")
+    return bitcoin_rpc("getblockheader", [block_hash, True])
 
 
-def save_index(index):
-    os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
-    temp_path = f"{INDEX_PATH}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as index_file:
-        json.dump(index, index_file, indent=2)
-        index_file.write("\n")
-    os.replace(temp_path, INDEX_PATH)
-
-
-def ensure_index(chain, tip_height):
-    index = load_index()
-    if index and index.get("chain") == chain:
-        return index
-
-    return {
-        "chain": chain,
-        "tip_height": tip_height,
-        "last_scanned_height": -1,
-        "txids": [],
-    }
-
-
-def scan_block_for_op_return(height):
-    block_hash = bitcoin_rpc("getblockhash", [height])
+def latest_block_op_return_txids():
+    block_hash = bitcoin_rpc("getbestblockhash")
     block = bitcoin_rpc("getblock", [block_hash, 2], timeout=120)
     txids = []
     for tx in block.get("tx", []):
@@ -125,54 +92,15 @@ def scan_block_for_op_return(height):
     return txids
 
 
-def advance_index(index):
-    chain_info = bitcoin_rpc("getblockchaininfo")
-    chain = chain_info.get("chain", "unknown")
-    tip_height = int(chain_info["blocks"])
-
-    if index.get("chain") != chain:
-        index = ensure_index(chain, tip_height)
-
-    index["tip_height"] = tip_height
-    next_height = index["last_scanned_height"] + 1
-    if next_height > tip_height:
-        index["complete"] = True
-        return index
-
-    index["complete"] = False
-    deadline = time.monotonic() + SCAN_BUDGET_SECONDS
-    blocks_scanned = 0
-
-    while next_height <= tip_height and time.monotonic() < deadline:
-        txids = scan_block_for_op_return(next_height)
-        if txids:
-            index["txids"].extend(txids)
-        index["last_scanned_height"] = next_height
-        next_height += 1
-        blocks_scanned += 1
-
-    index["blocks_scanned_this_request"] = blocks_scanned
-    index["complete"] = index["last_scanned_height"] >= tip_height
-    return index
-
-
-def render_page(header, index, error=None, status=None):
+def render_page(header, op_return_txids, error=None, status=None):
     header_json = html.escape(json.dumps(header, indent=2)) if header else ""
     error_text = html.escape(error) if error else ""
     status_json = html.escape(json.dumps(status or {}, indent=2))
-    txids = index.get("txids", [])
-    txid_lines = "\n".join(html.escape(txid) for txid in txids)
-    progress = (
-        f"Scanned through block {index.get('last_scanned_height', -1)} "
-        f"of {index.get('tip_height', '?')} "
-        f"({len(txids)} OP_RETURN transactions found)"
+    txid_lines = "\n".join(html.escape(txid) for txid in op_return_txids)
+    summary = (
+        f"{len(op_return_txids)} OP_RETURN transaction(s) in the latest block "
+        f"(height {header.get('height') if header else '?'})"
     )
-    if index.get("complete"):
-        progress += " — scan complete."
-    else:
-        progress += " — scan in progress, refreshing every 5 seconds."
-
-    refresh_tag = "" if index.get("complete") else '<meta http-equiv="refresh" content="5">'
 
     error_block = f'<p class="error">{error_text}</p><pre>{status_json}</pre>' if error else ""
 
@@ -181,7 +109,6 @@ def render_page(header, index, error=None, status=None):
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  {refresh_tag}
   <title>Hello World</title>
   <style>
     body {{
@@ -226,9 +153,9 @@ def render_page(header, index, error=None, status=None):
     {error_block}
     <h2>Latest block header</h2>
     <pre>{header_json}</pre>
-    <h2>OP_RETURN transactions</h2>
-    <p>{html.escape(progress)}</p>
-    <div class="txids">{txid_lines}</div>
+    <h2>OP_RETURN transactions in latest block</h2>
+    <p>{html.escape(summary)}</p>
+    <div class="txids">{txid_lines or "(none)"}</div>
   </main>
 </body>
 </html>"""
@@ -239,21 +166,11 @@ class Handler(BaseHTTPRequestHandler):
         status = connection_status()
         try:
             header = latest_block_header()
-            chain_info = bitcoin_rpc("getblockchaininfo")
-            index = ensure_index(chain_info.get("chain", "unknown"), int(chain_info["blocks"]))
-            index = advance_index(index)
-            save_index(index)
-            page = render_page(header=header, index=index, status=status)
+            op_return_txids = latest_block_op_return_txids()
+            page = render_page(header=header, op_return_txids=op_return_txids, status=status)
             code = 200
         except (urllib.error.URLError, RuntimeError, KeyError, OSError, ValueError) as exc:
-            index = load_index() or {
-                "chain": "unknown",
-                "tip_height": 0,
-                "last_scanned_height": -1,
-                "txids": [],
-                "complete": False,
-            }
-            page = render_page(header=None, index=index, error=str(exc), status=status)
+            page = render_page(header=None, op_return_txids=[], error=str(exc), status=status)
             code = 503
 
         encoded = page.encode()

@@ -1,20 +1,20 @@
 manifestVersion: 1
 id: wolverineks-hello-world
 name: Hello World
-tagline: Hello World, block header, and OP_RETURN txids
+tagline: Hello World, latest block header, and OP_RETURN txids
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.2.0"
+version: "1.2.1"
 port: 4000
 description: >-
-  Simple Hello World page that fetches the latest block header and indexes all OP_RETURN txids from Bitcoin Core.
+  Simple Hello World page that fetches the latest block header and OP_RETURN txids from the latest block.
 developer: Wolverineks
 website: https://github.com/wolverineks
 repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Scan the blockchain via Bitcoin Core RPC and list every txid with an OP_RETURN output.
+  List txids with OP_RETURN outputs from only the most recent block.
 dependencies:
   - bitcoin
 path: ""
