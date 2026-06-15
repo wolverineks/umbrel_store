@@ -154,6 +154,28 @@ def try_decode_ascii(data):
     return text if is_readable_text(text) else None
 
 
+def detect_universal_protocol(data):
+    text = try_decode_utf8(data) or try_decode_ascii(data)
+    if text is None:
+        return None
+
+    text = text.strip()
+    if not text.startswith("{"):
+        return None
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("p") != "brc-20":
+        return None
+
+    return "Universal Protocol"
+
+
 def guess_protocol(data):
     if data.startswith(b"omni"):
         return "Omni Layer"
@@ -161,6 +183,11 @@ def guess_protocol(data):
         return "Counterparty"
     if data.startswith(b"ORD"):
         return "Ordinals / meta-protocol"
+
+    universal = detect_universal_protocol(data)
+    if universal:
+        return universal
+
     return None
 
 
@@ -572,6 +599,8 @@ def output_matches_protocol(output, protocol_filter):
         return protocol == "Counterparty"
     if protocol_filter == "ordinals":
         return protocol == "Ordinals / meta-protocol"
+    if protocol_filter == "universal":
+        return protocol == "Universal Protocol"
     return True
 
 
@@ -714,6 +743,7 @@ def render_filter_form(filters):
             <option value="omni"{selected("omni")}>Omni</option>
             <option value="counterparty"{selected("counterparty")}>Counterparty</option>
             <option value="ordinals"{selected("ordinals")}>Ordinals</option>
+            <option value="universal"{selected("universal")}>Universal</option>
           </select>
         </label>
       </div>
