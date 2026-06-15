@@ -1,29 +1,27 @@
 manifestVersion: 1
-id: sparkles-hello-world
+id: wolverineks-hello-world
 name: Hello World
+tagline: A simple hello world app for Umbrel
 tagline: Replace this tagline with your app's tagline
 icon: https://svgur.com/i/mvA.svg
 category: Development
 version: "1.0.0"
 port: 4000
 description: >-
-  Add your app's description here.
+  This is a basic Hello World app to test your personal Umbrel app store.
 
-
-  You can also add newlines!
-
-developer: Umbrel
-website: https://umbrel.com
-submitter: Umbrel
-submission: https://github.com/getumbrel/umbrel-hello-world-app
-repo: https://github.com/getumbrel/umbrel-hello-world-app
-support: https://github.com/getumbrel/umbrel-hello-world-app/issues
+developer: Wolverineks
+website: https://github.com/wolverineks
+submitter: Wolverineks
+submission: https://github.com/wolverineks/umbrel_hello_world
+repo: https://github.com/wolverineks/umbrel_hello_world
+support: https://github.com/wolverineks/umbrel_hello_world/issues
 gallery:
   - https://i.imgur.com/yyVG0Jb.jpeg
   - https://i.imgur.com/yyVG0Jb.jpeg
   - https://i.imgur.com/yyVG0Jb.jpeg
 releaseNotes: >-
-  Add what's new in the latest version of your app here.
+  Initial version for personal testing.
 dependencies: []
 path: ""
 defaultUsername: ""
