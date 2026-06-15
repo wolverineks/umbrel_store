@@ -66,6 +66,11 @@ def bitcoin_rpc(method, params=None, timeout=60):
     with urllib.request.urlopen(request, timeout=timeout) as response:
         body = json.loads(response.read())
 
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            f"Bitcoin RPC returned unexpected JSON type: {type(body).__name__}"
+        )
+
     if body.get("error"):
         error = body["error"]
         if isinstance(error, dict):
@@ -187,8 +192,231 @@ def decode_op_return_script(script_hex):
     }
 
 
+def decoded_payload(value):
+    return value if isinstance(value, dict) else {}
+
+
+def read_varint(data, offset):
+    if offset >= len(data):
+        raise ValueError("unexpected end of transaction data")
+
+    prefix = data[offset]
+    if prefix < 0xFD:
+        return prefix, offset + 1
+    if prefix == 0xFD:
+        return int.from_bytes(data[offset + 1 : offset + 3], "little"), offset + 3
+    if prefix == 0xFE:
+        return int.from_bytes(data[offset + 1 : offset + 5], "little"), offset + 5
+    return int.from_bytes(data[offset + 1 : offset + 9], "little"), offset + 9
+
+
+def skip_inputs(data, offset):
+    vin_count, offset = read_varint(data, offset)
+    for _ in range(vin_count):
+        offset += 36
+        script_len, offset = read_varint(data, offset)
+        offset += script_len
+        offset += 4
+    return offset, vin_count
+
+
+def skip_outputs(data, offset):
+    vout_count, offset = read_varint(data, offset)
+    for _ in range(vout_count):
+        offset += 8
+        script_len, offset = read_varint(data, offset)
+        offset += script_len
+    return offset
+
+
+def skip_witness(data, offset, vin_count):
+    for _ in range(vin_count):
+        item_count, offset = read_varint(data, offset)
+        for _ in range(item_count):
+            item_len, offset = read_varint(data, offset)
+            offset += item_len
+    return offset
+
+
+def skip_transaction_at(data, offset, assume_segwit):
+    start = offset
+    offset += 4
+    if assume_segwit:
+        if len(data) < offset + 2 or data[offset] != 0 or data[offset + 1] != 1:
+            return None
+        offset += 2
+
+    try:
+        offset, vin_count = skip_inputs(data, offset)
+        offset = skip_outputs(data, offset)
+        if assume_segwit:
+            offset = skip_witness(data, offset, vin_count)
+        offset += 4
+        if offset > len(data):
+            return None
+        return start, offset
+    except (IndexError, ValueError):
+        return None
+
+
+def skip_transaction(data, offset):
+    legacy = skip_transaction_at(data, offset, assume_segwit=False)
+    if legacy is not None and legacy[1] <= len(data):
+        if legacy[1] == len(data):
+            return legacy
+
+    if len(data) > offset + 6 and data[offset + 4] == 0 and data[offset + 5] == 1:
+        segwit = skip_transaction_at(data, offset, assume_segwit=True)
+        if segwit is not None and segwit[1] == len(data):
+            return segwit
+
+    if legacy is not None:
+        return legacy
+    raise ValueError("unable to parse transaction size")
+
+
+def iter_transactions_from_block_hex(block_hex):
+    data = bytes.fromhex(block_hex)
+    if len(data) < 81:
+        raise RuntimeError("block hex from Bitcoin RPC is too short")
+
+    offset = 80
+    tx_count, offset = read_varint(data, offset)
+    for _ in range(tx_count):
+        start, end = skip_transaction(data, offset)
+        yield data[start:end].hex()
+        offset = end
+
+
+def parse_tx_outputs(data, assume_segwit):
+    offset = 4
+    if assume_segwit:
+        if len(data) < 6 or data[offset] != 0 or data[offset + 1] != 1:
+            return None
+        offset += 2
+
+    try:
+        offset, vin_count = skip_inputs(data, offset)
+        vout_count, offset = read_varint(data, offset)
+        outputs = []
+        for vout_index in range(vout_count):
+            value = int.from_bytes(data[offset : offset + 8], "little")
+            offset += 8
+            script_len, offset = read_varint(data, offset)
+            script = data[offset : offset + script_len]
+            offset += script_len
+            if not script or script[0] != 0x6A:
+                continue
+
+            decoded = decode_op_return_script(script.hex())
+            outputs.append(
+                {
+                    "vout": vout_index,
+                    "sats": value,
+                    "asm": "",
+                    "hex": script.hex(),
+                    "decoded": decoded,
+                }
+            )
+
+        if assume_segwit:
+            offset = skip_witness(data, offset, vin_count)
+        offset += 4
+        if offset != len(data):
+            return None
+        return outputs
+    except (IndexError, ValueError):
+        return None
+
+
+def scan_raw_tx_for_op_returns(tx_hex):
+    data = bytes.fromhex(tx_hex)
+    outputs = parse_tx_outputs(data, assume_segwit=False)
+    if outputs is not None:
+        return outputs
+
+    if len(data) > 6 and data[4] == 0 and data[5] == 1:
+        outputs = parse_tx_outputs(data, assume_segwit=True)
+        if outputs is not None:
+            return outputs
+
+    return []
+
+
+def enrich_op_return_tx(tx_hex, op_returns):
+    tx = bitcoin_rpc("decoderawtransaction", [tx_hex, True], timeout=60)
+    if not isinstance(tx, dict):
+        raise RuntimeError("decoderawtransaction returned an unexpected response")
+
+    op_by_vout = {item["vout"]: item for item in op_returns}
+    enriched = []
+    for vout in tx.get("vout", []):
+        if not isinstance(vout, dict):
+            continue
+        vout_index = vout.get("n")
+        if vout_index not in op_by_vout:
+            continue
+        script = vout.get("scriptPubKey", {})
+        if not isinstance(script, dict):
+            continue
+        base = op_by_vout[vout_index]
+        enriched.append(
+            {
+                "vout": vout_index,
+                "sats": btc_to_sats(vout.get("value", 0)),
+                "asm": script.get("asm", base["asm"]),
+                "hex": script.get("hex", base["hex"]),
+                "decoded": base["decoded"],
+            }
+        )
+
+    return {"txid": tx["txid"], "op_returns": enriched}
+
+
+def fetch_block(block_hash):
+    last_result = None
+    for verbosity in (2, 1, 0):
+        result = bitcoin_rpc("getblock", [block_hash, verbosity], timeout=180)
+        last_result = result
+        if isinstance(result, dict):
+            return result
+
+    if isinstance(last_result, str):
+        return {"_raw_hex": True, "height": None, "_block_hex": last_result}
+
+    raise RuntimeError(
+        f"Unexpected getblock response type from Bitcoin RPC: {type(last_result).__name__}"
+    )
+
+
+def normalize_block_transactions(block):
+    if block.get("_raw_hex"):
+        transactions = []
+        for tx_hex in iter_transactions_from_block_hex(block["_block_hex"]):
+            op_returns = scan_raw_tx_for_op_returns(tx_hex)
+            if op_returns:
+                transactions.append(enrich_op_return_tx(tx_hex, op_returns))
+        return transactions
+
+    transactions = []
+    for tx in block.get("tx", []):
+        if isinstance(tx, str):
+            tx = bitcoin_rpc("getrawtransaction", [tx, True], timeout=60)
+        if not isinstance(tx, dict):
+            continue
+        op_returns = extract_op_returns(tx)
+        if op_returns:
+            transactions.append({"txid": tx["txid"], "op_returns": op_returns})
+    return transactions
+
+
 def is_op_return_output(vout):
+    if not isinstance(vout, dict):
+        return False
+
     script = vout.get("scriptPubKey", {})
+    if not isinstance(script, dict):
+        return False
     if script.get("type") == "nulldata":
         return True
     asm = script.get("asm", "")
@@ -196,6 +424,9 @@ def is_op_return_output(vout):
 
 
 def extract_op_returns(tx):
+    if not isinstance(tx, dict):
+        return []
+
     outputs = []
     for vout in tx.get("vout", []):
         if not is_op_return_output(vout):
@@ -217,6 +448,9 @@ def extract_op_returns(tx):
 
 def block_op_return_transactions(height=None):
     chain_info = bitcoin_rpc("getblockchaininfo")
+    if not isinstance(chain_info, dict):
+        raise RuntimeError("getblockchaininfo returned an unexpected response")
+
     tip_height = chain_info["blocks"]
 
     if height is None:
@@ -225,14 +459,10 @@ def block_op_return_transactions(height=None):
         target_height = max(0, min(int(height), tip_height))
 
     block_hash = bitcoin_rpc("getblockhash", [target_height])
-    block = bitcoin_rpc("getblock", [block_hash, 1], timeout=180)
-    transactions = []
-    for tx in block.get("tx", []):
-        op_returns = extract_op_returns(tx)
-        if op_returns:
-            transactions.append({"txid": tx["txid"], "op_returns": op_returns})
+    block = fetch_block(block_hash)
+    transactions = normalize_block_transactions(block)
     return {
-        "height": block.get("height"),
+        "height": block.get("height", target_height),
         "tip_height": tip_height,
         "transactions": transactions,
     }
@@ -286,7 +516,7 @@ def build_url(filters, height=None):
 
 
 def output_search_text(output):
-    decoded = output.get("decoded", {})
+    decoded = decoded_payload(output.get("decoded"))
     parts = [
         output.get("asm", ""),
         output.get("hex", ""),
@@ -305,7 +535,7 @@ def transaction_search_text(tx):
 
 
 def output_matches_protocol(output, protocol_filter):
-    protocol = output.get("decoded", {}).get("protocol")
+    protocol = decoded_payload(output.get("decoded")).get("protocol")
     if protocol_filter == "all":
         return True
     if protocol_filter == "unknown":
@@ -321,7 +551,7 @@ def output_matches_protocol(output, protocol_filter):
 
 def transaction_has_readable_text(tx):
     for output in tx["op_returns"]:
-        decoded = output.get("decoded", {})
+        decoded = decoded_payload(output.get("decoded"))
         if decoded.get("ascii") is not None or decoded.get("utf8") is not None:
             return True
     return False
@@ -352,6 +582,7 @@ def filter_transactions(transactions, filters):
 
 
 def render_decoded_output(decoded):
+    decoded = decoded_payload(decoded)
     if decoded.get("error"):
         return f"<div><span class=\"label\">decoded</span> {html.escape(decoded['error'])}</div>"
 
