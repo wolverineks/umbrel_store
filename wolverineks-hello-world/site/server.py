@@ -6,7 +6,7 @@ import os
 import urllib.error
 import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -208,8 +208,16 @@ def extract_op_returns(tx):
     return outputs
 
 
-def latest_block_op_return_transactions():
-    block_hash = bitcoin_rpc("getbestblockhash")
+def block_op_return_transactions(height=None):
+    chain_info = bitcoin_rpc("getblockchaininfo")
+    tip_height = chain_info["blocks"]
+
+    if height is None:
+        target_height = tip_height
+    else:
+        target_height = max(0, min(int(height), tip_height))
+
+    block_hash = bitcoin_rpc("getblockhash", [target_height])
     block = bitcoin_rpc("getblock", [block_hash, 2], timeout=120)
     transactions = []
     for tx in block.get("tx", []):
@@ -218,6 +226,7 @@ def latest_block_op_return_transactions():
             transactions.append({"txid": tx["txid"], "op_returns": op_returns})
     return {
         "height": block.get("height"),
+        "tip_height": tip_height,
         "transactions": transactions,
     }
 
@@ -230,12 +239,43 @@ def parse_filters(path):
     except ValueError:
         min_sats = 0
 
+    height_raw = query.get("height", [""])[0].strip()
+    height = None
+    if height_raw:
+        try:
+            height = int(height_raw)
+        except ValueError:
+            height = None
+
     return {
         "q": query.get("q", [""])[0].strip(),
         "protocol": query.get("protocol", ["all"])[0].strip().lower(),
         "readable": query.get("readable", [""])[0] == "1",
         "min_sats": min_sats,
+        "height": height,
     }
+
+
+def build_query_params(filters, height=None):
+    params = {}
+    if height is not None:
+        params["height"] = str(height)
+    if filters["q"]:
+        params["q"] = filters["q"]
+    if filters["protocol"] != "all":
+        params["protocol"] = filters["protocol"]
+    if filters["readable"]:
+        params["readable"] = "1"
+    if filters["min_sats"] > 0:
+        params["min_sats"] = str(filters["min_sats"])
+    return params
+
+
+def build_url(filters, height=None):
+    params = build_query_params(filters, height)
+    if not params:
+        return "/"
+    return "?" + urlencode(params)
 
 
 def output_search_text(output):
@@ -339,17 +379,57 @@ def render_op_return_output(output):
     )
 
 
+def render_block_nav(block_data, filters):
+    height = block_data.get("height")
+    tip_height = block_data.get("tip_height")
+    if height is None or tip_height is None:
+        return ""
+
+    at_tip = height >= tip_height
+    prev_disabled = height <= 0
+    next_disabled = at_tip
+
+    def nav_link(label, target_height, disabled=False):
+        if disabled:
+            return f'<span class="nav-btn disabled">{html.escape(label)}</span>'
+        return f'<a class="nav-btn" href="{html.escape(build_url(filters, target_height))}">{html.escape(label)}</a>'
+
+    latest_label = "Latest block" if not at_tip else "Latest block (current)"
+    latest_link = (
+        f'<span class="nav-btn disabled">{html.escape(latest_label)}</span>'
+        if at_tip
+        else nav_link(latest_label, tip_height)
+    )
+
+    return f"""
+    <nav class="block-nav" aria-label="Block navigation">
+      {nav_link("← Previous block", height - 1, disabled=prev_disabled)}
+      <span class="block-height">Block {html.escape(str(height))}</span>
+      {nav_link("Next block →", height + 1, disabled=next_disabled)}
+      {latest_link}
+    </nav>
+    """
+
+
 def render_filter_form(filters):
     q = html.escape(filters["q"])
     min_sats = html.escape(str(filters["min_sats"]))
     readable_checked = " checked" if filters["readable"] else ""
     protocol = filters["protocol"]
+    height = filters.get("height")
+    height_field = (
+        f'<input type="hidden" name="height" value="{html.escape(str(height))}">'
+        if height is not None
+        else ""
+    )
+    reset_href = html.escape(build_url({}, height))
 
     def selected(value):
         return " selected" if protocol == value else ""
 
     return f"""
     <form class="filters" method="get">
+      {height_field}
       <div class="filter-row">
         <label>
           <span>Search</span>
@@ -377,19 +457,20 @@ def render_filter_form(filters):
         </label>
         <div class="filter-actions">
           <button type="submit">Apply filters</button>
-          <a class="reset" href="/">Reset</a>
+          <a class="reset" href="{reset_href}">Reset</a>
         </div>
       </div>
     </form>
     """
 
 
-def render_transactions(transactions, filters_active=False):
+def render_transactions(transactions, filters_active=False, block_height=None):
     if not transactions:
+        block_label = f"block at height {block_height}" if block_height is not None else "this block"
         empty_message = (
             "No OP_RETURN transactions match the current filters."
             if filters_active
-            else "No OP_RETURN transactions in the latest block."
+            else f"No OP_RETURN transactions in {block_label}."
         )
         return f'<p class="empty">{empty_message}</p>'
 
@@ -418,19 +499,25 @@ def render_page(block_data, filters, error=None, status=None):
     visible_count = len(filtered_transactions)
     active = filters_are_active(filters)
 
+    height = block_data.get("height", "?")
+    tip_height = block_data.get("tip_height")
+    at_tip = height == tip_height if tip_height is not None else False
+    block_label = f"block at height {height}" + (" (latest)" if at_tip else "")
+
     if active:
         summary = (
-            f"Showing {visible_count} of {total_count} OP_RETURN transaction(s) in the latest block "
-            f"(height {block_data.get('height', '?')})"
+            f"Showing {visible_count} of {total_count} OP_RETURN transaction(s) in {block_label}"
         )
     else:
-        summary = (
-            f"{total_count} OP_RETURN transaction(s) in the latest block "
-            f"(height {block_data.get('height', '?')})"
-        )
+        summary = f"{total_count} OP_RETURN transaction(s) in {block_label}"
 
+    block_nav_html = render_block_nav(block_data, filters)
     filter_form_html = render_filter_form(filters)
-    transactions_html = render_transactions(filtered_transactions, filters_active=active)
+    transactions_html = render_transactions(
+        filtered_transactions,
+        filters_active=active,
+        block_height=height if height != "?" else None,
+    )
     error_block = f'<p class="error">{error_text}</p><pre>{status_json}</pre>' if error else ""
 
     return f"""<!DOCTYPE html>
@@ -521,6 +608,38 @@ def render_page(block_data, filters, error=None, status=None):
       font-size: 0.9rem;
       white-space: nowrap;
     }}
+    .block-nav {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      align-items: center;
+      margin-bottom: 1rem;
+    }}
+    .nav-btn {{
+      display: inline-block;
+      padding: 0.55rem 0.85rem;
+      border-radius: 0.55rem;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(15, 23, 42, 0.9);
+      color: #f8fafc;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }}
+    .nav-btn:hover {{
+      border-color: #2563eb;
+      color: #93c5fd;
+    }}
+    .nav-btn.disabled {{
+      opacity: 0.45;
+      cursor: not-allowed;
+    }}
+    .block-height {{
+      color: #cbd5e1;
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 0 0.25rem;
+    }}
     .tx {{
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 0.75rem;
@@ -584,6 +703,7 @@ def render_page(block_data, filters, error=None, status=None):
   <main>
     <h1>Hello, World!</h1>
     {error_block}
+    {block_nav_html}
     {filter_form_html}
     <p>{html.escape(summary)}</p>
     {transactions_html}
@@ -597,7 +717,7 @@ class Handler(BaseHTTPRequestHandler):
         status = connection_status()
         filters = parse_filters(self.path)
         try:
-            block_data = latest_block_op_return_transactions()
+            block_data = block_op_return_transactions(filters.get("height"))
             all_transactions = block_data["transactions"]
             block_data["all_transactions"] = all_transactions
             block_data["transactions"] = filter_transactions(all_transactions, filters)
