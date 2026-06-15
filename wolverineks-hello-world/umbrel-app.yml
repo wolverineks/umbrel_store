@@ -4,7 +4,7 @@ name: Hello World
 tagline: A minimal test web page
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.0.0"
+version: "1.0.1"
 port: 4000
 description: >-
   Simple Hello World web page for testing Umbrel apps.
@@ -13,7 +13,8 @@ website: https://github.com/wolverineks
 repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
-releaseNotes: ""
+releaseNotes: >-
+  Replaced the Umbrel template page with a minimal Hello World web page.
 dependencies: []
 path: ""
 defaultUsername: ""
