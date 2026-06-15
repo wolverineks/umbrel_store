@@ -155,25 +155,24 @@ def try_decode_ascii(data):
 
 
 def detect_universal_protocol(data):
-    text = try_decode_utf8(data) or try_decode_ascii(data)
-    if text is None:
+    if not data:
         return None
 
-    text = text.strip()
-    if not text.startswith("{"):
-        return None
+    for encoding in ("utf-8", "ascii"):
+        try:
+            text = data.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+        if not text.startswith("{"):
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("p") == "brc-20":
+            return "Universal Protocol"
 
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("p") != "brc-20":
-        return None
-
-    return "Universal Protocol"
+    return None
 
 
 def guess_protocol(data):
