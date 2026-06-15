@@ -16,6 +16,10 @@ from socketserver import ThreadingMixIn
 BLOCK_FETCH_TIMEOUT = 90
 _block_fetch_executor = ThreadPoolExecutor(max_workers=4)
 
+OP_RETURN_OPCODE = 0x6A
+RUNESTONE_MAGIC_OPCODE = 0x5D  # OP_13 in Bitcoin script, per ord Runestone::MAGIC_NUMBER
+RUNE_LEGACY_PUSH = 0x52  # ASCII "R" from the early Runes prototype
+
 
 def load_rpc_credentials():
     user = os.environ.get("BITCOIN_RPC_USER", "").strip()
@@ -175,6 +179,16 @@ def detect_universal_protocol(data):
     return None
 
 
+def detect_runes_runestone(script):
+    if len(script) < 2 or script[0] != OP_RETURN_OPCODE:
+        return False
+    if script[1] == RUNESTONE_MAGIC_OPCODE:
+        return True
+    if len(script) >= 3 and script[1] == 0x01 and script[2] == RUNE_LEGACY_PUSH:
+        return True
+    return False
+
+
 def guess_protocol(data):
     if data.startswith(b"omni"):
         return "Omni Layer"
@@ -203,7 +217,7 @@ def decode_op_return_script(script_hex):
             "error": "invalid script hex",
         }
 
-    if not script or script[0] != 0x6A:
+    if not script or script[0] != OP_RETURN_OPCODE:
         return {
             "data_hex": "",
             "utf8": None,
@@ -213,12 +227,18 @@ def decode_op_return_script(script_hex):
             "error": "not an OP_RETURN script",
         }
 
-    data = b"".join(parse_pushdata(script[1:]))
+    if detect_runes_runestone(script):
+        data = b"".join(parse_pushdata(script[2:]))
+        protocol = "Runes"
+    else:
+        data = b"".join(parse_pushdata(script[1:]))
+        protocol = guess_protocol(data)
+
     return {
         "data_hex": data.hex(),
         "utf8": try_decode_utf8(data),
         "ascii": try_decode_ascii(data),
-        "protocol": guess_protocol(data),
+        "protocol": protocol,
         "bytes": len(data),
         "error": None,
     }
@@ -600,6 +620,8 @@ def output_matches_protocol(output, protocol_filter):
         return protocol == "Ordinals / meta-protocol"
     if protocol_filter == "universal":
         return protocol == "Universal Protocol"
+    if protocol_filter == "runes":
+        return protocol == "Runes"
     return True
 
 
@@ -743,6 +765,7 @@ def render_filter_form(filters):
             <option value="counterparty"{selected("counterparty")}>Counterparty</option>
             <option value="ordinals"{selected("ordinals")}>Ordinals</option>
             <option value="universal"{selected("universal")}>Universal</option>
+            <option value="runes"{selected("runes")}>Runes</option>
           </select>
         </label>
       </div>
