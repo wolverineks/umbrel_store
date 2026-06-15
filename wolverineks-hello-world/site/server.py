@@ -6,6 +6,7 @@ import os
 import urllib.error
 import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -221,6 +222,88 @@ def latest_block_op_return_transactions():
     }
 
 
+def parse_filters(path):
+    query = parse_qs(urlparse(path).query)
+    min_sats_raw = query.get("min_sats", ["0"])[0].strip()
+    try:
+        min_sats = max(0, int(min_sats_raw))
+    except ValueError:
+        min_sats = 0
+
+    return {
+        "q": query.get("q", [""])[0].strip(),
+        "protocol": query.get("protocol", ["all"])[0].strip().lower(),
+        "readable": query.get("readable", [""])[0] == "1",
+        "min_sats": min_sats,
+    }
+
+
+def output_search_text(output):
+    decoded = output.get("decoded", {})
+    parts = [
+        output.get("asm", ""),
+        output.get("hex", ""),
+        str(output.get("sats", "")),
+        decoded.get("data_hex", ""),
+        decoded.get("ascii") or "",
+        decoded.get("utf8") or "",
+        decoded.get("protocol") or "",
+    ]
+    return " ".join(parts).lower()
+
+
+def transaction_search_text(tx):
+    parts = [tx["txid"], *(output_search_text(output) for output in tx["op_returns"])]
+    return " ".join(parts).lower()
+
+
+def output_matches_protocol(output, protocol_filter):
+    protocol = output.get("decoded", {}).get("protocol")
+    if protocol_filter == "all":
+        return True
+    if protocol_filter == "unknown":
+        return protocol is None
+    if protocol_filter == "omni":
+        return protocol == "Omni Layer"
+    if protocol_filter == "counterparty":
+        return protocol == "Counterparty"
+    if protocol_filter == "ordinals":
+        return protocol == "Ordinals / meta-protocol"
+    return True
+
+
+def transaction_has_readable_text(tx):
+    for output in tx["op_returns"]:
+        decoded = output.get("decoded", {})
+        if decoded.get("ascii") is not None or decoded.get("utf8") is not None:
+            return True
+    return False
+
+
+def transaction_matches_filters(tx, filters):
+    if filters["q"] and filters["q"].lower() not in transaction_search_text(tx):
+        return False
+
+    if filters["readable"] and not transaction_has_readable_text(tx):
+        return False
+
+    if filters["min_sats"] > 0 and not any(
+        output.get("sats", 0) >= filters["min_sats"] for output in tx["op_returns"]
+    ):
+        return False
+
+    if filters["protocol"] != "all" and not any(
+        output_matches_protocol(output, filters["protocol"]) for output in tx["op_returns"]
+    ):
+        return False
+
+    return True
+
+
+def filter_transactions(transactions, filters):
+    return [tx for tx in transactions if transaction_matches_filters(tx, filters)]
+
+
 def render_decoded_output(decoded):
     if decoded.get("error"):
         return f"<div><span class=\"label\">decoded</span> {html.escape(decoded['error'])}</div>"
@@ -256,9 +339,59 @@ def render_op_return_output(output):
     )
 
 
-def render_transactions(transactions):
+def render_filter_form(filters):
+    q = html.escape(filters["q"])
+    min_sats = html.escape(str(filters["min_sats"]))
+    readable_checked = " checked" if filters["readable"] else ""
+    protocol = filters["protocol"]
+
+    def selected(value):
+        return " selected" if protocol == value else ""
+
+    return f"""
+    <form class="filters" method="get">
+      <div class="filter-row">
+        <label>
+          <span>Search</span>
+          <input type="search" name="q" value="{q}" placeholder="txid, hex, ascii, utf-8, protocol">
+        </label>
+        <label>
+          <span>Protocol</span>
+          <select name="protocol">
+            <option value="all"{selected("all")}>All</option>
+            <option value="unknown"{selected("unknown")}>Unknown</option>
+            <option value="omni"{selected("omni")}>Omni</option>
+            <option value="counterparty"{selected("counterparty")}>Counterparty</option>
+            <option value="ordinals"{selected("ordinals")}>Ordinals</option>
+          </select>
+        </label>
+      </div>
+      <div class="filter-row">
+        <label>
+          <span>Min sats</span>
+          <input type="number" name="min_sats" min="0" step="1" value="{min_sats}">
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="readable" value="1"{readable_checked}>
+          <span>Readable text only</span>
+        </label>
+        <div class="filter-actions">
+          <button type="submit">Apply filters</button>
+          <a class="reset" href="/">Reset</a>
+        </div>
+      </div>
+    </form>
+    """
+
+
+def render_transactions(transactions, filters_active=False):
     if not transactions:
-        return '<p class="empty">No OP_RETURN transactions in the latest block.</p>'
+        empty_message = (
+            "No OP_RETURN transactions match the current filters."
+            if filters_active
+            else "No OP_RETURN transactions in the latest block."
+        )
+        return f'<p class="empty">{empty_message}</p>'
 
     items = []
     for tx in transactions:
@@ -272,15 +405,32 @@ def render_transactions(transactions):
     return "\n".join(items)
 
 
-def render_page(block_data, error=None, status=None):
+def filters_are_active(filters):
+    return bool(filters["q"]) or filters["readable"] or filters["min_sats"] > 0 or filters["protocol"] != "all"
+
+
+def render_page(block_data, filters, error=None, status=None):
     error_text = html.escape(error) if error else ""
     status_json = html.escape(json.dumps(status or {}, indent=2))
-    tx_count = len(block_data.get("transactions", []))
-    summary = (
-        f"{tx_count} OP_RETURN transaction(s) in the latest block "
-        f"(height {block_data.get('height', '?')})"
-    )
-    transactions_html = render_transactions(block_data.get("transactions", []))
+    all_transactions = block_data.get("all_transactions", block_data.get("transactions", []))
+    filtered_transactions = block_data.get("transactions", [])
+    total_count = len(all_transactions)
+    visible_count = len(filtered_transactions)
+    active = filters_are_active(filters)
+
+    if active:
+        summary = (
+            f"Showing {visible_count} of {total_count} OP_RETURN transaction(s) in the latest block "
+            f"(height {block_data.get('height', '?')})"
+        )
+    else:
+        summary = (
+            f"{total_count} OP_RETURN transaction(s) in the latest block "
+            f"(height {block_data.get('height', '?')})"
+        )
+
+    filter_form_html = render_filter_form(filters)
+    transactions_html = render_transactions(filtered_transactions, filters_active=active)
     error_block = f'<p class="error">{error_text}</p><pre>{status_json}</pre>' if error else ""
 
     return f"""<!DOCTYPE html>
@@ -309,6 +459,68 @@ def render_page(block_data, error=None, status=None):
     }}
     h1 {{ margin: 0 0 0.75rem; }}
     p {{ margin: 0 0 1rem; color: #cbd5e1; }}
+    .filters {{
+      display: grid;
+      gap: 0.85rem;
+      margin-bottom: 1.25rem;
+      padding: 1rem;
+      border-radius: 0.85rem;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }}
+    .filter-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      align-items: end;
+    }}
+    .filters label {{
+      display: grid;
+      gap: 0.35rem;
+      color: #cbd5e1;
+      font-size: 0.85rem;
+      min-width: 10rem;
+      flex: 1 1 12rem;
+    }}
+    .filters label.checkbox {{
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 2.4rem;
+    }}
+    .filters input,
+    .filters select,
+    .filters button {{
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 0.55rem;
+      background: rgba(15, 23, 42, 0.9);
+      color: #f8fafc;
+      padding: 0.65rem 0.75rem;
+      font: inherit;
+    }}
+    .filters button {{
+      cursor: pointer;
+      background: #2563eb;
+      border-color: #2563eb;
+      font-weight: 600;
+    }}
+    .filter-actions {{
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      margin-left: auto;
+    }}
+    .filter-actions button {{
+      width: auto;
+      min-width: 8rem;
+    }}
+    .reset {{
+      color: #93c5fd;
+      text-decoration: none;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }}
     .tx {{
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 0.75rem;
@@ -372,6 +584,7 @@ def render_page(block_data, error=None, status=None):
   <main>
     <h1>Hello, World!</h1>
     {error_block}
+    {filter_form_html}
     <p>{html.escape(summary)}</p>
     {transactions_html}
   </main>
@@ -382,12 +595,21 @@ def render_page(block_data, error=None, status=None):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         status = connection_status()
+        filters = parse_filters(self.path)
         try:
             block_data = latest_block_op_return_transactions()
-            page = render_page(block_data=block_data, status=status)
+            all_transactions = block_data["transactions"]
+            block_data["all_transactions"] = all_transactions
+            block_data["transactions"] = filter_transactions(all_transactions, filters)
+            page = render_page(block_data=block_data, filters=filters, status=status)
             code = 200
         except (urllib.error.URLError, RuntimeError, KeyError, OSError, ValueError) as exc:
-            page = render_page(block_data={"height": "?", "transactions": []}, error=str(exc), status=status)
+            page = render_page(
+                block_data={"height": "?", "transactions": [], "all_transactions": []},
+                filters=filters,
+                error=str(exc),
+                status=status,
+            )
             code = 503
 
         encoded = page.encode()

@@ -4,7 +4,7 @@ name: Hello World
 tagline: Hello World and expandable OP_RETURN txids
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.2.4"
+version: "1.2.5"
 port: 4000
 description: >-
   Simple Hello World page that lists OP_RETURN txids from the latest block with expandable output details.
@@ -14,7 +14,7 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Also attempt to interpret OP_RETURN payload data as ASCII text.
+  Add a filter form for searching txids, protocol, readable text, and min sats.
 dependencies:
   - bitcoin
 path: ""
