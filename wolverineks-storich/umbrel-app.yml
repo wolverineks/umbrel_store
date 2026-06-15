@@ -1,0 +1,22 @@
+manifestVersion: 1
+id: wolverineks-storich
+name: Storich
+tagline: Self-hosted cloud storage for your files
+icon: https://svgur.com/i/mvA.svg
+category: files
+version: "1.0.0"
+port: 4010
+description: >-
+  A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
+  files from your own private cloud, similar to how Immich mirrors Google Photos.
+developer: Wolverineks
+website: https://github.com/wolverineks
+repo: https://github.com/wolverineks/umbrel_store
+support: https://github.com/wolverineks/umbrel_store/issues
+gallery: []
+releaseNotes: >-
+  Initial release with a minimal Google Drive-style UI and local file storage.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

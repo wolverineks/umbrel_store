@@ -7,6 +7,7 @@ Add this repo to your Umbrel: `https://github.com/wolverineks/umbrel_store`
 ## Apps
 
 - Hello World
+- Storich — minimal self-hosted drive
 
 ## How to contribute / add more apps
 

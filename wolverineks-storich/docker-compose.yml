@@ -1,0 +1,21 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: wolverineks-storich_server_1
+      APP_PORT: 3000
+
+  server:
+    image: python:3-alpine
+    user: "1000:1000"
+    command: python /app/server.py
+    volumes:
+      - ${APP_DATA_DIR}/site:/app:ro
+      - ${APP_DATA_DIR}/drive:/data
+    environment:
+      STORICH_DATA_DIR: /data
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    restart: on-failure
+    init: true
