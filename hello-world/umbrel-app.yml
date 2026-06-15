@@ -3,6 +3,7 @@ id: wolverineks-hello-world
 name: Hello World
 version: "1.0.0"
 tagline: A minimal test web page
+icon: https://svgur.com/i/mvA.svg
 category: Development
 port: 4000
 description: >-
