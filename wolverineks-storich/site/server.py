@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-import cgi
+import html
 import json
 import mimetypes
 import os
-import shutil
+import re
 import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -14,7 +14,12 @@ DATA_ROOT = os.environ.get("STORICH_DATA_DIR", "/data")
 
 
 def ensure_data_root():
-    os.makedirs(DATA_ROOT, exist_ok=True)
+    if os.path.isdir(DATA_ROOT):
+        return
+    try:
+        os.makedirs(DATA_ROOT, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"cannot access data directory {DATA_ROOT}: {exc}") from exc
 
 
 def safe_path(relative_path=""):
@@ -482,6 +487,86 @@ def send_json(handler, status_code, payload):
         return
 
 
+def parse_multipart_upload(handler):
+    content_type = handler.headers.get("Content-Type", "")
+    if not content_type.startswith("multipart/form-data"):
+        raise ValueError("expected multipart form data")
+
+    match = re.search(r'boundary=(?:"([^"]+)"|([^;\s]+))', content_type)
+    if not match:
+        raise ValueError("missing multipart boundary")
+
+    boundary = (match.group(1) or match.group(2)).encode()
+    length = int(handler.headers.get("Content-Length", "0"))
+    body = handler.rfile.read(length)
+
+    path_value = ""
+    file_name = None
+    file_data = b""
+    for part in body.split(b"--" + boundary):
+        if b"Content-Disposition" not in part:
+            continue
+        header_block, _, content = part.partition(b"\r\n\r\n")
+        content = content.rstrip(b"\r\n")
+        headers = header_block.decode("utf-8", errors="replace")
+        if 'name="path"' in headers:
+            path_value = content.decode("utf-8", errors="replace")
+        elif 'name="file"' in headers:
+            filename_match = re.search(r'filename="([^"]*)"', headers)
+            if filename_match:
+                file_name = filename_match.group(1)
+            file_data = content
+
+    if not file_name:
+        raise ValueError("file is required")
+    return path_value, file_name, file_data
+
+
+def render_error_page(message):
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Storich</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 1.5rem;
+    }}
+    main {{
+      max-width: 36rem;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 1rem;
+      padding: 1.5rem;
+    }}
+    h1 {{ margin-top: 0; }}
+    pre {{
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fef2f2;
+      color: #b91c1c;
+      padding: 1rem;
+      border-radius: 0.75rem;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Storich could not start</h1>
+    <pre>{html.escape(message)}</pre>
+  </main>
+</body>
+</html>"""
+
+
 def send_bytes(handler, status_code, content_type, body, download_name=None):
     handler.send_response(status_code)
     handler.send_header("Content-Type", content_type)
@@ -500,14 +585,23 @@ def send_bytes(handler, status_code, content_type, body, download_name=None):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        ensure_data_root()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        query = urllib.parse.parse_qs(parsed.query)
+        try:
+            self._do_get(path, urllib.parse.parse_qs(parsed.query))
+        except Exception as exc:
+            if path == "/":
+                page = render_error_page(str(exc)).encode()
+                send_bytes(self, 503, "text/html; charset=utf-8", page)
+            else:
+                send_json(self, 500, {"error": str(exc)})
 
+    def _do_get(self, path, query):
         if path in ("/health", "/healthz"):
             send_bytes(self, 200, "text/plain; charset=utf-8", b"ok")
             return
+
+        ensure_data_root()
 
         if path == "/api/files":
             try:
@@ -547,9 +641,15 @@ class Handler(BaseHTTPRequestHandler):
         send_json(self, 404, {"error": "not found"})
 
     def do_POST(self):
-        ensure_data_root()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        try:
+            self._do_post(path)
+        except Exception as exc:
+            send_json(self, 500, {"error": str(exc)})
+
+    def _do_post(self, path):
+        ensure_data_root()
 
         if path == "/api/mkdir":
             try:
@@ -575,20 +675,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/upload":
             try:
-                form = cgi.FieldStorage(
-                    fp=self.rfile,
-                    headers=self.headers,
-                    environ={
-                        "REQUEST_METHOD": "POST",
-                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                    },
-                )
-                parent = form.getfirst("path", "")
-                upload = form["file"] if "file" in form else None
-                if upload is None or not getattr(upload, "filename", None):
-                    send_json(self, 400, {"error": "file is required"})
-                    return
-                filename = os.path.basename(upload.filename)
+                parent, filename, file_data = parse_multipart_upload(self)
+                filename = os.path.basename(filename)
                 if not filename or filename in (".", ".."):
                     send_json(self, 400, {"error": "invalid file name"})
                     return
@@ -596,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
                 target_abs = os.path.join(parent_abs, filename)
                 target_rel = f"{parent_rel}/{filename}" if parent_rel else filename
                 with open(target_abs, "wb") as handle:
-                    shutil.copyfileobj(upload.file, handle)
+                    handle.write(file_data)
                 send_json(self, 201, {"entry": file_entry(target_abs, target_rel)})
             except ValueError as exc:
                 send_json(self, 400, {"error": str(exc)})
@@ -615,6 +703,10 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 if __name__ == "__main__":
-    ensure_data_root()
+    try:
+        ensure_data_root()
+    except Exception as exc:
+        print(f"storich: data directory unavailable: {exc}", flush=True)
     port = int(os.environ.get("PORT", "3000"))
+    print(f"storich: listening on 0.0.0.0:{port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
