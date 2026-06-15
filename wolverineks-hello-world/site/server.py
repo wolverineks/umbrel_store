@@ -772,13 +772,18 @@ def render_page(block_data, filters, error=None, status=None):
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Hello World</title>
   <style>
+    html, body {{
+      height: 100%;
+      overflow: hidden;
+    }}
     body {{
       margin: 0;
-      min-height: 100vh;
+      box-sizing: border-box;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: radial-gradient(circle at top, #1f2937 0%, #0b0f17 55%, #05070b 100%);
       color: #f8fafc;
       padding: 1.5rem;
+      display: flex;
     }}
     main {{
       width: min(96vw, 56rem);
@@ -788,9 +793,37 @@ def render_page(block_data, filters, error=None, status=None):
       border-radius: 1.25rem;
       background: rgba(15, 23, 42, 0.72);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }}
+    .page-header {{
+      flex-shrink: 0;
+    }}
+    .tx-scroll {{
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 0.35rem;
+      margin-top: 0.25rem;
+    }}
+    .tx-scroll::-webkit-scrollbar {{
+      width: 0.55rem;
+    }}
+    .tx-scroll::-webkit-scrollbar-thumb {{
+      background: rgba(148, 163, 184, 0.45);
+      border-radius: 999px;
+    }}
+    .tx-scroll::-webkit-scrollbar-track {{
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 999px;
     }}
     h1 {{ margin: 0 0 0.75rem; }}
     p {{ margin: 0 0 1rem; color: #cbd5e1; }}
+    .summary {{ margin-bottom: 0.75rem; }}
     .filters {{
       display: grid;
       gap: 0.85rem;
@@ -946,12 +979,16 @@ def render_page(block_data, filters, error=None, status=None):
 </head>
 <body>
   <main>
-    <h1>Hello, World!</h1>
-    {error_block}
-    {block_nav_html}
-    {filter_form_html}
-    <p>{html.escape(summary)}</p>
-    {transactions_html}
+    <div class="page-header">
+      <h1>Hello, World!</h1>
+      {error_block}
+      {block_nav_html}
+      {filter_form_html}
+      <p class="summary">{html.escape(summary)}</p>
+    </div>
+    <div class="tx-scroll" role="region" aria-label="OP_RETURN transactions">
+      {transactions_html}
+    </div>
   </main>
 </body>
 </html>"""
