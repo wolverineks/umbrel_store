@@ -1,0 +1,12 @@
+manifestVersion: 1
+id: wolverineks-hello-world
+name: Hello World
+version: "1.0.0"
+tagline: A minimal test web page
+category: Development
+port: 4000
+description: >-
+  Simple Hello World web page for testing Umbrel apps.
+developer: Wolverineks
+website: https://github.com/wolverineks
+repo: https://github.com/wolverineks/umbrel_store
