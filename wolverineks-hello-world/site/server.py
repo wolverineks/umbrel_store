@@ -8,12 +8,49 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
+def load_rpc_credentials():
+    user = os.environ.get("BITCOIN_RPC_USER", "").strip()
+    password = os.environ.get("BITCOIN_RPC_PASS", "").strip()
+    if user and password:
+        return user, password, "env"
+
+    cookie_path = os.environ.get("BITCOIN_COOKIE_FILE", "").strip()
+    if cookie_path and os.path.isfile(cookie_path):
+        with open(cookie_path, encoding="utf-8") as cookie_file:
+            cookie = cookie_file.read().strip()
+        if ":" in cookie:
+            cookie_user, cookie_password = cookie.split(":", 1)
+            return cookie_user, cookie_password, "cookie"
+
+    return None, None, "missing"
+
+
+def connection_status():
+    host = os.environ.get("BITCOIN_RPC_HOST", "").strip()
+    port = os.environ.get("BITCOIN_RPC_PORT", "").strip()
+    _, _, auth_source = load_rpc_credentials()
+    return {
+        "host": host or "(not set)",
+        "port": port or "(not set)",
+        "auth": auth_source,
+        "cookie_file": os.environ.get("BITCOIN_COOKIE_FILE", "(not set)"),
+    }
+
+
 def bitcoin_rpc(method, params=None):
     params = params or []
-    host = os.environ["BITCOIN_RPC_HOST"]
-    port = os.environ["BITCOIN_RPC_PORT"]
-    user = os.environ["BITCOIN_RPC_USER"]
-    password = os.environ["BITCOIN_RPC_PASS"]
+    host = os.environ.get("BITCOIN_RPC_HOST", "").strip()
+    port = os.environ.get("BITCOIN_RPC_PORT", "").strip()
+    user, password, auth_source = load_rpc_credentials()
+
+    if not host or not port:
+        raise RuntimeError(
+            "Bitcoin RPC host/port not configured. Reinstall the app after Bitcoin Node is installed."
+        )
+    if auth_source == "missing":
+        raise RuntimeError(
+            "Bitcoin RPC credentials not available. Reinstall the app with Bitcoin Node installed."
+        )
 
     payload = json.dumps(
         {"jsonrpc": "1.0", "id": "wolverineks-hello-world", "method": method, "params": params}
@@ -37,12 +74,13 @@ def latest_block_header():
     return bitcoin_rpc("getblockheader", [block_hash, True])
 
 
-def render_page(header=None, error=None):
+def render_page(header=None, error=None, status=None):
     header_json = html.escape(json.dumps(header, indent=2)) if header else ""
     error_text = html.escape(error) if error else ""
+    status_json = html.escape(json.dumps(status or {}, indent=2))
 
     if error:
-        body = f'<p class="error">{error_text}</p>'
+        body = f'<p class="error">{error_text}</p><pre>{status_json}</pre>'
     else:
         body = f"<pre>{header_json}</pre>"
 
@@ -74,7 +112,7 @@ def render_page(header=None, error=None):
     h1 {{ margin: 0 0 0.5rem; font-size: 2rem; }}
     p {{ margin: 0 0 1.25rem; color: #cbd5e1; }}
     pre {{
-      margin: 0;
+      margin: 0 0 1rem;
       padding: 1rem;
       overflow-x: auto;
       border-radius: 0.75rem;
@@ -83,7 +121,7 @@ def render_page(header=None, error=None):
       font-size: 0.9rem;
       line-height: 1.5;
     }}
-    .error {{ color: #fca5a5; }}
+    .error {{ color: #fca5a5; margin-bottom: 1rem; }}
   </style>
 </head>
 <body>
@@ -98,16 +136,17 @@ def render_page(header=None, error=None):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        status = connection_status()
         try:
             header = latest_block_header()
-            page = render_page(header=header)
-            status = 200
-        except (urllib.error.URLError, RuntimeError, KeyError, OSError) as exc:
-            page = render_page(error=str(exc))
-            status = 503
+            page = render_page(header=header, status=status)
+            code = 200
+        except (urllib.error.URLError, RuntimeError, KeyError, OSError, ValueError) as exc:
+            page = render_page(error=str(exc), status=status)
+            code = 503
 
         encoded = page.encode()
-        self.send_response(status)
+        self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()

@@ -12,10 +12,12 @@ services:
     command: python /app/server.py
     volumes:
       - ${APP_DATA_DIR}/site:/app:ro
+      - ${APP_BITCOIN_DATA_DIR}:/bitcoin:ro
     environment:
       BITCOIN_RPC_HOST: $APP_BITCOIN_NODE_IP
       BITCOIN_RPC_PORT: $APP_BITCOIN_RPC_PORT
       BITCOIN_RPC_USER: $APP_BITCOIN_RPC_USER
       BITCOIN_RPC_PASS: $APP_BITCOIN_RPC_PASS
+      BITCOIN_COOKIE_FILE: /bitcoin/.cookie
     restart: on-failure
     init: true

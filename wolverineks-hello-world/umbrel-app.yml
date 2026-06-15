@@ -4,7 +4,7 @@ name: Hello World
 tagline: Hello World plus the latest Bitcoin block header
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.1.0"
+version: "1.1.1"
 port: 4000
 description: >-
   Simple Hello World page that fetches the latest block header from your Umbrel Bitcoin Core node.
@@ -14,7 +14,7 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fetch and display the latest Bitcoin block header from Bitcoin Core via RPC.
+  Improve Bitcoin RPC auth with cookie fallback and clearer connection errors.
 dependencies:
   - bitcoin
 path: ""
