@@ -1,20 +1,20 @@
 manifestVersion: 1
 id: wolverineks-hello-world
 name: Hello World
-tagline: Hello World plus the latest Bitcoin block header
+tagline: Hello World, block header, and OP_RETURN txids
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.1.1"
+version: "1.2.0"
 port: 4000
 description: >-
-  Simple Hello World page that fetches the latest block header from your Umbrel Bitcoin Core node.
+  Simple Hello World page that fetches the latest block header and indexes all OP_RETURN txids from Bitcoin Core.
 developer: Wolverineks
 website: https://github.com/wolverineks
 repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Improve Bitcoin RPC auth with cookie fallback and clearer connection errors.
+  Scan the blockchain via Bitcoin Core RPC and list every txid with an OP_RETURN output.
 dependencies:
   - bitcoin
 path: ""

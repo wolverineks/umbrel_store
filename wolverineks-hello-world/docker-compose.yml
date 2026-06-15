@@ -12,8 +12,10 @@ services:
     command: python /app/server.py
     volumes:
       - ${APP_DATA_DIR}/site:/app:ro
+      - ${APP_DATA_DIR}/data:/data
       - ${APP_BITCOIN_DATA_DIR}:/bitcoin:ro
     environment:
+      OP_RETURN_INDEX_PATH: /data/op_return_index.json
       BITCOIN_RPC_HOST: $APP_BITCOIN_NODE_IP
       BITCOIN_RPC_PORT: $APP_BITCOIN_RPC_PORT
       BITCOIN_RPC_USER: $APP_BITCOIN_RPC_USER
