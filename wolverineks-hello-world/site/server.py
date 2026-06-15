@@ -113,16 +113,26 @@ def parse_pushdata(script_tail):
     return chunks
 
 
-def try_decode_text(data):
+def is_readable_text(text):
+    return bool(text) and all(
+        character.isprintable() or character in "\n\r\t" for character in text
+    )
+
+
+def try_decode_utf8(data):
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return None
-    if not text:
+    return text if is_readable_text(text) else None
+
+
+def try_decode_ascii(data):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
         return None
-    if all(character.isprintable() or character in "\n\r\t" for character in text):
-        return text
-    return None
+    return text if is_readable_text(text) else None
 
 
 def guess_protocol(data):
@@ -142,6 +152,7 @@ def decode_op_return_script(script_hex):
         return {
             "data_hex": "",
             "utf8": None,
+            "ascii": None,
             "protocol": None,
             "bytes": 0,
             "error": "invalid script hex",
@@ -151,6 +162,7 @@ def decode_op_return_script(script_hex):
         return {
             "data_hex": "",
             "utf8": None,
+            "ascii": None,
             "protocol": None,
             "bytes": 0,
             "error": "not an OP_RETURN script",
@@ -159,7 +171,8 @@ def decode_op_return_script(script_hex):
     data = b"".join(parse_pushdata(script[1:]))
     return {
         "data_hex": data.hex(),
-        "utf8": try_decode_text(data),
+        "utf8": try_decode_utf8(data),
+        "ascii": try_decode_ascii(data),
         "protocol": guess_protocol(data),
         "bytes": len(data),
         "error": None,
@@ -217,7 +230,11 @@ def render_decoded_output(decoded):
         lines.append(
             f"<div><span class=\"label\">protocol</span> {html.escape(decoded['protocol'])}</div>"
         )
-    if decoded.get("utf8") is not None:
+    if decoded.get("ascii") is not None:
+        lines.append(
+            f"<div><span class=\"label\">ascii</span> {html.escape(decoded['ascii'])}</div>"
+        )
+    if decoded.get("utf8") is not None and decoded.get("utf8") != decoded.get("ascii"):
         lines.append(
             f"<div><span class=\"label\">utf-8</span> {html.escape(decoded['utf8'])}</div>"
         )
