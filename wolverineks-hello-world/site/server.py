@@ -69,7 +69,7 @@ def bitcoin_rpc(method, params=None, timeout=60):
     return body["result"]
 
 
-def has_op_return_output(vout):
+def is_op_return_output(vout):
     script = vout.get("scriptPubKey", {})
     if script.get("type") == "nulldata":
         return True
@@ -77,31 +77,72 @@ def has_op_return_output(vout):
     return asm.startswith("OP_RETURN")
 
 
-def latest_block_header():
-    block_hash = bitcoin_rpc("getbestblockhash")
-    return bitcoin_rpc("getblockheader", [block_hash, True])
+def extract_op_returns(tx):
+    outputs = []
+    for vout in tx.get("vout", []):
+        if not is_op_return_output(vout):
+            continue
+        script = vout.get("scriptPubKey", {})
+        outputs.append(
+            {
+                "vout": vout.get("n"),
+                "value": vout.get("value", 0),
+                "asm": script.get("asm", ""),
+                "hex": script.get("hex", ""),
+            }
+        )
+    return outputs
 
 
-def latest_block_op_return_txids():
+def latest_block_op_return_transactions():
     block_hash = bitcoin_rpc("getbestblockhash")
     block = bitcoin_rpc("getblock", [block_hash, 2], timeout=120)
-    txids = []
+    transactions = []
     for tx in block.get("tx", []):
-        if any(has_op_return_output(vout) for vout in tx.get("vout", [])):
-            txids.append(tx["txid"])
-    return txids
+        op_returns = extract_op_returns(tx)
+        if op_returns:
+            transactions.append({"txid": tx["txid"], "op_returns": op_returns})
+    return {
+        "height": block.get("height"),
+        "transactions": transactions,
+    }
 
 
-def render_page(header, op_return_txids, error=None, status=None):
-    header_json = html.escape(json.dumps(header, indent=2)) if header else ""
-    error_text = html.escape(error) if error else ""
-    status_json = html.escape(json.dumps(status or {}, indent=2))
-    txid_lines = "\n".join(html.escape(txid) for txid in op_return_txids)
-    summary = (
-        f"{len(op_return_txids)} OP_RETURN transaction(s) in the latest block "
-        f"(height {header.get('height') if header else '?'})"
+def render_op_return_output(output):
+    return (
+        f"<div class=\"op-return\">"
+        f"<div><span class=\"label\">vout</span> {html.escape(str(output['vout']))}</div>"
+        f"<div><span class=\"label\">asm</span> {html.escape(output['asm'])}</div>"
+        f"<div><span class=\"label\">hex</span> {html.escape(output['hex'])}</div>"
+        f"</div>"
     )
 
+
+def render_transactions(transactions):
+    if not transactions:
+        return '<p class="empty">No OP_RETURN transactions in the latest block.</p>'
+
+    items = []
+    for tx in transactions:
+        op_return_html = "".join(render_op_return_output(output) for output in tx["op_returns"])
+        items.append(
+            f"<details class=\"tx\">"
+            f"<summary>{html.escape(tx['txid'])}</summary>"
+            f"<div class=\"op-returns\">{op_return_html}</div>"
+            f"</details>"
+        )
+    return "\n".join(items)
+
+
+def render_page(block_data, error=None, status=None):
+    error_text = html.escape(error) if error else ""
+    status_json = html.escape(json.dumps(status or {}, indent=2))
+    tx_count = len(block_data.get("transactions", []))
+    summary = (
+        f"{tx_count} OP_RETURN transaction(s) in the latest block "
+        f"(height {block_data.get('height', '?')})"
+    )
+    transactions_html = render_transactions(block_data.get("transactions", []))
     error_block = f'<p class="error">{error_text}</p><pre>{status_json}</pre>' if error else ""
 
     return f"""<!DOCTYPE html>
@@ -128,14 +169,57 @@ def render_page(header, op_return_txids, error=None, status=None):
       background: rgba(15, 23, 42, 0.72);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
     }}
-    h1, h2 {{ margin: 0 0 0.75rem; }}
-    h2 {{ font-size: 1.2rem; margin-top: 1.75rem; }}
+    h1 {{ margin: 0 0 0.75rem; }}
     p {{ margin: 0 0 1rem; color: #cbd5e1; }}
-    pre, .txids {{
-      margin: 0;
+    .tx {{
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 0.75rem;
+      background: rgba(0, 0, 0, 0.2);
+      margin-bottom: 0.75rem;
+      overflow: hidden;
+    }}
+    .tx summary {{
+      cursor: pointer;
+      padding: 0.9rem 1rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85rem;
+      word-break: break-all;
+      list-style: none;
+    }}
+    .tx summary::-webkit-details-marker {{
+      display: none;
+    }}
+    .tx summary::before {{
+      content: "▸ ";
+      color: #93c5fd;
+    }}
+    .tx[open] summary::before {{
+      content: "▾ ";
+    }}
+    .op-returns {{
+      padding: 0 1rem 1rem;
+      display: grid;
+      gap: 0.75rem;
+    }}
+    .op-return {{
+      padding: 0.85rem 1rem;
+      border-radius: 0.65rem;
+      background: rgba(0, 0, 0, 0.35);
+      font-size: 0.85rem;
+      line-height: 1.6;
+      word-break: break-all;
+    }}
+    .label {{
+      color: #93c5fd;
+      font-weight: 600;
+      margin-right: 0.35rem;
+    }}
+    .empty, .error {{ color: #cbd5e1; }}
+    .error {{ color: #fca5a5; margin-bottom: 1rem; }}
+    pre {{
+      margin: 0 0 1rem;
       padding: 1rem;
       overflow: auto;
-      max-height: 24rem;
       border-radius: 0.75rem;
       background: rgba(0, 0, 0, 0.35);
       color: #e2e8f0;
@@ -144,18 +228,14 @@ def render_page(header, op_return_txids, error=None, status=None):
       white-space: pre-wrap;
       word-break: break-all;
     }}
-    .error {{ color: #fca5a5; margin-bottom: 1rem; }}
   </style>
 </head>
 <body>
   <main>
     <h1>Hello, World!</h1>
     {error_block}
-    <h2>Latest block header</h2>
-    <pre>{header_json}</pre>
-    <h2>OP_RETURN transactions in latest block</h2>
     <p>{html.escape(summary)}</p>
-    <div class="txids">{txid_lines or "(none)"}</div>
+    {transactions_html}
   </main>
 </body>
 </html>"""
@@ -165,12 +245,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         status = connection_status()
         try:
-            header = latest_block_header()
-            op_return_txids = latest_block_op_return_txids()
-            page = render_page(header=header, op_return_txids=op_return_txids, status=status)
+            block_data = latest_block_op_return_transactions()
+            page = render_page(block_data=block_data, status=status)
             code = 200
         except (urllib.error.URLError, RuntimeError, KeyError, OSError, ValueError) as exc:
-            page = render_page(header=None, op_return_txids=[], error=str(exc), status=status)
+            page = render_page(block_data={"height": "?", "transactions": []}, error=str(exc), status=status)
             code = 503
 
         encoded = page.encode()

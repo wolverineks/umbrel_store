@@ -1,20 +1,20 @@
 manifestVersion: 1
 id: wolverineks-hello-world
 name: Hello World
-tagline: Hello World, latest block header, and OP_RETURN txids
+tagline: Hello World and expandable OP_RETURN txids
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.2.1"
+version: "1.2.2"
 port: 4000
 description: >-
-  Simple Hello World page that fetches the latest block header and OP_RETURN txids from the latest block.
+  Simple Hello World page that lists OP_RETURN txids from the latest block with expandable output details.
 developer: Wolverineks
 website: https://github.com/wolverineks
 repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  List txids with OP_RETURN outputs from only the most recent block.
+  Remove block header display and add expand/collapse OP_RETURN details per txid.
 dependencies:
   - bitcoin
 path: ""
