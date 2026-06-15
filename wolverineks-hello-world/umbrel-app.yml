@@ -4,7 +4,7 @@ name: Hello World
 tagline: Hello World and expandable OP_RETURN txids
 icon: https://svgur.com/i/mvA.svg
 category: Development
-version: "1.3.0"
+version: "1.3.1"
 port: 4000
 description: >-
   Simple Hello World page that lists OP_RETURN txids from Bitcoin blocks with expandable output details.
@@ -14,7 +14,7 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fix blank Umbrel iframe layout and prevent hangs when loading large blocks from Bitcoin RPC.
+  Open instantly with a fast shell page, then load block data asynchronously from Bitcoin RPC.
 dependencies:
   - bitcoin
 path: ""

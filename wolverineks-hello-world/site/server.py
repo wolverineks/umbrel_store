@@ -761,9 +761,7 @@ def filters_are_active(filters):
     return bool(filters["q"]) or filters["readable"] or filters["min_sats"] > 0 or filters["protocol"] != "all"
 
 
-def render_page(block_data, filters, error=None, status=None):
-    error_text = html.escape(error) if error else ""
-    status_json = html.escape(json.dumps(status or {}, indent=2))
+def build_block_content(block_data, filters):
     all_transactions = block_data.get("all_transactions", block_data.get("transactions", []))
     filtered_transactions = block_data.get("transactions", [])
     total_count = len(all_transactions)
@@ -782,39 +780,36 @@ def render_page(block_data, filters, error=None, status=None):
     else:
         summary = f"{total_count} OP_RETURN transaction(s) in {block_label}"
 
-    block_nav_html = render_block_nav(block_data, filters)
-    filter_form_html = render_filter_form(filters)
-    transactions_html = render_transactions(
-        filtered_transactions,
-        filters_active=active,
-        block_height=height if height != "?" else None,
-    )
-    error_block = f'<p class="error">{error_text}</p><pre>{status_json}</pre>' if error else ""
+    return {
+        "summary": summary,
+        "block_nav_html": render_block_nav(block_data, filters),
+        "transactions_html": render_transactions(
+            filtered_transactions,
+            filters_active=active,
+            block_height=height if height != "?" else None,
+        ),
+    }
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hello World</title>
-  <style>
-    html, body {{
+
+def page_styles():
+    return """
+    html, body {
       margin: 0;
       height: 100%;
-    }}
-    body {{
-      position: fixed;
-      inset: 0;
+    }
+    body {
       box-sizing: border-box;
       overflow: hidden;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: radial-gradient(circle at top, #1f2937 0%, #0b0f17 55%, #05070b 100%);
       color: #f8fafc;
       padding: 1.5rem;
-    }}
-    main {{
+      min-height: 100vh;
+      height: 100vh;
+    }
+    main {
       width: min(100%, 56rem);
-      height: 100%;
+      height: calc(100vh - 3rem);
       margin: 0 auto;
       padding: 2rem;
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -826,33 +821,34 @@ def render_page(block_data, filters, error=None, status=None):
       min-height: 0;
       overflow: hidden;
       box-sizing: border-box;
-    }}
-    .page-header {{
+    }
+    .page-header {
       flex-shrink: 0;
-    }}
-    .tx-scroll {{
+    }
+    .tx-scroll {
       flex: 1;
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
       padding-right: 0.35rem;
       margin-top: 0.25rem;
-    }}
-    .tx-scroll::-webkit-scrollbar {{
+    }
+    .tx-scroll::-webkit-scrollbar {
       width: 0.55rem;
-    }}
-    .tx-scroll::-webkit-scrollbar-thumb {{
+    }
+    .tx-scroll::-webkit-scrollbar-thumb {
       background: rgba(148, 163, 184, 0.45);
       border-radius: 999px;
-    }}
-    .tx-scroll::-webkit-scrollbar-track {{
+    }
+    .tx-scroll::-webkit-scrollbar-track {
       background: rgba(0, 0, 0, 0.2);
       border-radius: 999px;
-    }}
-    h1 {{ margin: 0 0 0.75rem; }}
-    p {{ margin: 0 0 1rem; color: #cbd5e1; }}
-    .summary {{ margin-bottom: 0.75rem; }}
-    .filters {{
+    }
+    h1 { margin: 0 0 0.75rem; }
+    p { margin: 0 0 1rem; color: #cbd5e1; }
+    .summary { margin-bottom: 0.75rem; }
+    .loading { color: #94a3b8; font-style: italic; }
+    .filters {
       display: grid;
       gap: 0.85rem;
       margin-bottom: 1.25rem;
@@ -860,30 +856,30 @@ def render_page(block_data, filters, error=None, status=None):
       border-radius: 0.85rem;
       background: rgba(0, 0, 0, 0.25);
       border: 1px solid rgba(255, 255, 255, 0.08);
-    }}
-    .filter-row {{
+    }
+    .filter-row {
       display: flex;
       flex-wrap: wrap;
       gap: 0.85rem;
       align-items: end;
-    }}
-    .filters label {{
+    }
+    .filters label {
       display: grid;
       gap: 0.35rem;
       color: #cbd5e1;
       font-size: 0.85rem;
       min-width: 10rem;
       flex: 1 1 12rem;
-    }}
-    .filters label.checkbox {{
+    }
+    .filters label.checkbox {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       min-height: 2.4rem;
-    }}
+    }
     .filters input,
     .filters select,
-    .filters button {{
+    .filters button {
       width: 100%;
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 0.55rem;
@@ -891,37 +887,37 @@ def render_page(block_data, filters, error=None, status=None):
       color: #f8fafc;
       padding: 0.65rem 0.75rem;
       font: inherit;
-    }}
-    .filters button {{
+    }
+    .filters button {
       cursor: pointer;
       background: #2563eb;
       border-color: #2563eb;
       font-weight: 600;
-    }}
-    .filter-actions {{
+    }
+    .filter-actions {
       display: flex;
       gap: 0.75rem;
       align-items: center;
       margin-left: auto;
-    }}
-    .filter-actions button {{
+    }
+    .filter-actions button {
       width: auto;
       min-width: 8rem;
-    }}
-    .reset {{
+    }
+    .reset {
       color: #93c5fd;
       text-decoration: none;
       font-size: 0.9rem;
       white-space: nowrap;
-    }}
-    .block-nav {{
+    }
+    .block-nav {
       display: flex;
       flex-wrap: wrap;
       gap: 0.65rem;
       align-items: center;
       margin-bottom: 1rem;
-    }}
-    .nav-btn {{
+    }
+    .nav-btn {
       display: inline-block;
       padding: 0.55rem 0.85rem;
       border-radius: 0.55rem;
@@ -931,67 +927,67 @@ def render_page(block_data, filters, error=None, status=None):
       text-decoration: none;
       font-size: 0.9rem;
       font-weight: 600;
-    }}
-    .nav-btn:hover {{
+    }
+    .nav-btn:hover {
       border-color: #2563eb;
       color: #93c5fd;
-    }}
-    .nav-btn.disabled {{
+    }
+    .nav-btn.disabled {
       opacity: 0.45;
       cursor: not-allowed;
-    }}
-    .block-height {{
+    }
+    .block-height {
       color: #cbd5e1;
       font-size: 0.95rem;
       font-weight: 600;
       margin: 0 0.25rem;
-    }}
-    .tx {{
+    }
+    .tx {
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 0.75rem;
       background: rgba(0, 0, 0, 0.2);
       margin-bottom: 0.75rem;
       overflow: hidden;
-    }}
-    .tx summary {{
+    }
+    .tx summary {
       cursor: pointer;
       padding: 0.9rem 1rem;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 0.85rem;
       word-break: break-all;
       list-style: none;
-    }}
-    .tx summary::-webkit-details-marker {{
+    }
+    .tx summary::-webkit-details-marker {
       display: none;
-    }}
-    .tx summary::before {{
+    }
+    .tx summary::before {
       content: "▸ ";
       color: #93c5fd;
-    }}
-    .tx[open] summary::before {{
+    }
+    .tx[open] summary::before {
       content: "▾ ";
-    }}
-    .op-returns {{
+    }
+    .op-returns {
       padding: 0 1rem 1rem;
       display: grid;
       gap: 0.75rem;
-    }}
-    .op-return {{
+    }
+    .op-return {
       padding: 0.85rem 1rem;
       border-radius: 0.65rem;
       background: rgba(0, 0, 0, 0.35);
       font-size: 0.85rem;
       line-height: 1.6;
       word-break: break-all;
-    }}
-    .label {{
+    }
+    .label {
       color: #93c5fd;
       font-weight: 600;
       margin-right: 0.35rem;
-    }}
-    .empty, .error {{ color: #cbd5e1; }}
-    .error {{ color: #fca5a5; margin-bottom: 1rem; }}
-    pre {{
+    }
+    .empty, .error { color: #cbd5e1; }
+    .error { color: #fca5a5; margin-bottom: 1rem; }
+    pre {
       margin: 0 0 1rem;
       padding: 1rem;
       overflow: auto;
@@ -1002,24 +998,99 @@ def render_page(block_data, filters, error=None, status=None):
       line-height: 1.5;
       white-space: pre-wrap;
       word-break: break-all;
-    }}
-  </style>
+    }
+    """
+
+
+def render_shell(filters):
+    filter_form_html = render_filter_form(filters)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hello World</title>
+  <style>{page_styles()}</style>
 </head>
 <body>
   <main>
     <div class="page-header">
       <h1>Hello, World!</h1>
-      {error_block}
-      {block_nav_html}
+      <div id="block-nav-slot">
+        <nav class="block-nav" aria-label="Block navigation">
+          <span class="block-height loading">Loading block...</span>
+        </nav>
+      </div>
       {filter_form_html}
-      <p class="summary">{html.escape(summary)}</p>
+      <p class="summary loading">Loading block data from Bitcoin RPC...</p>
     </div>
     <div class="tx-scroll" role="region" aria-label="OP_RETURN transactions">
-      {transactions_html}
+      <p class="loading">Loading transactions...</p>
     </div>
   </main>
+  <script>
+    function escapeHtml(value) {{
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }}
+
+    async function loadBlockData() {{
+      const summary = document.querySelector(".summary");
+      const txScroll = document.querySelector(".tx-scroll");
+      const navSlot = document.getElementById("block-nav-slot");
+      try {{
+        const response = await fetch("/api/block" + window.location.search);
+        const data = await response.json();
+        if (data.error) {{
+          summary.className = "summary";
+          summary.textContent = "Could not load block data.";
+          if (data.block_nav_html) {{
+            navSlot.innerHTML = data.block_nav_html;
+          }}
+          txScroll.innerHTML =
+            '<p class="error">' + escapeHtml(data.error) + "</p>" +
+            "<pre>" + escapeHtml(JSON.stringify(data.status || {{}}, null, 2)) + "</pre>";
+          return;
+        }}
+        summary.className = "summary";
+        summary.textContent = data.summary;
+        if (data.block_nav_html) {{
+          navSlot.innerHTML = data.block_nav_html;
+        }}
+        txScroll.innerHTML = data.transactions_html;
+      }} catch (error) {{
+        summary.className = "summary";
+        summary.textContent = "Could not load block data.";
+        txScroll.innerHTML = '<p class="error">' + escapeHtml(error) + "</p>";
+      }}
+    }}
+
+    loadBlockData();
+  </script>
 </body>
 </html>"""
+
+
+def load_block_api_payload(filters):
+    status = connection_status()
+    try:
+        block_data = block_op_return_transactions_with_timeout(filters.get("height"))
+        all_transactions = block_data["transactions"]
+        block_data["all_transactions"] = all_transactions
+        block_data["transactions"] = filter_transactions(all_transactions, filters)
+        content = build_block_content(block_data, filters)
+        return 200, {"error": None, "status": status, **content}
+    except Exception as exc:
+        return 503, {
+            "error": str(exc),
+            "status": status,
+            "summary": "Could not load block data.",
+            "block_nav_html": "",
+            "transactions_html": "",
+        }
 
 
 def send_text_response(handler, status_code, content_type, body):
@@ -1034,6 +1105,15 @@ def send_text_response(handler, status_code, content_type, body):
         return
 
 
+def send_json_response(handler, status_code, payload):
+    send_text_response(
+        handler,
+        status_code,
+        "application/json; charset=utf-8",
+        json.dumps(payload),
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
@@ -1041,25 +1121,13 @@ class Handler(BaseHTTPRequestHandler):
             send_text_response(self, 200, "text/plain; charset=utf-8", "ok")
             return
 
-        status = connection_status()
         filters = parse_filters(self.path)
-        try:
-            block_data = block_op_return_transactions_with_timeout(filters.get("height"))
-            all_transactions = block_data["transactions"]
-            block_data["all_transactions"] = all_transactions
-            block_data["transactions"] = filter_transactions(all_transactions, filters)
-            page = render_page(block_data=block_data, filters=filters, status=status)
-            code = 200
-        except Exception as exc:
-            page = render_page(
-                block_data={"height": "?", "transactions": [], "all_transactions": []},
-                filters=filters,
-                error=str(exc),
-                status=status,
-            )
-            code = 503
+        if path == "/api/block":
+            code, payload = load_block_api_payload(filters)
+            send_json_response(self, code, payload)
+            return
 
-        send_text_response(self, code, "text/html; charset=utf-8", page)
+        send_text_response(self, 200, "text/html; charset=utf-8", render_shell(filters))
 
     def log_message(self, format, *args):
         return
