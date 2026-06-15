@@ -8,6 +8,7 @@ import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import parse_qs, urlencode, urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 
 def load_rpc_credentials():
@@ -66,7 +67,13 @@ def bitcoin_rpc(method, params=None, timeout=60):
         body = json.loads(response.read())
 
     if body.get("error"):
-        raise RuntimeError(body["error"])
+        error = body["error"]
+        if isinstance(error, dict):
+            raise RuntimeError(error.get("message") or json.dumps(error))
+        raise RuntimeError(str(error))
+
+    if "result" not in body:
+        raise RuntimeError("Bitcoin RPC returned an unexpected response")
 
     return body["result"]
 
@@ -218,7 +225,7 @@ def block_op_return_transactions(height=None):
         target_height = max(0, min(int(height), tip_height))
 
     block_hash = bitcoin_rpc("getblockhash", [target_height])
-    block = bitcoin_rpc("getblock", [block_hash, 2], timeout=120)
+    block = bitcoin_rpc("getblock", [block_hash, 1], timeout=180)
     transactions = []
     for tx in block.get("tx", []):
         op_returns = extract_op_returns(tx)
@@ -260,13 +267,13 @@ def build_query_params(filters, height=None):
     params = {}
     if height is not None:
         params["height"] = str(height)
-    if filters["q"]:
+    if filters.get("q"):
         params["q"] = filters["q"]
-    if filters["protocol"] != "all":
+    if filters.get("protocol", "all") != "all":
         params["protocol"] = filters["protocol"]
-    if filters["readable"]:
+    if filters.get("readable"):
         params["readable"] = "1"
-    if filters["min_sats"] > 0:
+    if filters.get("min_sats", 0) > 0:
         params["min_sats"] = str(filters["min_sats"])
     return params
 
@@ -422,7 +429,14 @@ def render_filter_form(filters):
         if height is not None
         else ""
     )
-    reset_href = html.escape(build_url({}, height))
+    reset_filters = {
+        "q": "",
+        "protocol": "all",
+        "readable": False,
+        "min_sats": 0,
+        "height": height,
+    }
+    reset_href = html.escape(build_url(reset_filters, height))
 
     def selected(value):
         return " selected" if protocol == value else ""
@@ -712,8 +726,25 @@ def render_page(block_data, filters, error=None, status=None):
 </html>"""
 
 
+def send_text_response(handler, status_code, content_type, body):
+    encoded = body.encode() if isinstance(body, str) else body
+    handler.send_response(status_code)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(encoded)))
+    handler.end_headers()
+    try:
+        handler.wfile.write(encoded)
+    except (BrokenPipeError, ConnectionResetError):
+        return
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        path = urlparse(self.path).path
+        if path in ("/health", "/healthz"):
+            send_text_response(self, 200, "text/plain; charset=utf-8", "ok")
+            return
+
         status = connection_status()
         filters = parse_filters(self.path)
         try:
@@ -723,7 +754,7 @@ class Handler(BaseHTTPRequestHandler):
             block_data["transactions"] = filter_transactions(all_transactions, filters)
             page = render_page(block_data=block_data, filters=filters, status=status)
             code = 200
-        except (urllib.error.URLError, RuntimeError, KeyError, OSError, ValueError) as exc:
+        except Exception as exc:
             page = render_page(
                 block_data={"height": "?", "transactions": [], "all_transactions": []},
                 filters=filters,
@@ -732,16 +763,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             code = 503
 
-        encoded = page.encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+        send_text_response(self, code, "text/html; charset=utf-8", page)
 
     def log_message(self, format, *args):
         return
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 if __name__ == "__main__":
-    HTTPServer(("0.0.0.0", 3000), Handler).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", 3000), Handler).serve_forever()

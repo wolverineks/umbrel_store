@@ -19,5 +19,7 @@ services:
       BITCOIN_RPC_USER: $APP_BITCOIN_RPC_USER
       BITCOIN_RPC_PASS: $APP_BITCOIN_RPC_PASS
       BITCOIN_COOKIE_FILE: /bitcoin/.cookie
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
     restart: on-failure
     init: true
