@@ -5,10 +5,16 @@ import json
 import os
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import parse_qs, urlencode, urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+
+
+BLOCK_FETCH_TIMEOUT = 90
+_block_fetch_executor = ThreadPoolExecutor(max_workers=4)
 
 
 def load_rpc_credentials():
@@ -283,7 +289,15 @@ def iter_transactions_from_block_hex(block_hex):
     offset = 80
     tx_count, offset = read_varint(data, offset)
     for _ in range(tx_count):
-        start, end = skip_transaction(data, offset)
+        try:
+            parsed = skip_transaction(data, offset)
+        except ValueError:
+            break
+        if parsed is None:
+            break
+        start, end = parsed
+        if start >= end or end > len(data):
+            break
         yield data[start:end].hex()
         offset = end
 
@@ -374,18 +388,17 @@ def enrich_op_return_tx(tx_hex, op_returns):
 
 
 def fetch_block(block_hash):
-    last_result = None
-    for verbosity in (2, 1, 0):
-        result = bitcoin_rpc("getblock", [block_hash, verbosity], timeout=180)
-        last_result = result
+    for verbosity in (2, 1):
+        result = bitcoin_rpc("getblock", [block_hash, verbosity], timeout=60)
         if isinstance(result, dict):
             return result
 
-    if isinstance(last_result, str):
-        return {"_raw_hex": True, "height": None, "_block_hex": last_result}
+    result = bitcoin_rpc("getblock", [block_hash, 0], timeout=60)
+    if isinstance(result, str):
+        return {"_raw_hex": True, "height": None, "_block_hex": result}
 
     raise RuntimeError(
-        f"Unexpected getblock response type from Bitcoin RPC: {type(last_result).__name__}"
+        f"Unexpected getblock response type from Bitcoin RPC: {type(result).__name__}"
     )
 
 
@@ -393,9 +406,12 @@ def normalize_block_transactions(block):
     if block.get("_raw_hex"):
         transactions = []
         for tx_hex in iter_transactions_from_block_hex(block["_block_hex"]):
-            op_returns = scan_raw_tx_for_op_returns(tx_hex)
-            if op_returns:
-                transactions.append(enrich_op_return_tx(tx_hex, op_returns))
+            try:
+                op_returns = scan_raw_tx_for_op_returns(tx_hex)
+                if op_returns:
+                    transactions.append(enrich_op_return_tx(tx_hex, op_returns))
+            except Exception:
+                continue
         return transactions
 
     transactions = []
@@ -444,6 +460,16 @@ def extract_op_returns(tx):
             }
         )
     return outputs
+
+
+def block_op_return_transactions_with_timeout(height=None):
+    future = _block_fetch_executor.submit(block_op_return_transactions, height)
+    try:
+        return future.result(timeout=BLOCK_FETCH_TIMEOUT)
+    except FuturesTimeoutError as exc:
+        raise RuntimeError(
+            f"Timed out after {BLOCK_FETCH_TIMEOUT}s while loading block data from Bitcoin RPC."
+        ) from exc
 
 
 def block_op_return_transactions(height=None):
@@ -773,20 +799,22 @@ def render_page(block_data, filters, error=None, status=None):
   <title>Hello World</title>
   <style>
     html, body {{
+      margin: 0;
       height: 100%;
-      overflow: hidden;
     }}
     body {{
-      margin: 0;
+      position: fixed;
+      inset: 0;
       box-sizing: border-box;
+      overflow: hidden;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: radial-gradient(circle at top, #1f2937 0%, #0b0f17 55%, #05070b 100%);
       color: #f8fafc;
       padding: 1.5rem;
-      display: flex;
     }}
     main {{
-      width: min(96vw, 56rem);
+      width: min(100%, 56rem);
+      height: 100%;
       margin: 0 auto;
       padding: 2rem;
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -795,9 +823,9 @@ def render_page(block_data, filters, error=None, status=None):
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
       display: flex;
       flex-direction: column;
-      flex: 1;
       min-height: 0;
       overflow: hidden;
+      box-sizing: border-box;
     }}
     .page-header {{
       flex-shrink: 0;
@@ -1016,7 +1044,7 @@ class Handler(BaseHTTPRequestHandler):
         status = connection_status()
         filters = parse_filters(self.path)
         try:
-            block_data = block_op_return_transactions(filters.get("height"))
+            block_data = block_op_return_transactions_with_timeout(filters.get("height"))
             all_transactions = block_data["transactions"]
             block_data["all_transactions"] = all_transactions
             block_data["transactions"] = filter_transactions(all_transactions, filters)
