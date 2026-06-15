@@ -5,6 +5,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from decimal import Decimal, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -69,6 +70,102 @@ def bitcoin_rpc(method, params=None, timeout=60):
     return body["result"]
 
 
+def btc_to_sats(value):
+    return int(
+        (Decimal(str(value)) * Decimal(100_000_000)).to_integral_value(rounding=ROUND_HALF_UP)
+    )
+
+
+def parse_pushdata(script_tail):
+    chunks = []
+    index = 0
+    while index < len(script_tail):
+        opcode = script_tail[index]
+        if opcode == 0:
+            index += 1
+            continue
+        if 1 <= opcode <= 75:
+            length = opcode
+            index += 1
+            chunks.append(script_tail[index : index + length])
+            index += length
+            continue
+        if opcode == 0x4C:
+            length = script_tail[index + 1]
+            index += 2
+            chunks.append(script_tail[index : index + length])
+            index += length
+            continue
+        if opcode == 0x4D:
+            length = int.from_bytes(script_tail[index + 1 : index + 3], "little")
+            index += 3
+            chunks.append(script_tail[index : index + length])
+            index += length
+            continue
+        if opcode == 0x4E:
+            length = int.from_bytes(script_tail[index + 1 : index + 5], "little")
+            index += 5
+            chunks.append(script_tail[index : index + length])
+            index += length
+            continue
+        chunks.append(script_tail[index:])
+        break
+    return chunks
+
+
+def try_decode_text(data):
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if not text:
+        return None
+    if all(character.isprintable() or character in "\n\r\t" for character in text):
+        return text
+    return None
+
+
+def guess_protocol(data):
+    if data.startswith(b"omni"):
+        return "Omni Layer"
+    if data.startswith(b"CNTRPRTY"):
+        return "Counterparty"
+    if data.startswith(b"ORD"):
+        return "Ordinals / meta-protocol"
+    return None
+
+
+def decode_op_return_script(script_hex):
+    try:
+        script = bytes.fromhex(script_hex)
+    except ValueError:
+        return {
+            "data_hex": "",
+            "utf8": None,
+            "protocol": None,
+            "bytes": 0,
+            "error": "invalid script hex",
+        }
+
+    if not script or script[0] != 0x6A:
+        return {
+            "data_hex": "",
+            "utf8": None,
+            "protocol": None,
+            "bytes": 0,
+            "error": "not an OP_RETURN script",
+        }
+
+    data = b"".join(parse_pushdata(script[1:]))
+    return {
+        "data_hex": data.hex(),
+        "utf8": try_decode_text(data),
+        "protocol": guess_protocol(data),
+        "bytes": len(data),
+        "error": None,
+    }
+
+
 def is_op_return_output(vout):
     script = vout.get("scriptPubKey", {})
     if script.get("type") == "nulldata":
@@ -83,12 +180,15 @@ def extract_op_returns(tx):
         if not is_op_return_output(vout):
             continue
         script = vout.get("scriptPubKey", {})
+        script_hex = script.get("hex", "")
+        decoded = decode_op_return_script(script_hex)
         outputs.append(
             {
                 "vout": vout.get("n"),
-                "value": vout.get("value", 0),
+                "sats": btc_to_sats(vout.get("value", 0)),
                 "asm": script.get("asm", ""),
-                "hex": script.get("hex", ""),
+                "hex": script_hex,
+                "decoded": decoded,
             }
         )
     return outputs
@@ -108,12 +208,33 @@ def latest_block_op_return_transactions():
     }
 
 
+def render_decoded_output(decoded):
+    if decoded.get("error"):
+        return f"<div><span class=\"label\">decoded</span> {html.escape(decoded['error'])}</div>"
+
+    lines = [f"<div><span class=\"label\">data bytes</span> {decoded['bytes']}</div>"]
+    if decoded.get("protocol"):
+        lines.append(
+            f"<div><span class=\"label\">protocol</span> {html.escape(decoded['protocol'])}</div>"
+        )
+    if decoded.get("utf8") is not None:
+        lines.append(
+            f"<div><span class=\"label\">utf-8</span> {html.escape(decoded['utf8'])}</div>"
+        )
+    lines.append(
+        f"<div><span class=\"label\">data hex</span> {html.escape(decoded.get('data_hex', ''))}</div>"
+    )
+    return "\n".join(lines)
+
+
 def render_op_return_output(output):
     return (
         f"<div class=\"op-return\">"
         f"<div><span class=\"label\">vout</span> {html.escape(str(output['vout']))}</div>"
+        f"<div><span class=\"label\">sats</span> {html.escape(str(output['sats']))}</div>"
+        f"{render_decoded_output(output['decoded'])}"
         f"<div><span class=\"label\">asm</span> {html.escape(output['asm'])}</div>"
-        f"<div><span class=\"label\">hex</span> {html.escape(output['hex'])}</div>"
+        f"<div><span class=\"label\">script hex</span> {html.escape(output['hex'])}</div>"
         f"</div>"
     )
 
