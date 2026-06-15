@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import cgi
-import html
 import json
 import mimetypes
 import os
@@ -52,20 +51,6 @@ def list_directory(relative_path=""):
         entries.append(file_entry(os.path.join(abs_path, name), child_rel))
     entries.sort(key=lambda item: (item["type"] != "folder", item["name"].lower()))
     return {"path": rel, "entries": entries}
-
-
-def human_size(size):
-    if size is None:
-        return "—"
-    units = ["B", "KB", "MB", "GB", "TB"]
-    value = float(size)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{size} B"
 
 
 PAGE_STYLES = """
