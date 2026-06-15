@@ -4,10 +4,14 @@ services:
   app_proxy:
     environment:
       APP_HOST: wolverineks-hello-world_server_1
-      APP_PORT: 8080
+      APP_PORT: 3000
 
   server:
-    build: .
-    image: wolverineks-hello-world:local
+    image: python:3-alpine
+    user: "1000:1000"
+    working_dir: /app
+    command: python -m http.server 3000 --bind 0.0.0.0
+    volumes:
+      - ${APP_DATA_DIR}/site:/app:ro
     restart: on-failure
     init: true
