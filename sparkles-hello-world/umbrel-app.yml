@@ -2,7 +2,6 @@ manifestVersion: 1
 id: wolverineks-hello-world
 name: Hello World
 tagline: A simple hello world app for Umbrel
-tagline: Replace this tagline with your app's tagline
 icon: https://svgur.com/i/mvA.svg
 category: Development
 version: "1.0.0"
@@ -13,12 +12,10 @@ description: >-
 developer: Wolverineks
 website: https://github.com/wolverineks
 submitter: Wolverineks
-submission: https://github.com/wolverineks/umbrel_hello_world
-repo: https://github.com/wolverineks/umbrel_hello_world
-support: https://github.com/wolverineks/umbrel_hello_world/issues
+submission: https://github.com/wolverineks/umbrel_store
+repo: https://github.com/wolverineks/umbrel_store
+support: https://github.com/wolverineks/umbrel_store/issues
 gallery:
-  - https://i.imgur.com/yyVG0Jb.jpeg
-  - https://i.imgur.com/yyVG0Jb.jpeg
   - https://i.imgur.com/yyVG0Jb.jpeg
 releaseNotes: >-
   Initial version for personal testing.
