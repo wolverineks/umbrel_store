@@ -23,6 +23,18 @@ async function ensureDataRoot() {
         throw new Error(`cannot access data directory ${DATA_ROOT}: ${message}`);
     }
 }
+function validateEntryName(name) {
+    if (!name || name === "." || name === "..") {
+        return "invalid name";
+    }
+    if (name.includes("/") || name.includes("\\")) {
+        return "invalid name";
+    }
+    if (name.includes("\0") || /[\u0000-\u001f\u007f]/.test(name)) {
+        return "invalid name";
+    }
+    return null;
+}
 function safePath(relativePath = "") {
     const normalized = relativePath.trim().replace(/\\/g, "/").replace(/^\//, "");
     const root = node_path_1.default.resolve(DATA_ROOT);
@@ -555,6 +567,20 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function encodeDataValue(value) {
+  return encodeURIComponent(String(value || ""));
+}
+
+function decodeDataValue(value) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function formatSize(size) {
   if (size === null || size === undefined) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -638,8 +664,8 @@ function setPath(path) {
 function breadcrumbEntry(button) {
   return {
     id: "",
-    path: button.dataset.path || "",
-    name: button.dataset.name || "",
+    path: decodeDataValue(button.dataset.path),
+    name: decodeDataValue(button.dataset.name),
     type: "folder",
     originalPath: "",
   };
@@ -656,7 +682,7 @@ function renderBreadcrumbs(path) {
   let current = "";
   for (const part of parts) {
     current = current ? \`\${current}/\${part}\` : part;
-    html += \` <span>/</span> <button type="button" class="crumb" data-path="\${escapeHtml(current)}" data-name="\${escapeHtml(part)}">\${escapeHtml(part)}</button>\`;
+    html += \` <span>/</span> <button type="button" class="crumb" data-path="\${encodeDataValue(current)}" data-name="\${encodeDataValue(part)}">\${escapeHtml(part)}</button>\`;
   }
   root.innerHTML = html;
   root.querySelectorAll(".crumb").forEach(bindBreadcrumb);
@@ -677,11 +703,11 @@ function filteredEntries(entries) {
 
 function entryFromCard(card) {
   return {
-    id: card.dataset.id || "",
-    path: card.dataset.path || "",
-    name: card.dataset.name || "",
+    id: decodeDataValue(card.dataset.id),
+    path: decodeDataValue(card.dataset.path),
+    name: decodeDataValue(card.dataset.name),
     type: card.dataset.type || "file",
-    originalPath: card.dataset.originalPath || "",
+    originalPath: decodeDataValue(card.dataset.originalPath),
   };
 }
 
@@ -896,7 +922,7 @@ function bindBreadcrumb(button) {
       menuState.longPress = false;
       return;
     }
-    setPath(button.dataset.path || "");
+    setPath(decodeDataValue(button.dataset.path));
   });
 
   button.addEventListener("contextmenu", (event) => {
@@ -951,11 +977,11 @@ function renderEntries(data) {
     return \`
       <article
         class="card"
-        data-id="\${escapeHtml(entry.id || "")}"
-        data-path="\${escapeHtml(entry.path)}"
-        data-name="\${escapeHtml(entry.name)}"
+        data-id="\${encodeDataValue(entry.id || "")}"
+        data-path="\${encodeDataValue(entry.path)}"
+        data-name="\${encodeDataValue(entry.name)}"
         data-type="\${entry.type}"
-        data-original-path="\${escapeHtml(entry.originalPath || "")}"
+        data-original-path="\${encodeDataValue(entry.originalPath || "")}"
       >
         <div class="icon">\${icon}</div>
         <div class="name">\${escapeHtml(entry.name)}</div>
@@ -1256,7 +1282,10 @@ function sendBytes(res, statusCode, contentType, body, downloadName) {
         "Content-Length": body.length,
     };
     if (downloadName) {
-        headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
+        const asciiFallback = downloadName.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+        const encoded = encodeURIComponent(downloadName);
+        headers["Content-Disposition"] =
+            `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
     }
     res.writeHead(statusCode, headers);
     res.end(body);
@@ -1447,7 +1476,8 @@ async function handlePost(req, res, url) {
             const payload = JSON.parse(body.toString("utf8") || "{}");
             const parent = payload.path ?? "";
             const name = (payload.name ?? "").trim();
-            if (!name || name.includes("/") || name === "." || name === "..") {
+            const nameError = validateEntryName(name);
+            if (nameError) {
                 sendJson(res, 400, { error: "invalid folder name" });
                 return;
             }
@@ -1478,7 +1508,8 @@ async function handlePost(req, res, url) {
             const body = await readBody(req);
             const { pathValue, fileName, fileData } = parseMultipartUpload(contentType, body);
             const filename = node_path_1.default.basename(fileName);
-            if (!filename || filename === "." || filename === "..") {
+            const fileNameError = validateEntryName(filename);
+            if (fileNameError) {
                 sendJson(res, 400, { error: "invalid file name" });
                 return;
             }
