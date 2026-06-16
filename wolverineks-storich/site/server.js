@@ -136,6 +136,32 @@ async function uniqueSiblingPath(relPath, tag) {
 async function uniqueRestorePath(relPath) {
     return uniqueSiblingPath(relPath, "restored");
 }
+async function renameEntry(sourcePath, newName) {
+    const trimmedName = newName.trim();
+    const nameError = validateEntryName(trimmedName);
+    if (nameError) {
+        throw new Error("invalid name");
+    }
+    const { relPath: sourceRel } = safePath(sourcePath);
+    if (isProtectedPath(sourceRel)) {
+        throw new Error("invalid path");
+    }
+    const parent = node_path_1.default.posix.dirname(sourceRel.replace(/\\/g, "/"));
+    const normalizedParent = parent === "." ? "" : parent;
+    const targetRel = normalizedParent ? `${normalizedParent}/${trimmedName}` : trimmedName;
+    const { absPath: sourceAbs } = safePath(sourceRel);
+    await (0, promises_1.stat)(sourceAbs);
+    if (sourceRel === targetRel) {
+        return fileEntry(sourceAbs, sourceRel);
+    }
+    const { absPath: targetAbs } = safePath(targetRel);
+    if ((0, node_fs_1.existsSync)(targetAbs)) {
+        throw new Error("name already exists");
+    }
+    await (0, promises_1.mkdir)(node_path_1.default.dirname(targetAbs), { recursive: true });
+    await (0, promises_1.rename)(sourceAbs, targetAbs);
+    return fileEntry(targetAbs, targetRel);
+}
 async function moveEntry(sourcePath, destinationFolder) {
     const { relPath: sourceRel } = safePath(sourcePath);
     if (isProtectedPath(sourceRel)) {
@@ -829,6 +855,7 @@ const previewState = { images: [], index: 0 };
 const previewTouch = { startX: 0, startY: 0, active: false };
 let longPressTimer = null;
 let dragEntry = null;
+let renameEntry = null;
 
 function escapeHtml(value) {
   return String(value)
@@ -928,6 +955,20 @@ function navigateAfterDelete(deletedPath) {
   state.path = parentPath(deletedPath);
   state.query = "";
   document.getElementById("search").value = "";
+}
+
+function navigateAfterRename(oldPath, newPath) {
+  const oldNorm = normalizePath(oldPath);
+  const newNorm = normalizePath(newPath);
+  const current = normalizePath(state.path);
+  if (!oldNorm || !newNorm) return;
+  if (current === oldNorm) {
+    state.path = newNorm;
+    return;
+  }
+  if (current.startsWith(oldNorm + "/")) {
+    state.path = newNorm + current.slice(oldNorm.length);
+  }
 }
 
 function setPath(path) {
@@ -1091,6 +1132,7 @@ function contextMenuActions(entry, source) {
   if (source === "breadcrumb") {
     return [
       { id: "open", label: "Open" },
+      { id: "rename", label: "Rename", hidden: !entry.path },
       { id: "share", label: "Share" },
       { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
     ];
@@ -1111,6 +1153,7 @@ function contextMenuActions(entry, source) {
     { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
     { id: "preview", label: "Preview", hidden: !isImage },
     { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
+    { id: "rename", label: "Rename" },
     { id: "share", label: "Share" },
     { id: "delete", label: "Move to trash", danger: true },
   ];
@@ -1288,6 +1331,10 @@ async function runMenuAction(action, entry) {
   if (action === "share") {
     await copyShareLink(entry);
     document.getElementById("status").textContent = "Link copied to clipboard";
+    return;
+  }
+  if (action === "rename") {
+    openRenameDialog(entry);
     return;
   }
   if (action === "delete") {
@@ -1680,6 +1727,54 @@ async function submitNewFolder() {
   refreshListing();
 }
 
+function closeRenameDialog() {
+  const dialog = document.getElementById("rename-dialog");
+  dialog.classList.remove("open");
+  dialog.setAttribute("aria-hidden", "true");
+  document.getElementById("rename-input").value = "";
+  renameEntry = null;
+}
+
+function openRenameDialog(entry) {
+  if (state.view !== "drive" || !entry?.path) return;
+  renameEntry = entry;
+  const dialog = document.getElementById("rename-dialog");
+  const input = document.getElementById("rename-input");
+  document.getElementById("rename-current-name").textContent = entry.name;
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+  input.value = entry.name;
+  input.focus();
+  input.select();
+}
+
+async function submitRename() {
+  const input = document.getElementById("rename-input");
+  const name = input.value.trim();
+  if (!name || !renameEntry) {
+    input.focus();
+    return;
+  }
+  if (name === renameEntry.name) {
+    closeRenameDialog();
+    return;
+  }
+  const oldPath = renameEntry.path;
+  const response = await fetch("/api/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: oldPath, name }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showError(data.error || "Could not rename item");
+    return;
+  }
+  navigateAfterRename(oldPath, data.entry.path);
+  closeRenameDialog();
+  refreshListing();
+}
+
 async function uploadFiles(fileList) {
   const files = Array.from(fileList || []).filter((file) => file && file.name);
   if (!files.length) return;
@@ -1815,6 +1910,15 @@ document.getElementById("new-folder-name").addEventListener("keydown", (event) =
 document.getElementById("new-folder-dialog").addEventListener("click", (event) => {
   if (event.target.id === "new-folder-dialog") closeNewFolderDialog();
 });
+document.getElementById("rename-cancel").addEventListener("click", closeRenameDialog);
+document.getElementById("rename-submit").addEventListener("click", submitRename);
+document.getElementById("rename-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") submitRename();
+  if (event.key === "Escape") closeRenameDialog();
+});
+document.getElementById("rename-dialog").addEventListener("click", (event) => {
+  if (event.target.id === "rename-dialog") closeRenameDialog();
+});
 document.getElementById("upload-input").addEventListener("change", (event) => {
   uploadFiles(event.target.files);
   event.target.value = "";
@@ -1853,6 +1957,8 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape") {
     closePreviewDialog();
+    closeRenameDialog();
+    closeNewFolderDialog();
     closeContextMenu();
   }
 });
@@ -2036,6 +2142,17 @@ function renderPage() {
       <div class="dialog-actions">
         <button id="new-folder-cancel" class="secondary" type="button">Cancel</button>
         <button id="new-folder-create" class="primary" type="button">Create</button>
+      </div>
+    </div>
+  </div>
+  <div id="rename-dialog" class="dialog-backdrop" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-labelledby="rename-title">
+      <h2 id="rename-title">Rename</h2>
+      <p>Rename <strong id="rename-current-name"></strong></p>
+      <input id="rename-input" type="text" placeholder="New name" autocomplete="off" maxlength="255">
+      <div class="dialog-actions">
+        <button id="rename-cancel" class="secondary" type="button">Cancel</button>
+        <button id="rename-submit" class="primary" type="button">Rename</button>
       </div>
     </div>
   </div>
@@ -2450,6 +2567,46 @@ async function handlePost(req, res, url) {
             else {
                 const message = error instanceof Error ? error.message : String(error);
                 sendJson(res, 500, { error: message });
+            }
+        }
+        return;
+    }
+    if (route === "/api/rename") {
+        try {
+            const body = await readBody(req);
+            const payload = JSON.parse(body.toString("utf8") || "{}");
+            const relPath = (payload.path ?? "").trim();
+            const name = (payload.name ?? "").trim();
+            if (!relPath) {
+                sendJson(res, 400, { error: "path is required" });
+                return;
+            }
+            if (!name) {
+                sendJson(res, 400, { error: "name is required" });
+                return;
+            }
+            const entry = await renameEntry(relPath, name);
+            sendJson(res, 200, { entry });
+        }
+        catch (error) {
+            if (error instanceof FileNotFoundError) {
+                sendJson(res, 404, { error: "item not found" });
+            }
+            else if (error instanceof Error && error.message === "invalid path") {
+                sendJson(res, 400, { error: error.message });
+            }
+            else if (error instanceof Error && error.message === "invalid name") {
+                sendJson(res, 400, { error: error.message });
+            }
+            else if (error instanceof Error && error.message === "name already exists") {
+                sendJson(res, 409, { error: error.message });
+            }
+            else if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+                sendJson(res, 404, { error: "item not found" });
+            }
+            else {
+                const message = error instanceof Error ? error.message : String(error);
+                sendJson(res, 400, { error: message });
             }
         }
         return;
