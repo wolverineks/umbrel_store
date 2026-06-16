@@ -9,6 +9,11 @@ const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
+const PWA_ICONS = {
+    "/apple-touch-icon.png": { file: "apple-touch-icon.png", type: "image/png" },
+    "/icon-192.png": { file: "icon-192.png", type: "image/png" },
+    "/icon-512.png": { file: "icon-512.png", type: "image/png" },
+};
 const TRASH_DIR = node_path_1.default.join(DATA_ROOT, ".trash");
 const TRASH_ITEMS_DIR = node_path_1.default.join(TRASH_DIR, "items");
 const TRASH_INDEX_PATH = node_path_1.default.join(TRASH_DIR, "index.json");
@@ -343,6 +348,9 @@ main {
   flex-direction: column;
   min-width: 0;
   min-height: 100vh;
+}
+.mobile-nav {
+  display: none;
 }
 .topbar {
   display: flex;
@@ -764,7 +772,54 @@ body.view-trash .toolbar-trash {
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
   aside { display: none; }
+  .mobile-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--sidebar);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .mobile-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    margin-right: auto;
+  }
+  .mobile-nav button {
+    border: 0;
+    background: transparent;
+    padding: 0.55rem 0.75rem;
+    border-radius: 0.65rem;
+    font: inherit;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .mobile-nav button.active,
+  .mobile-nav button:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
 }
+@media (display-mode: standalone) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+`;
+const SERVICE_WORKER = `
+self.addEventListener("install", (event) => {
+  self.skipWaiting();
+});
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+self.addEventListener("fetch", (event) => {
+  event.respondWith(fetch(event.request));
+});
 `;
 const PAGE_SCRIPT = `
 const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null };
@@ -817,6 +872,8 @@ function formatDate(value) {
 function setActiveNav() {
   document.getElementById("nav-drive").classList.toggle("active", state.view === "drive");
   document.getElementById("nav-trash").classList.toggle("active", state.view === "trash");
+  document.getElementById("mobile-nav-drive")?.classList.toggle("active", state.view === "drive");
+  document.getElementById("mobile-nav-trash")?.classList.toggle("active", state.view === "trash");
   document.body.classList.toggle("view-trash", state.view === "trash");
   document.getElementById("search").placeholder =
     state.view === "trash" ? "Search in Trash" : "Search in My Drive";
@@ -1364,8 +1421,7 @@ function bindFolderDropTarget(element, getDestinationPath) {
   });
 }
 
-function bindTrashDrop() {
-  const trashNav = document.getElementById("nav-trash");
+function bindTrashDropTarget(trashNav) {
   trashNav.addEventListener("dragover", (event) => {
     if (!isInternalDrag(event) || state.view !== "drive") return;
     event.preventDefault();
@@ -1390,6 +1446,13 @@ function bindTrashDrop() {
       showError(String(error));
     }
   });
+}
+
+function bindTrashDrop() {
+  const trashNav = document.getElementById("nav-trash");
+  const mobileTrashNav = document.getElementById("mobile-nav-trash");
+  if (trashNav) bindTrashDropTarget(trashNav);
+  if (mobileTrashNav) bindTrashDropTarget(mobileTrashNav);
 }
 
 function bindCard(card) {
@@ -1758,6 +1821,8 @@ document.getElementById("upload-input").addEventListener("change", (event) => {
 });
 document.getElementById("nav-drive").addEventListener("click", () => setView("drive"));
 document.getElementById("nav-trash").addEventListener("click", () => setView("trash"));
+document.getElementById("mobile-nav-drive")?.addEventListener("click", () => setView("drive"));
+document.getElementById("mobile-nav-trash")?.addEventListener("click", () => setView("trash"));
 document.getElementById("empty-trash").addEventListener("click", emptyTrash);
 document.getElementById("context-menu").addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
@@ -1858,14 +1923,44 @@ renderBreadcrumbs(state.path);
 if (!applyShareLinkFromUrl()) {
   refreshListing();
 }
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
 `;
+function renderManifest() {
+    return JSON.stringify({
+        name: "Storich",
+        short_name: "Storich",
+        description: "Self-hosted cloud storage for your files",
+        start_url: "/",
+        scope: "/",
+        display: "standalone",
+        orientation: "any",
+        background_color: "#f8fafc",
+        theme_color: "#2563EB",
+        icons: [
+            { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+            { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+            { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+        ],
+    });
+}
 function renderPage() {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#2563EB">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Storich">
+  <meta name="description" content="Self-hosted cloud storage for your files">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
   <title>Storich</title>
   <style>${PAGE_STYLES}</style>
 </head>
@@ -1882,6 +1977,14 @@ function renderPage() {
     </nav>
   </aside>
   <main>
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Main navigation">
+      <div class="mobile-brand">
+        <div class="brand-badge">S</div>
+        <span>Storich</span>
+      </div>
+      <button id="mobile-nav-drive" class="active" type="button">My Drive</button>
+      <button id="mobile-nav-trash" type="button">Trash</button>
+    </nav>
     <div class="topbar">
       <label class="search">
         <span>⌕</span>
@@ -2250,6 +2353,25 @@ async function handleGet(req, res, url) {
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             sendJson(res, 500, { error: message });
+        }
+        return;
+    }
+    if (route === "/manifest.webmanifest") {
+        sendBytes(res, 200, "application/manifest+json", Buffer.from(renderManifest()));
+        return;
+    }
+    if (route === "/sw.js") {
+        sendBytes(res, 200, "application/javascript; charset=utf-8", Buffer.from(SERVICE_WORKER));
+        return;
+    }
+    const pwaIcon = PWA_ICONS[route];
+    if (pwaIcon) {
+        try {
+            const icon = await (0, promises_1.readFile)(node_path_1.default.join(__dirname, pwaIcon.file));
+            sendBytes(res, 200, pwaIcon.type, icon);
+        }
+        catch {
+            sendJson(res, 404, { error: "icon not found" });
         }
         return;
     }
