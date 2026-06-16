@@ -1179,21 +1179,57 @@ body.view-trash .toolbar-trash {
   flex-direction: column;
   gap: 0.5rem;
 }
-.pinned-section,
-.categories-section {
+.sidebar-section {
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
 }
 .pinned-section {
   margin-top: 0.5rem;
 }
-.pinned-label {
+.sidebar-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 0;
+  background: transparent;
+  padding: 0 0.75rem 0.5rem;
+  font: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.sidebar-section-toggle:hover {
+  color: var(--text);
+}
+.sidebar-section-label {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted);
-  padding: 0 0.75rem 0.5rem;
+}
+.sidebar-section-chevron {
+  font-size: 0.7rem;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.sidebar-section.collapsed .sidebar-section-chevron {
+  transform: rotate(-90deg);
+}
+.sidebar-section.collapsed .sidebar-section-body {
+  display: none;
+}
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-right: 0.75rem;
+}
+.sidebar-section-header .sidebar-section-toggle {
+  flex: 1;
+  min-width: 0;
+  width: auto;
 }
 .pinned-list {
   display: grid;
@@ -1240,20 +1276,6 @@ body.view-trash .toolbar-trash {
   padding: 0.35rem 0.75rem;
   color: var(--muted);
   font-size: 0.85rem;
-}
-.categories-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0 0.75rem 0.5rem;
-}
-.categories-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
 }
 .categories-add {
   border: 0;
@@ -1322,8 +1344,8 @@ body.view-trash .toolbar-trash {
   background: var(--sidebar);
   border-bottom: 1px solid var(--border);
 }
-.mobile-pinned .pinned-label,
-.mobile-categories .categories-label {
+.mobile-pinned .sidebar-section-toggle,
+.mobile-categories .sidebar-section-toggle {
   padding-left: 0.25rem;
 }
 .dialog-backdrop {
@@ -1535,8 +1557,6 @@ body.view-trash .toolbar-trash {
     background: var(--accent-soft);
     color: var(--accent);
   }
-  .pinned-section,
-  .categories-section,
   .sidebar-scroll {
     display: none;
   }
@@ -1575,6 +1595,7 @@ let renameEntry = null;
 let categoryDialogMode = "create";
 let categoryDialogId = null;
 let listingRequestId = 0;
+const sidebarSections = { pinned: false, categories: false };
 
 function escapeHtml(value) {
   return String(value)
@@ -1613,6 +1634,51 @@ function formatSize(size) {
 
 function formatDate(value) {
   return new Date(value).toLocaleString();
+}
+
+function loadSidebarSectionState() {
+  try {
+    const raw = localStorage.getItem("storich-sidebar-sections");
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (typeof saved.pinned === "boolean") sidebarSections.pinned = saved.pinned;
+    if (typeof saved.categories === "boolean") sidebarSections.categories = saved.categories;
+  } catch {
+    // ignore saved state errors
+  }
+}
+
+function saveSidebarSectionState() {
+  try {
+    localStorage.setItem("storich-sidebar-sections", JSON.stringify(sidebarSections));
+  } catch {
+    // ignore saved state errors
+  }
+}
+
+function applySidebarSectionState() {
+  for (const section of ["pinned", "categories"]) {
+    const collapsed = sidebarSections[section];
+    document.querySelectorAll(\`[data-section="\${section}"]\`).forEach((root) => {
+      root.classList.toggle("collapsed", collapsed);
+      const toggle = root.querySelector(".sidebar-section-toggle");
+      if (toggle) toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
+  }
+}
+
+function bindSidebarSectionToggles() {
+  document.querySelectorAll(".sidebar-section-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const root = button.closest("[data-section]");
+      if (!root) return;
+      const section = root.dataset.section;
+      if (!section || !(section in sidebarSections)) return;
+      sidebarSections[section] = !sidebarSections[section];
+      saveSidebarSectionState();
+      applySidebarSectionState();
+    });
+  });
 }
 
 function setActiveNav() {
@@ -3464,6 +3530,9 @@ function applyShareLinkFromUrl() {
 bindFileDrop();
 bindFolderBackgroundMenu();
 bindTrashDrop();
+loadSidebarSectionState();
+bindSidebarSectionToggles();
+applySidebarSectionState();
 setActiveNav();
 renderBreadcrumbs(state.path);
 refreshPinnedSidebar();
@@ -3524,16 +3593,22 @@ function renderPage() {
       <button id="nav-trash" type="button">Trash</button>
     </nav>
     <div class="sidebar-scroll">
-      <div class="pinned-section">
-        <div class="pinned-label">Pinned</div>
-        <div id="pinned-list" class="pinned-list"></div>
+      <div class="sidebar-section pinned-section" data-section="pinned">
+        <button type="button" class="sidebar-section-toggle" aria-expanded="true" aria-controls="pinned-list">
+          <span class="sidebar-section-chevron" aria-hidden="true">▾</span>
+          <span class="sidebar-section-label">Pinned</span>
+        </button>
+        <div id="pinned-list" class="pinned-list sidebar-section-body"></div>
       </div>
-      <div class="categories-section">
-        <div class="categories-header">
-          <div class="categories-label">Categories</div>
+      <div class="sidebar-section categories-section" data-section="categories">
+        <div class="sidebar-section-header">
+          <button type="button" class="sidebar-section-toggle" aria-expanded="true" aria-controls="categories-list">
+            <span class="sidebar-section-chevron" aria-hidden="true">▾</span>
+            <span class="sidebar-section-label">Categories</span>
+          </button>
           <button id="add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
         </div>
-        <div id="categories-list" class="categories-list"></div>
+        <div id="categories-list" class="categories-list sidebar-section-body"></div>
       </div>
     </div>
   </aside>
@@ -3547,16 +3622,22 @@ function renderPage() {
       <button id="mobile-nav-important" type="button">Important</button>
       <button id="mobile-nav-trash" type="button">Trash</button>
     </nav>
-    <div class="mobile-pinned">
-      <div class="pinned-label">Pinned</div>
-      <div id="mobile-pinned-list" class="pinned-list"></div>
+    <div class="mobile-pinned sidebar-section pinned-section" data-section="pinned">
+      <button type="button" class="sidebar-section-toggle" aria-expanded="true" aria-controls="mobile-pinned-list">
+        <span class="sidebar-section-chevron" aria-hidden="true">▾</span>
+        <span class="sidebar-section-label">Pinned</span>
+      </button>
+      <div id="mobile-pinned-list" class="pinned-list sidebar-section-body"></div>
     </div>
-    <div class="mobile-categories">
-      <div class="categories-header">
-        <div class="categories-label">Categories</div>
+    <div class="mobile-categories sidebar-section categories-section" data-section="categories">
+      <div class="sidebar-section-header">
+        <button type="button" class="sidebar-section-toggle" aria-expanded="true" aria-controls="mobile-categories-list">
+          <span class="sidebar-section-chevron" aria-hidden="true">▾</span>
+          <span class="sidebar-section-label">Categories</span>
+        </button>
         <button id="mobile-add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
       </div>
-      <div id="mobile-categories-list" class="categories-list"></div>
+      <div id="mobile-categories-list" class="categories-list sidebar-section-body"></div>
     </div>
     <div class="topbar">
       <label class="search">
