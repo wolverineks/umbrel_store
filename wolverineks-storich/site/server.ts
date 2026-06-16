@@ -149,7 +149,7 @@ function createTrashId(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function uniqueRestorePath(relPath: string): Promise<string> {
+async function uniqueSiblingPath(relPath: string, tag: string): Promise<string> {
   const { absPath } = safePath(relPath);
   if (!existsSync(absPath)) {
     return relPath;
@@ -161,7 +161,7 @@ async function uniqueRestorePath(relPath: string): Promise<string> {
   const stem = ext ? base.slice(0, -ext.length) : base;
 
   for (let index = 1; index < 1000; index += 1) {
-    const candidateName = `${stem} (restored ${index})${ext}`;
+    const candidateName = `${stem} (${tag} ${index})${ext}`;
     const candidate = dir && dir !== "." ? `${dir}/${candidateName}` : candidateName;
     const { absPath: candidateAbs } = safePath(candidate);
     if (!existsSync(candidateAbs)) {
@@ -169,7 +169,46 @@ async function uniqueRestorePath(relPath: string): Promise<string> {
     }
   }
 
-  throw new Error("could not find a free name to restore item");
+  throw new Error("could not find a free name");
+}
+
+async function uniqueRestorePath(relPath: string): Promise<string> {
+  return uniqueSiblingPath(relPath, "restored");
+}
+
+async function moveEntry(sourcePath: string, destinationFolder: string): Promise<FileEntry> {
+  const { relPath: sourceRel } = safePath(sourcePath);
+  if (isProtectedPath(sourceRel)) {
+    throw new Error("invalid path");
+  }
+
+  const destFolder = destinationFolder.trim().replace(/\\/g, "/").replace(/^\//, "");
+  if (destFolder && isProtectedPath(destFolder)) {
+    throw new Error("invalid path");
+  }
+
+  if (sourceRel === destFolder) {
+    throw new Error("cannot move into itself");
+  }
+  if (destFolder && (destFolder === sourceRel || destFolder.startsWith(`${sourceRel}/`))) {
+    throw new Error("cannot move folder into itself");
+  }
+
+  const currentParent = path.posix.dirname(sourceRel.replace(/\\/g, "/"));
+  const normalizedParent = currentParent === "." ? "" : currentParent;
+  if (normalizedParent === destFolder) {
+    throw new Error("item is already in this folder");
+  }
+
+  const name = path.basename(sourceRel);
+  let targetRel = destFolder ? `${destFolder}/${name}` : name;
+  targetRel = await uniqueSiblingPath(targetRel, "moved");
+
+  const { absPath: sourceAbs } = safePath(sourceRel);
+  const { absPath: targetAbs } = safePath(targetRel);
+  await mkdir(path.dirname(targetAbs), { recursive: true });
+  await rename(sourceAbs, targetAbs);
+  return fileEntry(targetAbs, targetRel);
 }
 
 function isProtectedPath(relPath: string): boolean {
@@ -492,8 +531,11 @@ label.upload-btn input { display: none; }
   padding: 0;
   border-radius: 0.35rem;
 }
-.breadcrumbs button.crumb.selected {
+.breadcrumbs button.crumb.selected,
+.breadcrumbs button.crumb.drop-target {
   background: var(--accent-soft);
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.35rem;
 }
 .status {
   margin-bottom: 1rem;
@@ -624,6 +666,20 @@ label.upload-btn input { display: none; }
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
+.card.dragging {
+  opacity: 0.45;
+}
+.card.drop-target,
+.breadcrumbs button.crumb.drop-target,
+#nav-trash.drop-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  background: var(--accent-soft);
+}
+#nav-trash.drop-target {
+  color: #b91c1c;
+  background: #fef2f2;
+}
 .toolbar-trash {
   display: none;
 }
@@ -688,7 +744,9 @@ body.view-trash .toolbar-trash {
 const PAGE_SCRIPT = `
 const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null };
 const menuState = { entry: null, longPress: false };
+const DRAG_MIME = "application/x-storich-entry";
 let longPressTimer = null;
+let dragEntry = null;
 
 function escapeHtml(value) {
   return String(value)
@@ -1097,7 +1155,150 @@ async function runMenuAction(action, entry) {
   }
 }
 
+function isInternalDrag(event) {
+  return Array.from(event.dataTransfer?.types || []).includes(DRAG_MIME);
+}
+
+function clearDropTargets() {
+  document.querySelectorAll(".drop-target").forEach((node) => {
+    node.classList.remove("drop-target");
+  });
+}
+
+function readDragEntry(dataTransfer) {
+  try {
+    return JSON.parse(dataTransfer.getData(DRAG_MIME));
+  } catch {
+    return null;
+  }
+}
+
+function dragPayload(entry) {
+  return JSON.stringify({ path: entry.path, type: entry.type, name: entry.name });
+}
+
+function canDropOnFolder(entry, destinationPath) {
+  const dest = normalizePath(destinationPath);
+  const source = normalizePath(entry.path);
+  if (!source) return false;
+  if (parentPath(source) === dest) return false;
+  if (entry.type === "folder" && (dest === source || dest.startsWith(source + "/"))) {
+    return false;
+  }
+  return true;
+}
+
+async function moveEntryToFolder(entry, destinationPath) {
+  const response = await fetch("/api/move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: entry.path, destination: destinationPath }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not move item");
+  if (isPathInsideTree(state.path, entry.path)) {
+    navigateAfterDelete(entry.path);
+  }
+  refreshListing();
+}
+
+async function trashDraggedEntry(entry) {
+  const response = await fetch("/api/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: entry.path }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not move to trash");
+  navigateAfterDelete(entry.path);
+  refreshListing();
+}
+
+function bindFolderDropTarget(element, getDestinationPath) {
+  element.addEventListener("dragover", (event) => {
+    if (!isInternalDrag(event) || state.view !== "drive") return;
+    const entry = dragEntry;
+    if (!entry) return;
+    const destination = getDestinationPath();
+    if (!canDropOnFolder(entry, destination)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    element.classList.add("drop-target");
+  });
+
+  element.addEventListener("dragleave", (event) => {
+    if (!element.contains(event.relatedTarget)) {
+      element.classList.remove("drop-target");
+    }
+  });
+
+  element.addEventListener("drop", async (event) => {
+    if (!isInternalDrag(event) || state.view !== "drive") return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearDropTargets();
+    const entry = readDragEntry(event.dataTransfer) || dragEntry;
+    if (!entry) return;
+    const destination = getDestinationPath();
+    if (!canDropOnFolder(entry, destination)) return;
+    try {
+      await moveEntryToFolder(entry, destination);
+    } catch (error) {
+      showError(String(error));
+    }
+  });
+}
+
+function bindTrashDrop() {
+  const trashNav = document.getElementById("nav-trash");
+  trashNav.addEventListener("dragover", (event) => {
+    if (!isInternalDrag(event) || state.view !== "drive") return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    trashNav.classList.add("drop-target");
+  });
+  trashNav.addEventListener("dragleave", (event) => {
+    if (!trashNav.contains(event.relatedTarget)) {
+      trashNav.classList.remove("drop-target");
+    }
+  });
+  trashNav.addEventListener("drop", async (event) => {
+    if (!isInternalDrag(event) || state.view !== "drive") return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearDropTargets();
+    const entry = readDragEntry(event.dataTransfer) || dragEntry;
+    if (!entry) return;
+    try {
+      await trashDraggedEntry(entry);
+    } catch (error) {
+      showError(String(error));
+    }
+  });
+}
+
 function bindCard(card) {
+  if (state.view === "drive") {
+    card.setAttribute("draggable", "true");
+    card.addEventListener("dragstart", (event) => {
+      const entry = entryFromCard(card);
+      dragEntry = entry;
+      event.dataTransfer.setData(DRAG_MIME, dragPayload(entry));
+      event.dataTransfer.effectAllowed = "move";
+      card.classList.add("dragging");
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging");
+      dragEntry = null;
+      clearDropTargets();
+    });
+    if (card.dataset.type === "folder") {
+      bindFolderDropTarget(card, () => entryFromCard(card).path);
+    }
+  } else {
+    card.removeAttribute("draggable");
+  }
+
   card.addEventListener("click", async () => {
     if (menuState.longPress) {
       menuState.longPress = false;
@@ -1138,6 +1339,10 @@ function bindCard(card) {
 }
 
 function bindBreadcrumb(button) {
+  if (state.view === "drive") {
+    bindFolderDropTarget(button, () => decodeDataValue(button.dataset.path));
+  }
+
   button.addEventListener("click", () => {
     if (menuState.longPress) {
       menuState.longPress = false;
@@ -1321,6 +1526,7 @@ async function uploadFiles(fileList) {
 let dropDepth = 0;
 
 function isFileDrag(event) {
+  if (isInternalDrag(event)) return false;
   return Array.from(event.dataTransfer?.types || []).includes("Files");
 }
 
@@ -1474,6 +1680,7 @@ function applyShareLinkFromUrl() {
 }
 
 bindFileDrop();
+bindTrashDrop();
 setActiveNav();
 renderBreadcrumbs(state.path);
 if (!applyShareLinkFromUrl()) {
@@ -1903,6 +2110,33 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
       } else {
         const message = error instanceof Error ? error.message : String(error);
         sendJson(res, 500, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/move") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string; destination?: string };
+      const relPath = (payload.path ?? "").trim();
+      const destination = (payload.destination ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      const entry = await moveEntry(relPath, destination);
+      sendJson(res, 200, { entry });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "item not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        sendJson(res, 404, { error: "item not found" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
       }
     }
     return;
