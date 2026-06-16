@@ -8,6 +8,9 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
+const TRASH_DIR = node_path_1.default.join(DATA_ROOT, ".trash");
+const TRASH_ITEMS_DIR = node_path_1.default.join(TRASH_DIR, "items");
+const TRASH_INDEX_PATH = node_path_1.default.join(TRASH_DIR, "index.json");
 async function ensureDataRoot() {
     if ((0, node_fs_1.existsSync)(DATA_ROOT)) {
         return;
@@ -64,6 +67,155 @@ async function listDirectory(relativePath = "") {
         return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
     });
     return { path: relPath, entries };
+}
+async function ensureTrashDir() {
+    await (0, promises_1.mkdir)(TRASH_ITEMS_DIR, { recursive: true });
+}
+async function readTrashIndex() {
+    await ensureTrashDir();
+    if (!(0, node_fs_1.existsSync)(TRASH_INDEX_PATH)) {
+        return [];
+    }
+    try {
+        const raw = await (0, promises_1.readFile)(TRASH_INDEX_PATH, "utf8");
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed.items) ? parsed.items : [];
+    }
+    catch {
+        return [];
+    }
+}
+async function writeTrashIndex(items) {
+    await ensureTrashDir();
+    await (0, promises_1.writeFile)(TRASH_INDEX_PATH, JSON.stringify({ items }, null, 2));
+}
+function trashStorageName(id, name) {
+    const safeName = name.replace(/[^\w.\-()+@ ]+/g, "_") || "item";
+    return `${id}__${safeName}`;
+}
+function createTrashId() {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+async function uniqueRestorePath(relPath) {
+    const { absPath } = safePath(relPath);
+    if (!(0, node_fs_1.existsSync)(absPath)) {
+        return relPath;
+    }
+    const dir = node_path_1.default.posix.dirname(relPath.replace(/\\/g, "/"));
+    const base = node_path_1.default.posix.basename(relPath);
+    const ext = node_path_1.default.posix.extname(base);
+    const stem = ext ? base.slice(0, -ext.length) : base;
+    for (let index = 1; index < 1000; index += 1) {
+        const candidateName = `${stem} (restored ${index})${ext}`;
+        const candidate = dir && dir !== "." ? `${dir}/${candidateName}` : candidateName;
+        const { absPath: candidateAbs } = safePath(candidate);
+        if (!(0, node_fs_1.existsSync)(candidateAbs)) {
+            return candidate;
+        }
+    }
+    throw new Error("could not find a free name to restore item");
+}
+function isProtectedPath(relPath) {
+    const normalized = relPath.trim().replace(/\\/g, "/").replace(/^\//, "");
+    if (!normalized) {
+        return true;
+    }
+    return normalized === ".trash" || normalized.startsWith(".trash/");
+}
+async function moveToTrash(relPath) {
+    if (isProtectedPath(relPath)) {
+        throw new Error("invalid path");
+    }
+    const { absPath, relPath: normalized } = safePath(relPath);
+    const fileStat = await (0, promises_1.stat)(absPath);
+    const isDir = fileStat.isDirectory();
+    const name = node_path_1.default.basename(absPath);
+    const id = createTrashId();
+    const storageName = trashStorageName(id, name);
+    const trashAbs = node_path_1.default.join(TRASH_ITEMS_DIR, storageName);
+    await ensureTrashDir();
+    await (0, promises_1.rename)(absPath, trashAbs);
+    const item = {
+        id,
+        name,
+        originalPath: normalized.replace(/\\/g, "/"),
+        type: isDir ? "folder" : "file",
+        deletedAt: new Date().toISOString(),
+        storageName,
+    };
+    const items = await readTrashIndex();
+    items.unshift(item);
+    await writeTrashIndex(items);
+    return item;
+}
+async function listTrash() {
+    const items = await readTrashIndex();
+    const entries = [];
+    for (const item of items) {
+        const absPath = node_path_1.default.join(TRASH_ITEMS_DIR, item.storageName);
+        if (!(0, node_fs_1.existsSync)(absPath)) {
+            continue;
+        }
+        const entry = await fileEntry(absPath, item.id);
+        entries.push({
+            ...entry,
+            name: item.name,
+            id: item.id,
+            originalPath: item.originalPath,
+            deletedAt: item.deletedAt,
+        });
+    }
+    return { entries };
+}
+async function restoreFromTrash(id) {
+    const items = await readTrashIndex();
+    const index = items.findIndex((item) => item.id === id);
+    if (index === -1) {
+        throw new FileNotFoundError("trash item not found");
+    }
+    const item = items[index];
+    const trashAbs = node_path_1.default.join(TRASH_ITEMS_DIR, item.storageName);
+    if (!(0, node_fs_1.existsSync)(trashAbs)) {
+        throw new FileNotFoundError("trash item not found");
+    }
+    const restorePath = await uniqueRestorePath(item.originalPath);
+    const { absPath: restoreAbs } = safePath(restorePath);
+    await (0, promises_1.mkdir)(node_path_1.default.dirname(restoreAbs), { recursive: true });
+    await (0, promises_1.rename)(trashAbs, restoreAbs);
+    items.splice(index, 1);
+    await writeTrashIndex(items);
+    return fileEntry(restoreAbs, restorePath);
+}
+async function deleteTrashItem(id) {
+    const items = await readTrashIndex();
+    const index = items.findIndex((item) => item.id === id);
+    if (index === -1) {
+        throw new FileNotFoundError("trash item not found");
+    }
+    const item = items[index];
+    const trashAbs = node_path_1.default.join(TRASH_ITEMS_DIR, item.storageName);
+    if ((0, node_fs_1.existsSync)(trashAbs)) {
+        const fileStat = await (0, promises_1.stat)(trashAbs);
+        if (fileStat.isDirectory()) {
+            await (0, promises_1.rm)(trashAbs, { recursive: true, force: true });
+        }
+        else {
+            await (0, promises_1.rm)(trashAbs, { force: true });
+        }
+    }
+    items.splice(index, 1);
+    await writeTrashIndex(items);
+}
+async function emptyTrash() {
+    const items = await readTrashIndex();
+    for (const item of items) {
+        const trashAbs = node_path_1.default.join(TRASH_ITEMS_DIR, item.storageName);
+        if ((0, node_fs_1.existsSync)(trashAbs)) {
+            await (0, promises_1.rm)(trashAbs, { recursive: true, force: true });
+        }
+    }
+    await writeTrashIndex([]);
+    return items.length;
 }
 class FileNotFoundError extends Error {
     constructor(message) {
@@ -276,13 +428,74 @@ label.upload-btn input { display: none; }
   padding: 0.85rem 1rem;
   margin-bottom: 1rem;
 }
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 11rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  padding: 0.35rem;
+  display: none;
+}
+.context-menu.open {
+  display: grid;
+}
+.context-menu button {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.context-menu button:hover,
+.context-menu button:focus {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+}
+.context-menu button.danger {
+  color: #b91c1c;
+}
+.context-menu button.danger:hover,
+.context-menu button.danger:focus {
+  background: #fef2f2;
+  color: #991b1b;
+}
+.context-menu .menu-label {
+  padding: 0.45rem 0.75rem 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.toolbar-trash {
+  display: none;
+}
+body.view-trash .toolbar-drive {
+  display: none;
+}
+body.view-trash .toolbar-trash {
+  display: flex;
+}
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
   aside { display: none; }
 }
 `;
 const PAGE_SCRIPT = `
-const state = { path: "", query: "" };
+const state = { path: "", query: "", view: "drive" };
+const menuState = { entry: null, longPress: false };
+let longPressTimer = null;
 
 function escapeHtml(value) {
   return String(value)
@@ -309,15 +522,39 @@ function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
+function setActiveNav() {
+  document.getElementById("nav-drive").classList.toggle("active", state.view === "drive");
+  document.getElementById("nav-trash").classList.toggle("active", state.view === "trash");
+  document.body.classList.toggle("view-trash", state.view === "trash");
+  document.getElementById("search").placeholder =
+    state.view === "trash" ? "Search in Trash" : "Search in My Drive";
+}
+
+function setView(view) {
+  state.view = view;
+  state.path = "";
+  state.query = "";
+  document.getElementById("search").value = "";
+  closeContextMenu();
+  setActiveNav();
+  refreshListing();
+}
+
 function setPath(path) {
+  if (state.view !== "drive") return;
   state.path = path || "";
   state.query = "";
   document.getElementById("search").value = "";
-  loadFiles();
+  closeContextMenu();
+  refreshListing();
 }
 
 function renderBreadcrumbs(path) {
   const root = document.getElementById("breadcrumbs");
+  if (state.view === "trash") {
+    root.innerHTML = '<span>Trash</span>';
+    return;
+  }
   const parts = path ? path.split("/") : [];
   let html = \`<button type="button" data-path="">My Drive</button>\`;
   let current = "";
@@ -334,57 +571,237 @@ function renderBreadcrumbs(path) {
 function filteredEntries(entries) {
   const query = state.query.trim().toLowerCase();
   if (!query) return entries;
-  return entries.filter((entry) => entry.name.toLowerCase().includes(query));
+  return entries.filter((entry) => {
+    const haystack = [
+      entry.name,
+      entry.path,
+      entry.originalPath || "",
+    ].join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function entryFromCard(card) {
+  return {
+    id: card.dataset.id || "",
+    path: card.dataset.path || "",
+    name: card.dataset.name || "",
+    type: card.dataset.type || "file",
+    originalPath: card.dataset.originalPath || "",
+  };
+}
+
+function closeContextMenu() {
+  const menu = document.getElementById("context-menu");
+  menu.classList.remove("open");
+  menuState.entry = null;
+  document.querySelectorAll(".card.selected").forEach((card) => card.classList.remove("selected"));
+}
+
+function openContextMenu(entry, x, y, card) {
+  const menu = document.getElementById("context-menu");
+  menuState.entry = entry;
+  document.querySelectorAll(".card.selected").forEach((node) => node.classList.remove("selected"));
+  if (card) card.classList.add("selected");
+
+  const actions = state.view === "trash"
+    ? [
+        { id: "restore", label: "Restore" },
+        { id: "download", label: "Download", hidden: entry.type === "folder" },
+        { id: "delete-forever", label: "Delete forever", danger: true },
+      ]
+    : [
+        { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
+        { id: "delete", label: "Move to trash", danger: true },
+      ];
+
+  menu.innerHTML =
+    \`<div class="menu-label">\${escapeHtml(entry.name)}</div>\` +
+    actions
+      .filter((action) => !action.hidden)
+      .map((action) =>
+        \`<button type="button" data-action="\${action.id}" class="\${action.danger ? "danger" : ""}">\${escapeHtml(action.label)}</button>\`
+      )
+      .join("");
+
+  menu.classList.add("open");
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  menu.style.left = \`\${Math.max(8, left)}px\`;
+  menu.style.top = \`\${Math.max(8, top)}px\`;
+}
+
+async function downloadEntry(entry) {
+  const url = state.view === "trash"
+    ? \`/api/trash/download?id=\${encodeURIComponent(entry.id)}\`
+    : \`/api/download?path=\${encodeURIComponent(entry.path)}\`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "Could not download file");
+  }
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = entry.name;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+async function runMenuAction(action, entry) {
+  if (action === "open") {
+    if (entry.type === "folder") {
+      setPath(entry.path);
+      return;
+    }
+    await downloadEntry(entry);
+    return;
+  }
+  if (action === "download") {
+    await downloadEntry(entry);
+    return;
+  }
+  if (action === "delete") {
+    if (!window.confirm(\`Move "\${entry.name}" to trash?\`)) return;
+    const response = await fetch("/api/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: entry.path }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not move to trash");
+    refreshListing();
+    return;
+  }
+  if (action === "restore") {
+    const response = await fetch("/api/trash/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: entry.id }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not restore item");
+    refreshListing();
+    return;
+  }
+  if (action === "delete-forever") {
+    if (!window.confirm(\`Permanently delete "\${entry.name}"?\`)) return;
+    const response = await fetch("/api/trash/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: entry.id }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not delete item");
+    refreshListing();
+  }
+}
+
+function bindCard(card) {
+  card.addEventListener("click", async () => {
+    if (menuState.longPress) {
+      menuState.longPress = false;
+      return;
+    }
+    const entry = entryFromCard(card);
+    if (state.view === "trash") return;
+    if (entry.type === "folder") {
+      setPath(entry.path);
+      return;
+    }
+    try {
+      await downloadEntry(entry);
+    } catch (error) {
+      showError(String(error));
+    }
+  });
+
+  card.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openContextMenu(entryFromCard(card), event.clientX, event.clientY, card);
+  });
+
+  card.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const entry = entryFromCard(card);
+    clearTimeout(longPressTimer);
+    longPressTimer = window.setTimeout(() => {
+      menuState.longPress = true;
+      openContextMenu(entry, touch.clientX, touch.clientY, card);
+    }, 500);
+  }, { passive: true });
+
+  card.addEventListener("touchend", () => clearTimeout(longPressTimer));
+  card.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+  card.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
 }
 
 function renderEntries(data) {
   const container = document.getElementById("files");
   const entries = filteredEntries(data.entries || []);
-  document.getElementById("status").textContent =
-    \`\${entries.length} item(s) in \${data.path ? data.path : "My Drive"}\`;
+  const locationLabel = state.view === "trash"
+    ? "Trash"
+    : (data.path ? data.path : "My Drive");
+  document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\`;
 
   if (!entries.length) {
-    container.innerHTML = \`<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>\`;
+    container.innerHTML = state.view === "trash"
+      ? '<div class="empty">Trash is empty.</div>'
+      : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
     return;
   }
 
   container.innerHTML = entries.map((entry) => {
     const icon = entry.type === "folder" ? "📁" : "📄";
-    const meta = entry.type === "folder"
-      ? \`Folder · \${formatDate(entry.modified)}\`
-      : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`;
+    const meta = state.view === "trash"
+      ? \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`
+      : (entry.type === "folder"
+        ? \`Folder · \${formatDate(entry.modified)}\`
+        : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
     return \`
-      <article class="card" data-path="\${escapeHtml(entry.path)}" data-type="\${entry.type}">
+      <article
+        class="card"
+        data-id="\${escapeHtml(entry.id || "")}"
+        data-path="\${escapeHtml(entry.path)}"
+        data-name="\${escapeHtml(entry.name)}"
+        data-type="\${entry.type}"
+        data-original-path="\${escapeHtml(entry.originalPath || "")}"
+      >
         <div class="icon">\${icon}</div>
         <div class="name">\${escapeHtml(entry.name)}</div>
         <div class="meta">\${meta}</div>
       </article>\`;
   }).join("");
 
-  container.querySelectorAll(".card").forEach((card) => {
-    card.addEventListener("click", () => {
-      if (card.dataset.type === "folder") {
-        setPath(card.dataset.path);
-      } else {
-        window.location.href = \`/api/download?path=\${encodeURIComponent(card.dataset.path)}\`;
-      }
-    });
-  });
+  container.querySelectorAll(".card").forEach(bindCard);
 }
 
-async function loadFiles() {
+function showError(message) {
+  const errorBox = document.getElementById("error");
+  errorBox.textContent = message;
+  errorBox.hidden = false;
+}
+
+async function refreshListing() {
   const errorBox = document.getElementById("error");
   errorBox.textContent = "";
   errorBox.hidden = true;
   try {
-    const response = await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
+    const response = state.view === "trash"
+      ? await fetch("/api/trash")
+      : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load files");
-    renderBreadcrumbs(data.path || "");
+    renderBreadcrumbs(state.view === "trash" ? "" : (data.path || ""));
     renderEntries(data);
   } catch (error) {
-    errorBox.textContent = String(error);
-    errorBox.hidden = false;
+    showError(String(error));
     document.getElementById("files").innerHTML = "";
   }
 }
@@ -399,12 +816,10 @@ async function createFolder() {
   });
   const data = await response.json();
   if (!response.ok) {
-    const errorBox = document.getElementById("error");
-    errorBox.textContent = data.error || "Could not create folder";
-    errorBox.hidden = false;
+    showError(data.error || "Could not create folder");
     return;
   }
-  loadFiles();
+  refreshListing();
 }
 
 async function uploadFiles(fileList) {
@@ -415,27 +830,60 @@ async function uploadFiles(fileList) {
     const response = await fetch("/api/upload", { method: "POST", body: form });
     const data = await response.json();
     if (!response.ok) {
-      const errorBox = document.getElementById("error");
-      errorBox.textContent = data.error || \`Could not upload \${file.name}\`;
-      errorBox.hidden = false;
+      showError(data.error || \`Could not upload \${file.name}\`);
       return;
     }
   }
-  loadFiles();
+  refreshListing();
+}
+
+async function emptyTrash() {
+  if (!window.confirm("Permanently delete everything in Trash?")) return;
+  const response = await fetch("/api/trash/empty", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) {
+    showError(data.error || "Could not empty trash");
+    return;
+  }
+  refreshListing();
 }
 
 document.getElementById("search").addEventListener("input", (event) => {
   state.query = event.target.value;
-  loadFiles();
+  refreshListing();
 });
 document.getElementById("new-folder").addEventListener("click", createFolder);
 document.getElementById("upload-input").addEventListener("change", (event) => {
   uploadFiles(event.target.files);
   event.target.value = "";
 });
-document.getElementById("nav-drive").addEventListener("click", () => setPath(""));
+document.getElementById("nav-drive").addEventListener("click", () => setView("drive"));
+document.getElementById("nav-trash").addEventListener("click", () => setView("trash"));
+document.getElementById("empty-trash").addEventListener("click", emptyTrash);
+document.getElementById("context-menu").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button || !menuState.entry) return;
+  const action = button.dataset.action;
+  const entry = menuState.entry;
+  closeContextMenu();
+  try {
+    await runMenuAction(action, entry);
+  } catch (error) {
+    showError(String(error));
+  }
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("#context-menu")) closeContextMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeContextMenu();
+});
+document.addEventListener("contextmenu", (event) => {
+  if (!event.target.closest(".card")) closeContextMenu();
+});
 
-loadFiles();
+setActiveNav();
+refreshListing();
 `;
 function renderPage() {
     return `<!DOCTYPE html>
@@ -455,7 +903,7 @@ function renderPage() {
     <nav class="nav">
       <button id="nav-drive" class="active" type="button">My Drive</button>
       <button type="button" disabled>Recent</button>
-      <button type="button" disabled>Trash</button>
+      <button id="nav-trash" type="button">Trash</button>
     </nav>
   </aside>
   <main>
@@ -464,12 +912,15 @@ function renderPage() {
         <span>⌕</span>
         <input id="search" type="search" placeholder="Search in My Drive">
       </label>
-      <div class="toolbar">
+      <div class="toolbar toolbar-drive">
         <button id="new-folder" class="secondary" type="button">New folder</button>
         <label class="upload-btn">
           Upload
           <input id="upload-input" type="file" multiple>
         </label>
+      </div>
+      <div class="toolbar toolbar-trash">
+        <button id="empty-trash" class="secondary" type="button">Empty trash</button>
       </div>
     </div>
     <div class="content">
@@ -479,6 +930,7 @@ function renderPage() {
       <div id="files" class="grid"></div>
     </div>
   </main>
+  <div id="context-menu" class="context-menu" role="menu" aria-hidden="true"></div>
   <script>${PAGE_SCRIPT}</script>
 </body>
 </html>`;
@@ -676,7 +1128,7 @@ async function handleGet(req, res, url) {
                 return;
             }
             const data = await (0, promises_1.readFile)(absPath);
-            sendBytes(res, 200, guessMimeType(absPath), data, node_path_1.default.basename(absPath));
+            sendBytes(res, 200, "application/octet-stream", data, node_path_1.default.basename(absPath));
         }
         catch (error) {
             if (error instanceof Error && error.message === "invalid path") {
@@ -686,6 +1138,41 @@ async function handleGet(req, res, url) {
                 const message = error instanceof Error ? error.message : String(error);
                 sendJson(res, 500, { error: message });
             }
+        }
+        return;
+    }
+    if (route === "/api/trash") {
+        try {
+            const payload = await listTrash();
+            sendJson(res, 200, payload);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            sendJson(res, 500, { error: message });
+        }
+        return;
+    }
+    if (route === "/api/trash/download") {
+        try {
+            const id = queryParam(url, "id");
+            const items = await readTrashIndex();
+            const item = items.find((entry) => entry.id === id);
+            if (!item) {
+                sendJson(res, 404, { error: "trash item not found" });
+                return;
+            }
+            const absPath = node_path_1.default.join(TRASH_ITEMS_DIR, item.storageName);
+            const fileStat = await (0, promises_1.stat)(absPath);
+            if (!fileStat.isFile()) {
+                sendJson(res, 404, { error: "file not found" });
+                return;
+            }
+            const data = await (0, promises_1.readFile)(absPath);
+            sendBytes(res, 200, "application/octet-stream", data, item.name);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            sendJson(res, 500, { error: message });
         }
         return;
     }
@@ -752,6 +1239,89 @@ async function handlePost(req, res, url) {
                 const message = error instanceof Error ? error.message : String(error);
                 sendJson(res, 500, { error: message });
             }
+        }
+        return;
+    }
+    if (route === "/api/delete") {
+        try {
+            const body = await readBody(req);
+            const payload = JSON.parse(body.toString("utf8") || "{}");
+            const relPath = (payload.path ?? "").trim();
+            if (!relPath) {
+                sendJson(res, 400, { error: "path is required" });
+                return;
+            }
+            const item = await moveToTrash(relPath);
+            sendJson(res, 200, { item });
+        }
+        catch (error) {
+            if (error instanceof FileNotFoundError) {
+                sendJson(res, 404, { error: "item not found" });
+            }
+            else if (error instanceof Error && error.message === "invalid path") {
+                sendJson(res, 400, { error: error.message });
+            }
+            else {
+                const message = error instanceof Error ? error.message : String(error);
+                sendJson(res, 500, { error: message });
+            }
+        }
+        return;
+    }
+    if (route === "/api/trash/restore") {
+        try {
+            const body = await readBody(req);
+            const payload = JSON.parse(body.toString("utf8") || "{}");
+            const id = (payload.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            const entry = await restoreFromTrash(id);
+            sendJson(res, 200, { entry });
+        }
+        catch (error) {
+            if (error instanceof FileNotFoundError) {
+                sendJson(res, 404, { error: "trash item not found" });
+            }
+            else {
+                const message = error instanceof Error ? error.message : String(error);
+                sendJson(res, 500, { error: message });
+            }
+        }
+        return;
+    }
+    if (route === "/api/trash/delete") {
+        try {
+            const body = await readBody(req);
+            const payload = JSON.parse(body.toString("utf8") || "{}");
+            const id = (payload.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            await deleteTrashItem(id);
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            if (error instanceof FileNotFoundError) {
+                sendJson(res, 404, { error: "trash item not found" });
+            }
+            else {
+                const message = error instanceof Error ? error.message : String(error);
+                sendJson(res, 500, { error: message });
+            }
+        }
+        return;
+    }
+    if (route === "/api/trash/empty") {
+        try {
+            const count = await emptyTrash();
+            sendJson(res, 200, { count });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            sendJson(res, 500, { error: message });
         }
         return;
     }
