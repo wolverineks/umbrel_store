@@ -433,6 +433,10 @@ label.upload-btn input { display: none; }
   cursor: pointer;
   font: inherit;
   padding: 0;
+  border-radius: 0.35rem;
+}
+.breadcrumbs button.crumb.selected {
+  background: var(--accent-soft);
 }
 .status {
   margin-bottom: 1rem;
@@ -609,6 +613,16 @@ function setPath(path) {
   refreshListing();
 }
 
+function breadcrumbEntry(button) {
+  return {
+    id: "",
+    path: button.dataset.path || "",
+    name: button.dataset.name || "",
+    type: "folder",
+    originalPath: "",
+  };
+}
+
 function renderBreadcrumbs(path) {
   const root = document.getElementById("breadcrumbs");
   if (state.view === "trash") {
@@ -616,16 +630,14 @@ function renderBreadcrumbs(path) {
     return;
   }
   const parts = path ? path.split("/") : [];
-  let html = \`<button type="button" data-path="">My Drive</button>\`;
+  let html = \`<button type="button" class="crumb" data-path="" data-name="My Drive">My Drive</button>\`;
   let current = "";
   for (const part of parts) {
     current = current ? \`\${current}/\${part}\` : part;
-    html += \` <span>/</span> <button type="button" data-path="\${escapeHtml(current)}">\${escapeHtml(part)}</button>\`;
+    html += \` <span>/</span> <button type="button" class="crumb" data-path="\${escapeHtml(current)}" data-name="\${escapeHtml(part)}">\${escapeHtml(part)}</button>\`;
   }
   root.innerHTML = html;
-  root.querySelectorAll("button").forEach((button) => {
-    button.addEventListener("click", () => setPath(button.dataset.path || ""));
-  });
+  root.querySelectorAll(".crumb").forEach(bindBreadcrumb);
 }
 
 function filteredEntries(entries) {
@@ -651,31 +663,49 @@ function entryFromCard(card) {
   };
 }
 
+function clearContextSelection() {
+  document.querySelectorAll(".card.selected, .crumb.selected").forEach((node) => {
+    node.classList.remove("selected");
+  });
+}
+
 function closeContextMenu() {
   const menu = document.getElementById("context-menu");
   menu.classList.remove("open");
   menuState.entry = null;
-  document.querySelectorAll(".card.selected").forEach((card) => card.classList.remove("selected"));
+  clearContextSelection();
 }
 
-function openContextMenu(entry, x, y, card) {
+function contextMenuActions(entry, source) {
+  if (source === "breadcrumb") {
+    return [
+      { id: "open", label: "Open" },
+      { id: "share", label: "Share" },
+      { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
+    ];
+  }
+  if (state.view === "trash") {
+    return [
+      { id: "restore", label: "Restore" },
+      { id: "download", label: "Download", hidden: entry.type === "folder" },
+      { id: "share", label: "Share", hidden: entry.type === "folder" },
+      { id: "delete-forever", label: "Delete forever", danger: true },
+    ];
+  }
+  return [
+    { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
+    { id: "share", label: "Share" },
+    { id: "delete", label: "Move to trash", danger: true },
+  ];
+}
+
+function openContextMenu(entry, x, y, highlight, source = "card") {
   const menu = document.getElementById("context-menu");
   menuState.entry = entry;
-  document.querySelectorAll(".card.selected").forEach((node) => node.classList.remove("selected"));
-  if (card) card.classList.add("selected");
+  clearContextSelection();
+  if (highlight) highlight.classList.add("selected");
 
-  const actions = state.view === "trash"
-    ? [
-        { id: "restore", label: "Restore" },
-        { id: "download", label: "Download", hidden: entry.type === "folder" },
-        { id: "share", label: "Share", hidden: entry.type === "folder" },
-        { id: "delete-forever", label: "Delete forever", danger: true },
-      ]
-    : [
-        { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
-        { id: "share", label: "Share" },
-        { id: "delete", label: "Move to trash", danger: true },
-      ];
+  const actions = contextMenuActions(entry, source);
 
   menu.innerHTML =
     \`<div class="menu-label">\${escapeHtml(entry.name)}</div>\` +
@@ -837,6 +867,42 @@ function bindCard(card) {
   card.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
 }
 
+function bindBreadcrumb(button) {
+  button.addEventListener("click", () => {
+    if (menuState.longPress) {
+      menuState.longPress = false;
+      return;
+    }
+    setPath(button.dataset.path || "");
+  });
+
+  button.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openContextMenu(
+      breadcrumbEntry(button),
+      event.clientX,
+      event.clientY,
+      button,
+      "breadcrumb",
+    );
+  });
+
+  button.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const entry = breadcrumbEntry(button);
+    clearTimeout(longPressTimer);
+    longPressTimer = window.setTimeout(() => {
+      menuState.longPress = true;
+      openContextMenu(entry, touch.clientX, touch.clientY, button, "breadcrumb");
+    }, 500);
+  }, { passive: true });
+
+  button.addEventListener("touchend", () => clearTimeout(longPressTimer));
+  button.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+  button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
+}
+
 function renderEntries(data) {
   const container = document.getElementById("files");
   const entries = filteredEntries(data.entries || []);
@@ -974,7 +1040,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeContextMenu();
 });
 document.addEventListener("contextmenu", (event) => {
-  if (!event.target.closest(".card")) closeContextMenu();
+  if (!event.target.closest(".card") && !event.target.closest(".crumb")) closeContextMenu();
 });
 
 function applyShareLinkFromUrl() {
