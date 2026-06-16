@@ -1379,6 +1379,7 @@ const previewTouch = { startX: 0, startY: 0, active: false };
 let longPressTimer = null;
 let dragEntry = null;
 let renameEntry = null;
+let listingRequestId = 0;
 
 function escapeHtml(value) {
   return String(value)
@@ -1504,11 +1505,33 @@ function navigateAfterRename(oldPath, newPath) {
 
 function setPath(path) {
   if (state.view !== "drive") return;
-  state.path = path || "";
+  navigateToDrivePath(path);
+}
+
+function navigateToDrivePath(path) {
+  const targetPath = normalizePath(path);
+  const switchingView = state.view !== "drive";
+  if (!switchingView && normalizePath(state.path) === targetPath) {
+    return;
+  }
+  state.view = "drive";
+  state.path = targetPath;
   state.query = "";
   document.getElementById("search").value = "";
+  if (switchingView) {
+    state.fileFilter = "all";
+    state.listing = null;
+    document.getElementById("file-filter").value = "all";
+  }
   closeContextMenu();
+  dropDepth = 0;
+  setDropActive(false);
+  setActiveNav();
   refreshListing();
+}
+
+function openPinnedEntry(entry) {
+  navigateToDrivePath(pinnedTargetPath(entry));
 }
 
 function breadcrumbEntry(button) {
@@ -1735,10 +1758,7 @@ function renderPinnedList(root) {
         menuState.longPress = false;
         return;
       }
-      const path = decodeDataValue(button.dataset.path);
-      const type = button.dataset.type;
-      setView("drive");
-      setPath(type === "folder" ? path : parentPath(path));
+      openPinnedEntry(entryFromPinned(button));
     });
 
     button.addEventListener("contextmenu", (event) => {
@@ -1984,9 +2004,7 @@ async function downloadEntry(entry) {
 }
 
 function openFromImportant(entry) {
-  const targetPath = entry.type === "folder" ? entry.path : parentPath(entry.path);
-  setView("drive");
-  setPath(targetPath);
+  navigateToDrivePath(pinnedTargetPath(entry));
 }
 
 async function setImportant(entry, important) {
@@ -2406,6 +2424,7 @@ function showError(message) {
 }
 
 async function refreshListing() {
+  const requestId = ++listingRequestId;
   const errorBox = document.getElementById("error");
   errorBox.textContent = "";
   errorBox.hidden = true;
@@ -2416,6 +2435,7 @@ async function refreshListing() {
         ? await fetch("/api/important")
         : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
     const data = await response.json();
+    if (requestId !== listingRequestId) return;
     if (!response.ok) {
       if (state.view === "drive" && response.status === 404) {
         const previousPath = state.path;
@@ -2435,6 +2455,7 @@ async function refreshListing() {
       refreshPinnedSidebar();
     }
   } catch (error) {
+    if (requestId !== listingRequestId) return;
     showError(String(error));
     renderBreadcrumbs(state.view === "drive" ? state.path : "");
     document.getElementById("files").innerHTML = "";
@@ -2781,8 +2802,7 @@ function applyShareLinkFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const openPath = params.get("open");
   if (openPath === null) return false;
-  setView("drive");
-  setPath(openPath);
+  navigateToDrivePath(openPath);
   params.delete("open");
   const nextSearch = params.toString();
   const nextUrl = \`\${window.location.pathname}\${nextSearch ? \`?\${nextSearch}\` : ""}\`;
