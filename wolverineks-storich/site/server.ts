@@ -16,6 +16,8 @@ const TRASH_INDEX_PATH = path.join(TRASH_DIR, "index.json");
 const IMPORTANT_INDEX_PATH = path.join(DATA_ROOT, ".important.json");
 const LEGACY_STARS_INDEX_PATH = path.join(DATA_ROOT, ".stars.json");
 const PINNED_INDEX_PATH = path.join(DATA_ROOT, ".pinned.json");
+const CATEGORIES_INDEX_PATH = path.join(DATA_ROOT, ".categories.json");
+const CATEGORY_ITEMS_INDEX_PATH = path.join(DATA_ROOT, ".category-items.json");
 
 type FileEntry = {
   name: string;
@@ -77,6 +79,34 @@ type PinnedEntry = FileEntry & {
 type PinnedListing = {
   entries: PinnedEntry[];
   pinnedPaths: string[];
+};
+
+type Category = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
+type CategoryItem = {
+  path: string;
+  categoryId: string;
+  addedAt: string;
+};
+
+type CategoryListing = {
+  categories: Category[];
+};
+
+type CategoryItemEntry = FileEntry & {
+  categoryId: string;
+  addedAt: string;
+  categoryIds: string[];
+};
+
+type CategoryItemsListing = {
+  category: Category;
+  entries: CategoryItemEntry[];
+  categoryIds: string[];
 };
 
 async function ensureDataRoot(): Promise<void> {
@@ -334,14 +364,19 @@ async function listDirectoryWithMarkers(
   relativePath = "",
 ): Promise<
   DirectoryListing & {
-    entries: Array<FileEntry & { important: boolean; pinned: boolean }>;
+    entries: Array<FileEntry & { important: boolean; pinned: boolean; categoryIds: string[] }>;
     importantPaths: string[];
     pinnedPaths: string[];
+    categories: Category[];
   }
 > {
   const listing = await listDirectory(relativePath);
   const importantItems = await readImportantIndex();
   const pinnedItems = await readPinnedIndex();
+  const categoryItems = await readCategoryItemsIndex();
+  const categories = (await readCategoriesIndex()).sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
   const important = new Set(importantItems.map((item) => item.path));
   const pinned = new Set(pinnedItems.map((item) => item.path));
   return {
@@ -350,9 +385,11 @@ async function listDirectoryWithMarkers(
       ...entry,
       important: important.has(entry.path),
       pinned: pinned.has(entry.path),
+      categoryIds: categoryIdsForPath(categoryItems, entry.path),
     })),
     importantPaths: importantItems.map((item) => item.path),
     pinnedPaths: pinnedItems.map((item) => item.path),
+    categories,
   };
 }
 
@@ -418,6 +455,213 @@ async function listPinned(): Promise<PinnedListing> {
 
   entries.sort((a, b) => new Date(b.pinnedAt).getTime() - new Date(a.pinnedAt).getTime());
   return { entries, pinnedPaths: entries.map((entry) => entry.path) };
+}
+
+async function readCategoriesIndex(): Promise<Category[]> {
+  if (!existsSync(CATEGORIES_INDEX_PATH)) {
+    return [];
+  }
+  try {
+    const raw = await readFile(CATEGORIES_INDEX_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { categories?: Category[] };
+    return Array.isArray(parsed.categories) ? parsed.categories : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeCategoriesIndex(categories: Category[]): Promise<void> {
+  await writeFile(CATEGORIES_INDEX_PATH, JSON.stringify({ categories }, null, 2));
+}
+
+async function readCategoryItemsIndex(): Promise<CategoryItem[]> {
+  if (!existsSync(CATEGORY_ITEMS_INDEX_PATH)) {
+    return [];
+  }
+  try {
+    const raw = await readFile(CATEGORY_ITEMS_INDEX_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { items?: CategoryItem[] };
+    return Array.isArray(parsed.items) ? parsed.items : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeCategoryItemsIndex(items: CategoryItem[]): Promise<void> {
+  await writeFile(CATEGORY_ITEMS_INDEX_PATH, JSON.stringify({ items }, null, 2));
+}
+
+function categoryNameTaken(categories: Category[], name: string, exceptId?: string): boolean {
+  const lower = name.trim().toLowerCase();
+  return categories.some((category) => category.id !== exceptId && category.name.toLowerCase() === lower);
+}
+
+function categoryIdsForPath(items: CategoryItem[], relPath: string): string[] {
+  const normalized = relPath.replace(/\\/g, "/");
+  const ids = items.filter((item) => item.path === normalized).map((item) => item.categoryId);
+  return [...new Set(ids)];
+}
+
+async function listCategories(): Promise<CategoryListing> {
+  const categories = await readCategoriesIndex();
+  categories.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  return { categories };
+}
+
+async function createCategory(name: string): Promise<Category> {
+  const trimmedName = name.trim();
+  const nameError = validateEntryName(trimmedName);
+  if (nameError) {
+    throw new Error("invalid name");
+  }
+  const categories = await readCategoriesIndex();
+  if (categoryNameTaken(categories, trimmedName)) {
+    throw new Error("category already exists");
+  }
+  const category: Category = {
+    id: createTrashId(),
+    name: trimmedName,
+    createdAt: new Date().toISOString(),
+  };
+  categories.push(category);
+  categories.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  await writeCategoriesIndex(categories);
+  return category;
+}
+
+async function renameCategory(categoryId: string, name: string): Promise<Category> {
+  const trimmedName = name.trim();
+  const nameError = validateEntryName(trimmedName);
+  if (nameError) {
+    throw new Error("invalid name");
+  }
+  const categories = await readCategoriesIndex();
+  const index = categories.findIndex((category) => category.id === categoryId);
+  if (index === -1) {
+    throw new FileNotFoundError("category not found");
+  }
+  if (categoryNameTaken(categories, trimmedName, categoryId)) {
+    throw new Error("category already exists");
+  }
+  const category = { ...categories[index], name: trimmedName };
+  categories[index] = category;
+  categories.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  await writeCategoriesIndex(categories);
+  return category;
+}
+
+async function deleteCategory(categoryId: string): Promise<void> {
+  const categories = await readCategoriesIndex();
+  const nextCategories = categories.filter((category) => category.id !== categoryId);
+  if (nextCategories.length === categories.length) {
+    throw new FileNotFoundError("category not found");
+  }
+  await writeCategoriesIndex(nextCategories);
+  const items = await readCategoryItemsIndex();
+  const nextItems = items.filter((item) => item.categoryId !== categoryId);
+  if (nextItems.length !== items.length) {
+    await writeCategoryItemsIndex(nextItems);
+  }
+}
+
+async function assignCategoryEntry(relPath: string, categoryId: string): Promise<CategoryItem> {
+  const { relPath: normalized } = safePath(relPath);
+  if (isProtectedPath(normalized)) {
+    throw new Error("invalid path");
+  }
+  const { absPath } = safePath(normalized);
+  await stat(absPath);
+
+  const categories = await readCategoriesIndex();
+  if (!categories.some((category) => category.id === categoryId)) {
+    throw new FileNotFoundError("category not found");
+  }
+
+  const items = await readCategoryItemsIndex();
+  const existing = items.find((item) => item.path === normalized && item.categoryId === categoryId);
+  if (existing) {
+    return existing;
+  }
+
+  const item: CategoryItem = {
+    path: normalized,
+    categoryId,
+    addedAt: new Date().toISOString(),
+  };
+  items.unshift(item);
+  await writeCategoryItemsIndex(items);
+  return item;
+}
+
+async function unassignCategoryEntry(relPath: string, categoryId: string): Promise<void> {
+  const { relPath: normalized } = safePath(relPath);
+  const items = await readCategoryItemsIndex();
+  const next = items.filter((item) => !(item.path === normalized && item.categoryId === categoryId));
+  if (next.length === items.length) {
+    throw new FileNotFoundError("category assignment not found");
+  }
+  await writeCategoryItemsIndex(next);
+}
+
+async function updateCategoryItemPaths(oldPath: string, newPath: string): Promise<void> {
+  const items = await readCategoryItemsIndex();
+  const updated = remapMarkedPaths(items, oldPath, newPath);
+  if (updated.length !== items.length || updated.some((item, index) => item.path !== items[index]?.path)) {
+    await writeCategoryItemsIndex(updated);
+  }
+}
+
+async function removeCategoryItemsForPath(relPath: string): Promise<void> {
+  const normalized = relPath.replace(/\\/g, "/");
+  const items = await readCategoryItemsIndex();
+  const next = items.filter((item) => item.path !== normalized && !item.path.startsWith(`${normalized}/`));
+  if (next.length !== items.length) {
+    await writeCategoryItemsIndex(next);
+  }
+}
+
+async function listCategoryItems(categoryId: string): Promise<CategoryItemsListing> {
+  const categories = await readCategoriesIndex();
+  const category = categories.find((entry) => entry.id === categoryId);
+  if (!category) {
+    throw new FileNotFoundError("category not found");
+  }
+
+  const allItems = await readCategoryItemsIndex();
+  const categoryItems = allItems.filter((item) => item.categoryId === categoryId);
+  const entries: CategoryItemEntry[] = [];
+  const stale: string[] = [];
+
+  for (const item of categoryItems) {
+    try {
+      const { absPath } = safePath(item.path);
+      if (!existsSync(absPath)) {
+        stale.push(item.path);
+        continue;
+      }
+      const entry = await fileEntry(absPath, item.path);
+      entries.push({
+        ...entry,
+        categoryId: item.categoryId,
+        addedAt: item.addedAt,
+        categoryIds: categoryIdsForPath(allItems, item.path),
+      });
+    } catch {
+      stale.push(item.path);
+    }
+  }
+
+  if (stale.length) {
+    const next = allItems.filter((item) => !(item.categoryId === categoryId && stale.includes(item.path)));
+    await writeCategoryItemsIndex(next);
+  }
+
+  entries.sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime());
+  return {
+    category,
+    entries,
+    categoryIds: [categoryId],
+  };
 }
 
 async function ensureTrashDir(): Promise<void> {
@@ -511,6 +755,7 @@ async function renameEntry(sourcePath: string, newName: string): Promise<FileEnt
   await rename(sourceAbs, targetAbs);
   await updateImportantPaths(sourceRel, targetRel);
   await updatePinnedPaths(sourceRel, targetRel);
+  await updateCategoryItemPaths(sourceRel, targetRel);
   return fileEntry(targetAbs, targetRel);
 }
 
@@ -548,6 +793,7 @@ async function moveEntry(sourcePath: string, destinationFolder: string): Promise
   await rename(sourceAbs, targetAbs);
   await updateImportantPaths(sourceRel, targetRel);
   await updatePinnedPaths(sourceRel, targetRel);
+  await updateCategoryItemPaths(sourceRel, targetRel);
   return fileEntry(targetAbs, targetRel);
 }
 
@@ -588,6 +834,7 @@ async function moveToTrash(relPath: string): Promise<TrashItem> {
   await writeTrashIndex(items);
   await removeImportantForPath(normalized.replace(/\\/g, "/"));
   await removePinnedForPath(normalized.replace(/\\/g, "/"));
+  await removeCategoryItemsForPath(normalized.replace(/\\/g, "/"));
   return item;
 }
 
@@ -1048,7 +1295,8 @@ label.upload-btn input { display: none; }
   display: none;
 }
 body.view-trash .toolbar-drive,
-body.view-important .toolbar-drive {
+body.view-important .toolbar-drive,
+body.view-category .toolbar-drive {
   display: none;
 }
 body.view-trash .toolbar-trash {
@@ -1063,13 +1311,21 @@ body.view-trash .toolbar-trash {
   line-height: 1;
   pointer-events: none;
 }
-.pinned-section {
-  margin-top: 0.5rem;
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.pinned-section,
+.categories-section {
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
+}
+.pinned-section {
+  margin-top: 0.5rem;
 }
 .pinned-label {
   font-size: 0.75rem;
@@ -1119,19 +1375,95 @@ body.view-trash .toolbar-trash {
   background: var(--accent-soft);
   color: var(--accent);
 }
-.pinned-empty {
+.pinned-empty,
+.categories-empty {
   padding: 0.35rem 0.75rem;
   color: var(--muted);
   font-size: 0.85rem;
 }
-.mobile-pinned {
+.categories-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.75rem 0.5rem;
+}
+.categories-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.categories-add {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.4rem;
+}
+.categories-add:hover {
+  background: var(--accent-soft);
+}
+.categories-list {
+  display: grid;
+  gap: 0.2rem;
+}
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  background: transparent;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.65rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+}
+.category-item:hover,
+.category-item.active,
+.category-item.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.category-icon {
+  flex-shrink: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.category-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-categories {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-pinned,
+.mobile-categories {
   display: none;
   width: 100%;
   padding: 0.5rem 1rem 0.75rem;
   background: var(--sidebar);
   border-bottom: 1px solid var(--border);
 }
-.mobile-pinned .pinned-label {
+.mobile-pinned .pinned-label,
+.mobile-categories .categories-label {
   padding-left: 0.25rem;
 }
 .dialog-backdrop {
@@ -1343,10 +1675,13 @@ body.view-trash .toolbar-trash {
     background: var(--accent-soft);
     color: var(--accent);
   }
-  .pinned-section {
+  .pinned-section,
+  .categories-section,
+  .sidebar-scroll {
     display: none;
   }
-  .mobile-pinned {
+  .mobile-pinned,
+  .mobile-categories {
     display: block;
   }
 }
@@ -1371,7 +1706,7 @@ self.addEventListener("fetch", (event) => {
 `;
 
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [] };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
 const menuState = { entry: null, longPress: false, source: "card" };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
@@ -1379,6 +1714,8 @@ const previewTouch = { startX: 0, startY: 0, active: false };
 let longPressTimer = null;
 let dragEntry = null;
 let renameEntry = null;
+let categoryDialogMode = "create";
+let categoryDialogId = null;
 let listingRequestId = 0;
 
 function escapeHtml(value) {
@@ -1429,18 +1766,23 @@ function setActiveNav() {
   document.getElementById("mobile-nav-trash")?.classList.toggle("active", state.view === "trash");
   document.body.classList.toggle("view-trash", state.view === "trash");
   document.body.classList.toggle("view-important", state.view === "important");
+  document.body.classList.toggle("view-category", state.view === "category");
   document.getElementById("search").placeholder =
     state.view === "trash"
       ? "Search in Trash"
       : state.view === "important"
         ? "Search in Important"
-        : "Search in My Drive";
+        : state.view === "category"
+          ? "Search in category"
+          : "Search in My Drive";
   renderPinnedSidebar();
+  renderCategoriesSidebar();
 }
 
 function setView(view) {
   state.view = view;
   state.path = "";
+  state.categoryId = "";
   state.query = "";
   state.fileFilter = "all";
   state.listing = null;
@@ -1534,6 +1876,28 @@ function openPinnedEntry(entry) {
   navigateToDrivePath(pinnedTargetPath(entry));
 }
 
+function setCategoryView(categoryId) {
+  const normalizedId = String(categoryId || "");
+  if (state.view === "category" && state.categoryId === normalizedId) {
+    return;
+  }
+  state.view = "category";
+  state.categoryId = normalizedId;
+  state.path = "";
+  state.query = "";
+  state.listing = null;
+  document.getElementById("search").value = "";
+  closeContextMenu();
+  dropDepth = 0;
+  setDropActive(false);
+  setActiveNav();
+  refreshListing();
+}
+
+function categoryById(categoryId) {
+  return (state.categories || []).find((category) => category.id === categoryId) || null;
+}
+
 function breadcrumbEntry(button) {
   return {
     id: "",
@@ -1552,6 +1916,11 @@ function renderBreadcrumbs(path) {
   }
   if (state.view === "important") {
     root.innerHTML = '<span>Important</span>';
+    return;
+  }
+  if (state.view === "category") {
+    const category = categoryById(state.categoryId);
+    root.innerHTML = \`<span>\${escapeHtml(category?.name || "Category")}</span>\`;
     return;
   }
   const parts = path ? path.split("/") : [];
@@ -1664,6 +2033,7 @@ function filteredEntries(entries) {
 }
 
 function entryFromCard(card) {
+  const categoryIds = decodeDataValue(card.dataset.categoryIds);
   return {
     id: decodeDataValue(card.dataset.id),
     path: decodeDataValue(card.dataset.path),
@@ -1672,11 +2042,19 @@ function entryFromCard(card) {
     originalPath: decodeDataValue(card.dataset.originalPath),
     important: card.dataset.important === "true",
     pinned: card.dataset.pinned === "true",
+    categoryIds: categoryIds ? categoryIds.split(",").filter(Boolean) : [],
   };
 }
 
+function categoryLabels(categoryIds) {
+  const ids = categoryIds || [];
+  return ids
+    .map((id) => categoryById(id)?.name)
+    .filter(Boolean);
+}
+
 function clearContextSelection() {
-  document.querySelectorAll(".card.selected, .crumb.selected, .pinned-item.selected").forEach((node) => {
+  document.querySelectorAll(".card.selected, .crumb.selected, .pinned-item.selected, .category-item.selected").forEach((node) => {
     node.classList.remove("selected");
   });
 }
@@ -1803,6 +2181,104 @@ async function refreshPinnedSidebar() {
   }
 }
 
+function entryFromCategory(button) {
+  return {
+    id: decodeDataValue(button.dataset.id),
+    path: "",
+    name: decodeDataValue(button.dataset.name),
+    type: "category",
+  };
+}
+
+function renderCategoriesList(root) {
+  const categories = state.categories || [];
+  if (!categories.length) {
+    root.innerHTML = '<div class="categories-empty">Create categories to organize files</div>';
+    return;
+  }
+  root.innerHTML = categories.map((category) => {
+    const active = state.view === "category" && state.categoryId === category.id;
+    return \`
+      <button
+        type="button"
+        class="category-item\${active ? " active" : ""}"
+        data-id="\${encodeDataValue(category.id)}"
+        data-name="\${encodeDataValue(category.name)}"
+      >
+        <span class="category-icon">🏷</span>
+        <span class="category-name">\${escapeHtml(category.name)}</span>
+      </button>\`;
+  }).join("");
+
+  root.querySelectorAll(".category-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (menuState.longPress) {
+        menuState.longPress = false;
+        return;
+      }
+      setCategoryView(decodeDataValue(button.dataset.id));
+    });
+
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openContextMenu(entryFromCategory(button), event.clientX, event.clientY, button, "category");
+    });
+
+    button.addEventListener("touchstart", (event) => {
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const entry = entryFromCategory(button);
+      clearTimeout(longPressTimer);
+      longPressTimer = window.setTimeout(() => {
+        menuState.longPress = true;
+        openContextMenu(entry, touch.clientX, touch.clientY, button, "category");
+      }, 500);
+    }, { passive: true });
+
+    button.addEventListener("touchend", () => clearTimeout(longPressTimer));
+    button.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+    button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
+  });
+}
+
+function renderCategoriesSidebar() {
+  for (const id of ["categories-list", "mobile-categories-list"]) {
+    const root = document.getElementById(id);
+    if (root) renderCategoriesList(root);
+  }
+}
+
+async function refreshCategoriesSidebar() {
+  try {
+    const response = await fetch("/api/categories");
+    const data = await response.json();
+    if (!response.ok) return;
+    state.categories = data.categories || [];
+    renderCategoriesSidebar();
+  } catch {
+    // ignore sidebar refresh errors
+  }
+}
+
+function categoryAssignmentActions(entry) {
+  const assigned = new Set(entry.categoryIds || []);
+  const actions = [];
+  for (const category of state.categories || []) {
+    if (assigned.has(category.id)) {
+      actions.push({
+        id: \`unassign-category:\${category.id}\`,
+        label: \`Remove from \${category.name}\`,
+      });
+    } else {
+      actions.push({
+        id: \`assign-category:\${category.id}\`,
+        label: \`Add to \${category.name}\`,
+      });
+    }
+  }
+  return actions;
+}
+
 function currentFolderEntry() {
   const folderPath = normalizePath(state.path);
   if (!folderPath) {
@@ -1849,6 +2325,13 @@ function contextMenuActions(entry, source) {
       { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
     ];
   }
+  if (source === "category") {
+    return [
+      { id: "open", label: "Open" },
+      { id: "rename-category", label: "Rename" },
+      { id: "delete-category", label: "Delete", danger: true },
+    ];
+  }
   if (source === "pinned") {
     return [
       { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
@@ -1865,6 +2348,17 @@ function contextMenuActions(entry, source) {
       { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
     ];
   }
+  if (state.view === "category") {
+    const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
+    return [
+      { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
+      { id: "preview", label: "Preview", hidden: !isImage },
+      { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
+      { id: \`unassign-category:\${state.categoryId}\`, label: "Remove from category" },
+      { id: "share", label: "Share" },
+      ...categoryAssignmentActions(entry).filter((action) => !action.id.endsWith(\`:\${state.categoryId}\`)),
+    ];
+  }
   if (state.view === "important") {
     const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
     return [
@@ -1873,6 +2367,7 @@ function contextMenuActions(entry, source) {
       { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
       { id: "unmark-important", label: "Remove from important" },
       { id: "share", label: "Share" },
+      ...categoryAssignmentActions(entry),
     ];
   }
   if (state.view === "trash") {
@@ -1894,6 +2389,7 @@ function contextMenuActions(entry, source) {
     { id: "rename", label: "Rename" },
     { id: isImportantEntry(entry) ? "unmark-important" : "mark-important", label: isImportantEntry(entry) ? "Remove from important" : "Mark as important" },
     { id: isPinnedEntry(entry) ? "unpin" : "pin", label: isPinnedEntry(entry) ? "Unpin from sidebar" : "Pin to sidebar" },
+    ...categoryAssignmentActions(entry),
     { id: "share", label: "Share" },
     { id: "delete", label: "Move to trash", danger: true },
   ];
@@ -2081,6 +2577,32 @@ async function setPinned(entry, pinned) {
   refreshListing();
 }
 
+async function assignCategory(entry, categoryId) {
+  const response = await fetch("/api/categories/assign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: entry.path, categoryId }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Could not add to category");
+  }
+  refreshListing();
+}
+
+async function unassignCategory(entry, categoryId) {
+  const response = await fetch("/api/categories/unassign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: entry.path, categoryId }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Could not remove from category");
+  }
+  refreshListing();
+}
+
 async function runMenuAction(action, entry, source = "card") {
   if (action === "new-folder") {
     openNewFolderDialog();
@@ -2094,8 +2616,43 @@ async function runMenuAction(action, entry, source = "card") {
     await emptyTrash();
     return;
   }
+  if (action === "rename-category") {
+    openCategoryDialog("rename", entry);
+    return;
+  }
+  if (action === "delete-category") {
+    if (!window.confirm(\`Delete category "\${entry.name}"? Files will stay in My Drive.\`)) return;
+    const response = await fetch("/api/categories/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: entry.id }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Could not delete category");
+    }
+    if (state.view === "category" && state.categoryId === entry.id) {
+      setView("drive");
+      return;
+    }
+    await refreshCategoriesSidebar();
+    refreshListing();
+    return;
+  }
+  if (action.startsWith("assign-category:")) {
+    await assignCategory(entry, action.slice("assign-category:".length));
+    return;
+  }
+  if (action.startsWith("unassign-category:")) {
+    await unassignCategory(entry, action.slice("unassign-category:".length));
+    return;
+  }
   if (action === "open") {
-    if (source === "pinned" || state.view === "important") {
+    if (source === "category") {
+      setCategoryView(entry.id);
+      return;
+    }
+    if (source === "pinned" || state.view === "important" || state.view === "category") {
       openFromImportant(entry);
       return;
     }
@@ -2337,7 +2894,7 @@ function bindCard(card) {
     }
     const entry = entryFromCard(card);
     if (state.view === "trash") return;
-    if (state.view === "important") {
+    if (state.view === "important" || state.view === "category") {
       if (entry.type === "folder") {
         openFromImportant(entry);
         return;
@@ -2426,7 +2983,9 @@ function renderEntries() {
     ? "Trash"
     : state.view === "important"
       ? "Important"
-      : (data.path ? data.path : "My Drive");
+      : state.view === "category"
+        ? (categoryById(state.categoryId)?.name || "Category")
+        : (data.path ? data.path : "My Drive");
   const filterLabel = state.fileFilter !== "all" ? \` · \${document.getElementById("file-filter").selectedOptions[0].textContent}\` : "";
   document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\${filterLabel}\`;
 
@@ -2439,7 +2998,9 @@ function renderEntries() {
       ? '<div class="empty">Trash is empty.</div>'
       : state.view === "important"
         ? '<div class="empty">No important items yet. Mark files and folders from My Drive.</div>'
-        : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
+        : state.view === "category"
+          ? '<div class="empty">No items in this category yet. Add files from My Drive.</div>'
+          : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
     return;
   }
 
@@ -2447,7 +3008,7 @@ function renderEntries() {
     const icon = renderFileIcon(entry);
     const meta = state.view === "trash"
       ? \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`
-      : state.view === "important"
+      : state.view === "important" || state.view === "category"
         ? (entry.type === "folder"
           ? \`Folder · \${escapeHtml(entry.path || "/")}\`
           : \`\${formatSize(entry.size)} · \${escapeHtml(entry.path || "/")}\`)
@@ -2455,6 +3016,10 @@ function renderEntries() {
           ? \`Folder · \${formatDate(entry.modified)}\`
           : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
     const importantBadge = entry.important ? '<div class="card-important" aria-label="Important">★</div>' : "";
+    const labels = categoryLabels(entry.categoryIds);
+    const categoryLine = labels.length && state.view === "drive"
+      ? \`<div class="card-categories">\${escapeHtml(labels.join(", "))}</div>\`
+      : "";
     return \`
       <article
         class="card"
@@ -2465,11 +3030,13 @@ function renderEntries() {
         data-original-path="\${encodeDataValue(entry.originalPath || "")}"
         data-important="\${entry.important ? "true" : "false"}"
         data-pinned="\${entry.pinned ? "true" : "false"}"
+        data-category-ids="\${encodeDataValue((entry.categoryIds || []).join(","))}"
       >
         \${importantBadge}
         <div class="icon">\${icon}</div>
         <div class="name">\${escapeHtml(entry.name)}</div>
         <div class="meta">\${meta}</div>
+        \${categoryLine}
       </article>\`;
   }).join("");
 
@@ -2492,7 +3059,9 @@ async function refreshListing() {
       ? await fetch("/api/trash")
       : state.view === "important"
         ? await fetch("/api/important")
-        : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
+        : state.view === "category"
+          ? await fetch(\`/api/categories/items?category=\${encodeURIComponent(state.categoryId)}\`)
+          : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
     const data = await response.json();
     if (requestId !== listingRequestId) return;
     if (!response.ok) {
@@ -2503,15 +3072,24 @@ async function refreshListing() {
           return refreshListing();
         }
       }
+      if (state.view === "category" && response.status === 404) {
+        setView("drive");
+        return;
+      }
       throw new Error(data.error || "Could not load files");
     }
     state.listing = data;
+    if (data.categories) {
+      state.categories = data.categories;
+      renderCategoriesSidebar();
+    }
     state.importantPaths = new Set(data.importantPaths || (data.entries || []).filter((entry) => entry.important).map((entry) => entry.path));
     state.pinnedPaths = new Set(data.pinnedPaths || (data.entries || []).filter((entry) => entry.pinned).map((entry) => entry.path));
     renderBreadcrumbs(state.view === "drive" ? (data.path || "") : "");
     renderEntries();
     if (state.view === "drive") {
       refreshPinnedSidebar();
+      refreshCategoriesSidebar();
     }
   } catch (error) {
     if (requestId !== listingRequestId) return;
@@ -2618,6 +3196,65 @@ async function submitRename() {
   navigateAfterRename(oldPath, data.entry.path);
   closeRenameDialog();
   refreshListing();
+}
+
+function closeCategoryDialog() {
+  const dialog = document.getElementById("category-dialog");
+  dialog.classList.remove("open");
+  dialog.setAttribute("aria-hidden", "true");
+  document.getElementById("category-name-input").value = "";
+  categoryDialogMode = "create";
+  categoryDialogId = null;
+}
+
+function openCategoryDialog(mode = "create", entry = null) {
+  categoryDialogMode = mode;
+  categoryDialogId = entry?.id || null;
+  const dialog = document.getElementById("category-dialog");
+  const input = document.getElementById("category-name-input");
+  const title = document.getElementById("category-dialog-title");
+  const submit = document.getElementById("category-submit");
+  title.textContent = mode === "rename" ? "Rename category" : "New category";
+  submit.textContent = mode === "rename" ? "Rename" : "Create";
+  input.value = mode === "rename" ? (entry?.name || "") : "";
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+  input.focus();
+  if (mode === "rename") input.select();
+}
+
+async function submitCategoryDialog() {
+  const input = document.getElementById("category-name-input");
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    return;
+  }
+  const endpoint = categoryDialogMode === "rename" ? "/api/categories/rename" : "/api/categories/create";
+  const body = categoryDialogMode === "rename"
+    ? { id: categoryDialogId, name }
+    : { name };
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showError(data.error || "Could not save category");
+    return;
+  }
+  const createdCategory = categoryDialogMode === "create" ? data.category : null;
+  const wasCategoryView = state.view === "category";
+  closeCategoryDialog();
+  await refreshCategoriesSidebar();
+  if (createdCategory?.id) {
+    setCategoryView(createdCategory.id);
+    return;
+  }
+  if (wasCategoryView) {
+    refreshListing();
+  }
 }
 
 async function uploadFiles(fileList) {
@@ -2779,6 +3416,17 @@ document.getElementById("file-filter").addEventListener("change", (event) => {
   renderEntries();
 });
 document.getElementById("new-folder").addEventListener("click", openNewFolderDialog);
+document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
+document.getElementById("mobile-add-category")?.addEventListener("click", () => openCategoryDialog("create"));
+document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
+document.getElementById("category-submit").addEventListener("click", submitCategoryDialog);
+document.getElementById("category-name-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") submitCategoryDialog();
+  if (event.key === "Escape") closeCategoryDialog();
+});
+document.getElementById("category-dialog").addEventListener("click", (event) => {
+  if (event.target.id === "category-dialog") closeCategoryDialog();
+});
 document.getElementById("new-folder-cancel").addEventListener("click", closeNewFolderDialog);
 document.getElementById("new-folder-create").addEventListener("click", submitNewFolder);
 document.getElementById("new-folder-name").addEventListener("keydown", (event) => {
@@ -2840,6 +3488,7 @@ document.addEventListener("keydown", (event) => {
     closePreviewDialog();
     closeRenameDialog();
     closeNewFolderDialog();
+    closeCategoryDialog();
     closeContextMenu();
   }
 });
@@ -2890,6 +3539,7 @@ document.addEventListener("contextmenu", (event) => {
   if (event.target.closest(".card")) return;
   if (event.target.closest(".crumb")) return;
   if (event.target.closest(".pinned-item")) return;
+  if (event.target.closest(".category-item")) return;
   if (isFolderBackgroundTarget(event.target)) return;
   closeContextMenu();
 });
@@ -2912,6 +3562,7 @@ bindTrashDrop();
 setActiveNav();
 renderBreadcrumbs(state.path);
 refreshPinnedSidebar();
+refreshCategoriesSidebar();
 if (!applyShareLinkFromUrl()) {
   refreshListing();
 }
@@ -2969,9 +3620,18 @@ function renderPage(): string {
       <button id="nav-important" type="button">Important</button>
       <button id="nav-trash" type="button">Trash</button>
     </nav>
-    <div class="pinned-section">
-      <div class="pinned-label">Pinned</div>
-      <div id="pinned-list" class="pinned-list"></div>
+    <div class="sidebar-scroll">
+      <div class="pinned-section">
+        <div class="pinned-label">Pinned</div>
+        <div id="pinned-list" class="pinned-list"></div>
+      </div>
+      <div class="categories-section">
+        <div class="categories-header">
+          <div class="categories-label">Categories</div>
+          <button id="add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
+        </div>
+        <div id="categories-list" class="categories-list"></div>
+      </div>
     </div>
   </aside>
   <main>
@@ -2987,6 +3647,13 @@ function renderPage(): string {
     <div class="mobile-pinned">
       <div class="pinned-label">Pinned</div>
       <div id="mobile-pinned-list" class="pinned-list"></div>
+    </div>
+    <div class="mobile-categories">
+      <div class="categories-header">
+        <div class="categories-label">Categories</div>
+        <button id="mobile-add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
+      </div>
+      <div id="mobile-categories-list" class="categories-list"></div>
     </div>
     <div class="topbar">
       <label class="search">
@@ -3039,6 +3706,16 @@ function renderPage(): string {
       <div class="dialog-actions">
         <button id="new-folder-cancel" class="secondary" type="button">Cancel</button>
         <button id="new-folder-create" class="primary" type="button">Create</button>
+      </div>
+    </div>
+  </div>
+  <div id="category-dialog" class="dialog-backdrop" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-labelledby="category-dialog-title">
+      <h2 id="category-dialog-title">New category</h2>
+      <input id="category-name-input" type="text" placeholder="Category name" autocomplete="off" maxlength="255">
+      <div class="dialog-actions">
+        <button id="category-cancel" class="secondary" type="button">Cancel</button>
+        <button id="category-submit" class="primary" type="button">Create</button>
       </div>
     </div>
   </div>
@@ -3295,6 +3972,37 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
+  if (route === "/api/categories") {
+    try {
+      const payload = await listCategories();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
+  if (route === "/api/categories/items") {
+    try {
+      const categoryId = queryParam(url, "category").trim();
+      if (!categoryId) {
+        sendJson(res, 400, { error: "category is required" });
+        return;
+      }
+      const payload = await listCategoryItems(categoryId);
+      sendJson(res, 200, payload);
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "category not found" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 500, { error: message });
+      }
     }
     return;
   }
@@ -3607,6 +4315,143 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
     } catch (error) {
       if (error instanceof FileNotFoundError) {
         sendJson(res, 404, { error: "pin not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/categories/create") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { name?: string };
+      const name = (payload.name ?? "").trim();
+      if (!name) {
+        sendJson(res, 400, { error: "name is required" });
+        return;
+      }
+      const category = await createCategory(name);
+      sendJson(res, 201, { category });
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid name") {
+        sendJson(res, 400, { error: error.message });
+      } else if (error instanceof Error && error.message === "category already exists") {
+        sendJson(res, 409, { error: error.message });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/categories/rename") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { id?: string; name?: string };
+      const id = (payload.id ?? "").trim();
+      const name = (payload.name ?? "").trim();
+      if (!id) {
+        sendJson(res, 400, { error: "id is required" });
+        return;
+      }
+      if (!name) {
+        sendJson(res, 400, { error: "name is required" });
+        return;
+      }
+      const category = await renameCategory(id, name);
+      sendJson(res, 200, { category });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "category not found" });
+      } else if (error instanceof Error && error.message === "invalid name") {
+        sendJson(res, 400, { error: error.message });
+      } else if (error instanceof Error && error.message === "category already exists") {
+        sendJson(res, 409, { error: error.message });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/categories/delete") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { id?: string };
+      const id = (payload.id ?? "").trim();
+      if (!id) {
+        sendJson(res, 400, { error: "id is required" });
+        return;
+      }
+      await deleteCategory(id);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "category not found" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/categories/assign") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string; categoryId?: string };
+      const relPath = (payload.path ?? "").trim();
+      const categoryId = (payload.categoryId ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      if (!categoryId) {
+        sendJson(res, 400, { error: "categoryId is required" });
+        return;
+      }
+      const item = await assignCategoryEntry(relPath, categoryId);
+      sendJson(res, 200, { item });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "item or category not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        sendJson(res, 404, { error: "item not found" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/categories/unassign") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string; categoryId?: string };
+      const relPath = (payload.path ?? "").trim();
+      const categoryId = (payload.categoryId ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      if (!categoryId) {
+        sendJson(res, 400, { error: "categoryId is required" });
+        return;
+      }
+      await unassignCategoryEntry(relPath, categoryId);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "category assignment not found" });
       } else if (error instanceof Error && error.message === "invalid path") {
         sendJson(res, 400, { error: error.message });
       } else {
