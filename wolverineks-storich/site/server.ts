@@ -13,6 +13,7 @@ const PWA_ICONS: Record<string, { file: string; type: string }> = {
 const TRASH_DIR = path.join(DATA_ROOT, ".trash");
 const TRASH_ITEMS_DIR = path.join(TRASH_DIR, "items");
 const TRASH_INDEX_PATH = path.join(TRASH_DIR, "index.json");
+const STARS_INDEX_PATH = path.join(DATA_ROOT, ".stars.json");
 
 type FileEntry = {
   name: string;
@@ -44,6 +45,21 @@ type TrashListing = {
       deletedAt: string;
     }
   >;
+};
+
+type StarItem = {
+  path: string;
+  starredAt: string;
+};
+
+type StarredEntry = FileEntry & {
+  starred: true;
+  starredAt: string;
+};
+
+type StarListing = {
+  entries: StarredEntry[];
+  starredPaths: string[];
 };
 
 async function ensureDataRoot(): Promise<void> {
@@ -120,6 +136,147 @@ async function listDirectory(relativePath = ""): Promise<DirectoryListing> {
   });
 
   return { path: relPath, entries };
+}
+
+async function readStarsIndex(): Promise<StarItem[]> {
+  if (!existsSync(STARS_INDEX_PATH)) {
+    return [];
+  }
+  try {
+    const raw = await readFile(STARS_INDEX_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { items?: StarItem[] };
+    return Array.isArray(parsed.items) ? parsed.items : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeStarsIndex(items: StarItem[]): Promise<void> {
+  await writeFile(STARS_INDEX_PATH, JSON.stringify({ items }, null, 2));
+}
+
+async function starredPathSet(): Promise<Set<string>> {
+  const items = await readStarsIndex();
+  return new Set(items.map((item) => item.path));
+}
+
+function remapStarPaths(items: StarItem[], oldPath: string, newPath: string): StarItem[] {
+  const oldNorm = oldPath.replace(/\\/g, "/");
+  const newNorm = newPath.replace(/\\/g, "/");
+  const seen = new Set<string>();
+  const result: StarItem[] = [];
+  for (const item of items) {
+    let nextPath = item.path;
+    if (nextPath === oldNorm) {
+      nextPath = newNorm;
+    } else if (nextPath.startsWith(`${oldNorm}/`)) {
+      nextPath = newNorm + nextPath.slice(oldNorm.length);
+    }
+    if (seen.has(nextPath)) {
+      continue;
+    }
+    seen.add(nextPath);
+    result.push(nextPath === item.path ? item : { ...item, path: nextPath });
+  }
+  return result;
+}
+
+async function updateStarPaths(oldPath: string, newPath: string): Promise<void> {
+  const items = await readStarsIndex();
+  const updated = remapStarPaths(items, oldPath, newPath);
+  if (updated.length !== items.length || updated.some((item, index) => item.path !== items[index]?.path)) {
+    await writeStarsIndex(updated);
+  }
+}
+
+async function removeStarsForPath(relPath: string): Promise<void> {
+  const normalized = relPath.replace(/\\/g, "/");
+  const items = await readStarsIndex();
+  const next = items.filter((item) => item.path !== normalized && !item.path.startsWith(`${normalized}/`));
+  if (next.length !== items.length) {
+    await writeStarsIndex(next);
+  }
+}
+
+async function starEntry(relPath: string): Promise<StarItem> {
+  const { relPath: normalized } = safePath(relPath);
+  if (isProtectedPath(normalized)) {
+    throw new Error("invalid path");
+  }
+  const { absPath } = safePath(normalized);
+  await stat(absPath);
+
+  const items = await readStarsIndex();
+  const existing = items.find((item) => item.path === normalized);
+  if (existing) {
+    return existing;
+  }
+
+  const item: StarItem = {
+    path: normalized,
+    starredAt: new Date().toISOString(),
+  };
+  items.unshift(item);
+  await writeStarsIndex(items);
+  return item;
+}
+
+async function unstarEntry(relPath: string): Promise<void> {
+  const { relPath: normalized } = safePath(relPath);
+  const items = await readStarsIndex();
+  const next = items.filter((item) => item.path !== normalized);
+  if (next.length === items.length) {
+    throw new FileNotFoundError("star not found");
+  }
+  await writeStarsIndex(next);
+}
+
+async function listDirectoryWithStars(
+  relativePath = "",
+): Promise<DirectoryListing & { entries: Array<FileEntry & { starred: boolean }>; starredPaths: string[] }> {
+  const listing = await listDirectory(relativePath);
+  const starItems = await readStarsIndex();
+  const stars = new Set(starItems.map((item) => item.path));
+  return {
+    ...listing,
+    entries: listing.entries.map((entry) => ({
+      ...entry,
+      starred: stars.has(entry.path),
+    })),
+    starredPaths: starItems.map((item) => item.path),
+  };
+}
+
+async function listStarred(): Promise<StarListing> {
+  const items = await readStarsIndex();
+  const entries: StarredEntry[] = [];
+  const stale: string[] = [];
+
+  for (const item of items) {
+    try {
+      const { absPath } = safePath(item.path);
+      if (!existsSync(absPath)) {
+        stale.push(item.path);
+        continue;
+      }
+      const entry = await fileEntry(absPath, item.path);
+      entries.push({
+        ...entry,
+        starred: true,
+        starredAt: item.starredAt,
+      });
+    } catch {
+      stale.push(item.path);
+    }
+  }
+
+  if (stale.length) {
+    const next = items.filter((item) => !stale.includes(item.path));
+    await writeStarsIndex(next);
+  }
+
+  entries.sort((a, b) => new Date(b.starredAt).getTime() - new Date(a.starredAt).getTime());
+  return { entries, starredPaths: entries.map((entry) => entry.path) };
 }
 
 async function ensureTrashDir(): Promise<void> {
@@ -211,6 +368,7 @@ async function renameEntry(sourcePath: string, newName: string): Promise<FileEnt
 
   await mkdir(path.dirname(targetAbs), { recursive: true });
   await rename(sourceAbs, targetAbs);
+  await updateStarPaths(sourceRel, targetRel);
   return fileEntry(targetAbs, targetRel);
 }
 
@@ -246,6 +404,7 @@ async function moveEntry(sourcePath: string, destinationFolder: string): Promise
   const { absPath: targetAbs } = safePath(targetRel);
   await mkdir(path.dirname(targetAbs), { recursive: true });
   await rename(sourceAbs, targetAbs);
+  await updateStarPaths(sourceRel, targetRel);
   return fileEntry(targetAbs, targetRel);
 }
 
@@ -284,6 +443,7 @@ async function moveToTrash(relPath: string): Promise<TrashItem> {
   const items = await readTrashIndex();
   items.unshift(item);
   await writeTrashIndex(items);
+  await removeStarsForPath(normalized.replace(/\\/g, "/"));
   return item;
 }
 
@@ -588,6 +748,7 @@ label.upload-btn input { display: none; }
   gap: 0.85rem;
 }
 .card {
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 0.9rem;
@@ -724,11 +885,21 @@ label.upload-btn input { display: none; }
 .toolbar-trash {
   display: none;
 }
-body.view-trash .toolbar-drive {
+body.view-trash .toolbar-drive,
+body.view-starred .toolbar-drive {
   display: none;
 }
 body.view-trash .toolbar-trash {
   display: flex;
+}
+.card-star {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  color: #ca8a04;
+  font-size: 0.95rem;
+  line-height: 1;
+  pointer-events: none;
 }
 .dialog-backdrop {
   position: fixed;
@@ -924,7 +1095,7 @@ self.addEventListener("fetch", (event) => {
 `;
 
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null, starredPaths: new Set() };
 const menuState = { entry: null, longPress: false };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
@@ -974,12 +1145,19 @@ function formatDate(value) {
 
 function setActiveNav() {
   document.getElementById("nav-drive").classList.toggle("active", state.view === "drive");
+  document.getElementById("nav-starred").classList.toggle("active", state.view === "starred");
   document.getElementById("nav-trash").classList.toggle("active", state.view === "trash");
   document.getElementById("mobile-nav-drive")?.classList.toggle("active", state.view === "drive");
+  document.getElementById("mobile-nav-starred")?.classList.toggle("active", state.view === "starred");
   document.getElementById("mobile-nav-trash")?.classList.toggle("active", state.view === "trash");
   document.body.classList.toggle("view-trash", state.view === "trash");
+  document.body.classList.toggle("view-starred", state.view === "starred");
   document.getElementById("search").placeholder =
-    state.view === "trash" ? "Search in Trash" : "Search in My Drive";
+    state.view === "trash"
+      ? "Search in Trash"
+      : state.view === "starred"
+        ? "Search in Starred"
+        : "Search in My Drive";
 }
 
 function setView(view) {
@@ -1070,6 +1248,10 @@ function renderBreadcrumbs(path) {
   const root = document.getElementById("breadcrumbs");
   if (state.view === "trash") {
     root.innerHTML = '<span>Trash</span>';
+    return;
+  }
+  if (state.view === "starred") {
+    root.innerHTML = '<span>Starred</span>';
     return;
   }
   const parts = path ? path.split("/") : [];
@@ -1188,6 +1370,7 @@ function entryFromCard(card) {
     name: decodeDataValue(card.dataset.name),
     type: card.dataset.type || "file",
     originalPath: decodeDataValue(card.dataset.originalPath),
+    starred: card.dataset.starred === "true",
   };
 }
 
@@ -1204,13 +1387,28 @@ function closeContextMenu() {
   clearContextSelection();
 }
 
+function isStarredEntry(entry) {
+  return !!entry.starred || state.starredPaths.has(entry.path);
+}
+
 function contextMenuActions(entry, source) {
   if (source === "breadcrumb") {
     return [
       { id: "open", label: "Open" },
       { id: "rename", label: "Rename", hidden: !entry.path },
+      { id: isStarredEntry(entry) ? "unstar" : "star", label: isStarredEntry(entry) ? "Remove from starred" : "Add to starred", hidden: !entry.path },
       { id: "share", label: "Share" },
       { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
+    ];
+  }
+  if (state.view === "starred") {
+    const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
+    return [
+      { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
+      { id: "preview", label: "Preview", hidden: !isImage },
+      { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
+      { id: "unstar", label: "Remove from starred" },
+      { id: "share", label: "Share" },
     ];
   }
   if (state.view === "trash") {
@@ -1230,6 +1428,7 @@ function contextMenuActions(entry, source) {
     { id: "preview", label: "Preview", hidden: !isImage },
     { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
     { id: "rename", label: "Rename" },
+    { id: isStarredEntry(entry) ? "unstar" : "star", label: isStarredEntry(entry) ? "Remove from starred" : "Add to starred" },
     { id: "share", label: "Share" },
     { id: "delete", label: "Move to trash", danger: true },
   ];
@@ -1383,8 +1582,31 @@ async function downloadEntry(entry) {
   URL.revokeObjectURL(objectUrl);
 }
 
+function openFromStarred(entry) {
+  const targetPath = entry.type === "folder" ? entry.path : parentPath(entry.path);
+  setView("drive");
+  setPath(targetPath);
+}
+
+async function setStarred(entry, starred) {
+  const response = await fetch(starred ? "/api/unstar" : "/api/star", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: entry.path }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Could not update starred items");
+  }
+  refreshListing();
+}
+
 async function runMenuAction(action, entry) {
   if (action === "open") {
+    if (state.view === "starred") {
+      openFromStarred(entry);
+      return;
+    }
     if (entry.type === "folder") {
       setPath(entry.path);
       return;
@@ -1411,6 +1633,14 @@ async function runMenuAction(action, entry) {
   }
   if (action === "rename") {
     openRenameDialog(entry);
+    return;
+  }
+  if (action === "star") {
+    await setStarred(entry, false);
+    return;
+  }
+  if (action === "unstar") {
+    await setStarred(entry, true);
     return;
   }
   if (action === "delete") {
@@ -1607,6 +1837,14 @@ function bindCard(card) {
     }
     const entry = entryFromCard(card);
     if (state.view === "trash") return;
+    if (state.view === "starred") {
+      if (entry.type === "folder") {
+        openFromStarred(entry);
+        return;
+      }
+      await downloadEntry(entry);
+      return;
+    }
     if (entry.type === "folder") {
       setPath(entry.path);
       return;
@@ -1686,7 +1924,9 @@ function renderEntries() {
   const entries = filteredEntries(allEntries);
   const locationLabel = state.view === "trash"
     ? "Trash"
-    : (data.path ? data.path : "My Drive");
+    : state.view === "starred"
+      ? "Starred"
+      : (data.path ? data.path : "My Drive");
   const filterLabel = state.fileFilter !== "all" ? \` · \${document.getElementById("file-filter").selectedOptions[0].textContent}\` : "";
   document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\${filterLabel}\`;
 
@@ -1697,7 +1937,9 @@ function renderEntries() {
     }
     container.innerHTML = state.view === "trash"
       ? '<div class="empty">Trash is empty.</div>'
-      : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
+      : state.view === "starred"
+        ? '<div class="empty">No starred items yet. Star files and folders from My Drive.</div>'
+        : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
     return;
   }
 
@@ -1705,9 +1947,14 @@ function renderEntries() {
     const icon = renderFileIcon(entry);
     const meta = state.view === "trash"
       ? \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`
-      : (entry.type === "folder"
-        ? \`Folder · \${formatDate(entry.modified)}\`
-        : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
+      : state.view === "starred"
+        ? (entry.type === "folder"
+          ? \`Folder · \${escapeHtml(entry.path || "/")}\`
+          : \`\${formatSize(entry.size)} · \${escapeHtml(entry.path || "/")}\`)
+        : (entry.type === "folder"
+          ? \`Folder · \${formatDate(entry.modified)}\`
+          : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
+    const starBadge = entry.starred ? '<div class="card-star" aria-label="Starred">★</div>' : "";
     return \`
       <article
         class="card"
@@ -1716,7 +1963,9 @@ function renderEntries() {
         data-name="\${encodeDataValue(entry.name)}"
         data-type="\${entry.type}"
         data-original-path="\${encodeDataValue(entry.originalPath || "")}"
+        data-starred="\${entry.starred ? "true" : "false"}"
       >
+        \${starBadge}
         <div class="icon">\${icon}</div>
         <div class="name">\${escapeHtml(entry.name)}</div>
         <div class="meta">\${meta}</div>
@@ -1739,7 +1988,9 @@ async function refreshListing() {
   try {
     const response = state.view === "trash"
       ? await fetch("/api/trash")
-      : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
+      : state.view === "starred"
+        ? await fetch("/api/stars")
+        : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
     const data = await response.json();
     if (!response.ok) {
       if (state.view === "drive" && response.status === 404) {
@@ -1752,11 +2003,12 @@ async function refreshListing() {
       throw new Error(data.error || "Could not load files");
     }
     state.listing = data;
-    renderBreadcrumbs(state.view === "trash" ? "" : (data.path || ""));
+    state.starredPaths = new Set(data.starredPaths || (data.entries || []).filter((entry) => entry.starred).map((entry) => entry.path));
+    renderBreadcrumbs(state.view === "drive" ? (data.path || "") : "");
     renderEntries();
   } catch (error) {
     showError(String(error));
-    renderBreadcrumbs(state.view === "trash" ? "" : state.path);
+    renderBreadcrumbs(state.view === "drive" ? state.path : "");
     document.getElementById("files").innerHTML = "";
   }
 }
@@ -2000,8 +2252,10 @@ document.getElementById("upload-input").addEventListener("change", (event) => {
   event.target.value = "";
 });
 document.getElementById("nav-drive").addEventListener("click", () => setView("drive"));
+document.getElementById("nav-starred").addEventListener("click", () => setView("starred"));
 document.getElementById("nav-trash").addEventListener("click", () => setView("trash"));
 document.getElementById("mobile-nav-drive")?.addEventListener("click", () => setView("drive"));
+document.getElementById("mobile-nav-starred")?.addEventListener("click", () => setView("starred"));
 document.getElementById("mobile-nav-trash")?.addEventListener("click", () => setView("trash"));
 document.getElementById("empty-trash").addEventListener("click", emptyTrash);
 document.getElementById("context-menu").addEventListener("click", async (event) => {
@@ -2156,7 +2410,7 @@ function renderPage(): string {
     </div>
     <nav class="nav">
       <button id="nav-drive" class="active" type="button">My Drive</button>
-      <button type="button" disabled>Recent</button>
+      <button id="nav-starred" type="button">Starred</button>
       <button id="nav-trash" type="button">Trash</button>
     </nav>
   </aside>
@@ -2167,6 +2421,7 @@ function renderPage(): string {
         <span>Storich</span>
       </div>
       <button id="mobile-nav-drive" class="active" type="button">My Drive</button>
+      <button id="mobile-nav-starred" type="button">Starred</button>
       <button id="mobile-nav-trash" type="button">Trash</button>
     </nav>
     <div class="topbar">
@@ -2455,9 +2710,20 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   await ensureDataRoot();
 
+  if (route === "/api/stars") {
+    try {
+      const payload = await listStarred();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
   if (route === "/api/files") {
     try {
-      const payload = await listDirectory(queryParam(url, "path"));
+      const payload = await listDirectoryWithStars(queryParam(url, "path"));
       sendJson(res, 200, payload);
     } catch (error) {
       if (error instanceof FileNotFoundError) {
@@ -2668,6 +2934,56 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
       } else {
         const message = error instanceof Error ? error.message : String(error);
         sendJson(res, 500, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/star") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string };
+      const relPath = (payload.path ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      const item = await starEntry(relPath);
+      sendJson(res, 200, { item });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "item not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        sendJson(res, 404, { error: "item not found" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/unstar") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string };
+      const relPath = (payload.path ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      await unstarEntry(relPath);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "star not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
       }
     }
     return;
