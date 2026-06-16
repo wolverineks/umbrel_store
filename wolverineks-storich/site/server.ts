@@ -735,6 +735,66 @@ body.view-trash .toolbar-trash {
   justify-content: flex-end;
   gap: 0.5rem;
 }
+.preview-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.88);
+  display: none;
+  place-items: center;
+  padding: 1.5rem;
+  z-index: 1200;
+}
+.preview-backdrop.open {
+  display: grid;
+}
+.preview-panel {
+  width: min(100%, 56rem);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: white;
+}
+.preview-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-header button {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  padding: 0.45rem 0.85rem;
+  font: inherit;
+  cursor: pointer;
+}
+.preview-header button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.preview-image-wrap {
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.04);
+  min-height: 12rem;
+  max-height: calc(100vh - 8rem);
+}
+.preview-image-wrap img {
+  max-width: 100%;
+  max-height: calc(100vh - 8rem);
+  object-fit: contain;
+}
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
   aside { display: none; }
@@ -1012,15 +1072,21 @@ function contextMenuActions(entry, source) {
     ];
   }
   if (state.view === "trash") {
+    const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
     return [
       { id: "restore", label: "Restore" },
+      { id: "preview", label: "Preview", hidden: !isImage },
+      { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
       { id: "download", label: "Download", hidden: entry.type === "folder" },
       { id: "share", label: "Share", hidden: entry.type === "folder" },
       { id: "delete-forever", label: "Delete forever", danger: true },
     ];
   }
+  const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
   return [
     { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
+    { id: "preview", label: "Preview", hidden: !isImage },
+    { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
     { id: "share", label: "Share" },
     { id: "delete", label: "Move to trash", danger: true },
   ];
@@ -1079,6 +1145,39 @@ async function copyShareLink(entry) {
   input.remove();
 }
 
+function fileViewUrl(entry) {
+  if (state.view === "trash") {
+    return \`/api/trash/view?id=\${encodeURIComponent(entry.id)}\`;
+  }
+  return \`/api/view?path=\${encodeURIComponent(entry.path)}\`;
+}
+
+function isImageEntry(entry) {
+  return entry.type === "file" && fileTypeCategory(entry) === "image";
+}
+
+function openEntryInNewTab(entry) {
+  window.open(fileViewUrl(entry), "_blank", "noopener,noreferrer");
+}
+
+function closePreviewDialog() {
+  const dialog = document.getElementById("preview-dialog");
+  const image = document.getElementById("preview-image");
+  dialog.classList.remove("open");
+  dialog.setAttribute("aria-hidden", "true");
+  image.removeAttribute("src");
+}
+
+function openPreviewDialog(entry) {
+  if (!isImageEntry(entry)) return;
+  const dialog = document.getElementById("preview-dialog");
+  const image = document.getElementById("preview-image");
+  document.getElementById("preview-title").textContent = entry.name;
+  image.src = fileViewUrl(entry);
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+}
+
 async function downloadEntry(entry) {
   const url = state.view === "trash"
     ? \`/api/trash/download?id=\${encodeURIComponent(entry.id)}\`
@@ -1111,6 +1210,14 @@ async function runMenuAction(action, entry) {
   }
   if (action === "download") {
     await downloadEntry(entry);
+    return;
+  }
+  if (action === "open-new-tab") {
+    openEntryInNewTab(entry);
+    return;
+  }
+  if (action === "preview") {
+    openPreviewDialog(entry);
     return;
   }
   if (action === "share") {
@@ -1660,7 +1767,14 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest("#context-menu")) closeContextMenu();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeContextMenu();
+  if (event.key === "Escape") {
+    closePreviewDialog();
+    closeContextMenu();
+  }
+});
+document.getElementById("preview-close").addEventListener("click", closePreviewDialog);
+document.getElementById("preview-dialog").addEventListener("click", (event) => {
+  if (event.target.id === "preview-dialog") closePreviewDialog();
 });
 document.addEventListener("contextmenu", (event) => {
   if (!event.target.closest(".card") && !event.target.closest(".crumb")) closeContextMenu();
@@ -1765,6 +1879,17 @@ function renderPage(): string {
       </div>
     </div>
   </div>
+  <div id="preview-dialog" class="preview-backdrop" aria-hidden="true">
+    <div class="preview-panel" role="dialog" aria-labelledby="preview-title">
+      <div class="preview-header">
+        <h2 id="preview-title">Preview</h2>
+        <button id="preview-close" type="button">Close</button>
+      </div>
+      <div class="preview-image-wrap">
+        <img id="preview-image" alt="">
+      </div>
+    </div>
+  </div>
   <script>${PAGE_SCRIPT}</script>
 </body>
 </html>`;
@@ -1865,6 +1990,13 @@ const MIME_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
   ".pdf": "application/pdf",
   ".zip": "application/zip",
   ".mp4": "video/mp4",
@@ -1980,6 +2112,27 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
 
+  if (route === "/api/view") {
+    try {
+      const { absPath } = safePath(queryParam(url, "path"));
+      const fileStat = await stat(absPath);
+      if (!fileStat.isFile()) {
+        sendJson(res, 404, { error: "file not found" });
+        return;
+      }
+      const data = await readFile(absPath);
+      sendBytes(res, 200, guessMimeType(absPath), data);
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 500, { error: message });
+      }
+    }
+    return;
+  }
+
   if (route === "/api/download") {
     try {
       const { absPath } = safePath(queryParam(url, "path"));
@@ -2005,6 +2158,30 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
     try {
       const payload = await listTrash();
       sendJson(res, 200, payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
+  if (route === "/api/trash/view") {
+    try {
+      const id = queryParam(url, "id");
+      const items = await readTrashIndex();
+      const item = items.find((entry) => entry.id === id);
+      if (!item) {
+        sendJson(res, 404, { error: "trash item not found" });
+        return;
+      }
+      const absPath = path.join(TRASH_ITEMS_DIR, item.storageName);
+      const fileStat = await stat(absPath);
+      if (!fileStat.isFile()) {
+        sendJson(res, 404, { error: "file not found" });
+        return;
+      }
+      const data = await readFile(absPath);
+      sendBytes(res, 200, guessMimeType(item.name), data);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 500, { error: message });
