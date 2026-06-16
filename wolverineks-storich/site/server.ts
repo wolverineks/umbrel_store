@@ -795,6 +795,38 @@ body.view-trash .toolbar-trash {
   max-height: calc(100vh - 8rem);
   object-fit: contain;
 }
+.preview-stage {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+.preview-nav {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  width: 2.75rem;
+  height: 2.75rem;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.preview-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+.preview-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.preview-counter {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.9rem;
+}
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
   aside { display: none; }
@@ -805,6 +837,7 @@ const PAGE_SCRIPT = `
 const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null };
 const menuState = { entry: null, longPress: false };
 const DRAG_MIME = "application/x-storich-entry";
+const previewState = { images: [], index: 0 };
 let longPressTimer = null;
 let dragEntry = null;
 
@@ -1160,22 +1193,63 @@ function openEntryInNewTab(entry) {
   window.open(fileViewUrl(entry), "_blank", "noopener,noreferrer");
 }
 
+function previewEntryKey(entry) {
+  return state.view === "trash" ? entry.id : entry.path;
+}
+
+function folderImageEntries() {
+  const entries = state.listing?.entries || [];
+  return entries.filter((item) => isImageEntry(item));
+}
+
+function showPreviewImage() {
+  const entry = previewState.images[previewState.index];
+  if (!entry) return;
+  const dialog = document.getElementById("preview-dialog");
+  const image = document.getElementById("preview-image");
+  const prev = document.getElementById("preview-prev");
+  const next = document.getElementById("preview-next");
+  const counter = document.getElementById("preview-counter");
+  const total = previewState.images.length;
+  const canStep = total > 1;
+  document.getElementById("preview-title").textContent = entry.name;
+  image.src = fileViewUrl(entry);
+  image.alt = entry.name;
+  prev.disabled = !canStep;
+  next.disabled = !canStep;
+  counter.textContent = canStep ? \`\${previewState.index + 1} / \${total}\` : "";
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+}
+
+function stepPreview(delta) {
+  const total = previewState.images.length;
+  if (total <= 1) return;
+  previewState.index = (previewState.index + delta + total) % total;
+  showPreviewImage();
+}
+
 function closePreviewDialog() {
   const dialog = document.getElementById("preview-dialog");
   const image = document.getElementById("preview-image");
   dialog.classList.remove("open");
   dialog.setAttribute("aria-hidden", "true");
   image.removeAttribute("src");
+  document.getElementById("preview-counter").textContent = "";
+  previewState.images = [];
+  previewState.index = 0;
 }
 
 function openPreviewDialog(entry) {
   if (!isImageEntry(entry)) return;
-  const dialog = document.getElementById("preview-dialog");
-  const image = document.getElementById("preview-image");
-  document.getElementById("preview-title").textContent = entry.name;
-  image.src = fileViewUrl(entry);
-  dialog.classList.add("open");
-  dialog.setAttribute("aria-hidden", "false");
+  const images = folderImageEntries();
+  if (!images.length) return;
+  const key = previewEntryKey(entry);
+  let index = images.findIndex((item) => previewEntryKey(item) === key);
+  if (index === -1) index = 0;
+  previewState.images = images;
+  previewState.index = index;
+  showPreviewImage();
 }
 
 async function downloadEntry(entry) {
@@ -1767,12 +1841,25 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest("#context-menu")) closeContextMenu();
 });
 document.addEventListener("keydown", (event) => {
+  const previewOpen = document.getElementById("preview-dialog").classList.contains("open");
+  if (previewOpen && event.key === "ArrowLeft") {
+    event.preventDefault();
+    stepPreview(-1);
+    return;
+  }
+  if (previewOpen && event.key === "ArrowRight") {
+    event.preventDefault();
+    stepPreview(1);
+    return;
+  }
   if (event.key === "Escape") {
     closePreviewDialog();
     closeContextMenu();
   }
 });
 document.getElementById("preview-close").addEventListener("click", closePreviewDialog);
+document.getElementById("preview-prev").addEventListener("click", () => stepPreview(-1));
+document.getElementById("preview-next").addEventListener("click", () => stepPreview(1));
 document.getElementById("preview-dialog").addEventListener("click", (event) => {
   if (event.target.id === "preview-dialog") closePreviewDialog();
 });
@@ -1885,9 +1972,14 @@ function renderPage(): string {
         <h2 id="preview-title">Preview</h2>
         <button id="preview-close" type="button">Close</button>
       </div>
-      <div class="preview-image-wrap">
-        <img id="preview-image" alt="">
+      <div class="preview-stage">
+        <button id="preview-prev" class="preview-nav" type="button" aria-label="Previous image">‹</button>
+        <div class="preview-image-wrap">
+          <img id="preview-image" alt="">
+        </div>
+        <button id="preview-next" class="preview-nav" type="button" aria-label="Next image">›</button>
       </div>
+      <div id="preview-counter" class="preview-counter"></div>
     </div>
   </div>
   <script>${PAGE_SCRIPT}</script>
