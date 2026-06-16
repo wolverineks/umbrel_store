@@ -2,7 +2,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { handleSyncGet, handleSyncPost } from "./sync";
 
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -296,16 +295,6 @@ class FileNotFoundError extends Error {
     this.name = "FileNotFoundError";
   }
 }
-
-const syncContext = {
-  dataRoot: DATA_ROOT,
-  safePath,
-  validateEntryName,
-  sendJson,
-  sendBytes,
-  readBody,
-  parseMultipartUpload,
-};
 
 const PAGE_STYLES = `
 :root {
@@ -648,29 +637,6 @@ body.view-trash .toolbar-trash {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
-}
-.dialog .field {
-  margin-bottom: 0.85rem;
-}
-.dialog label {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--muted);
-  margin-bottom: 0.35rem;
-}
-.dialog .hint {
-  margin: 0 0 1rem;
-  color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.45;
-}
-.dialog .sync-result {
-  margin: 0 0 1rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: 0.65rem;
-  background: var(--accent-soft);
-  color: var(--text);
-  font-size: 0.9rem;
 }
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
@@ -1314,77 +1280,7 @@ document.getElementById("search").addEventListener("input", (event) => {
   state.query = event.target.value;
   refreshListing();
 });
-function closeSyncDialog() {
-  const dialog = document.getElementById("sync-dialog");
-  dialog.classList.remove("open");
-  dialog.setAttribute("aria-hidden", "true");
-}
-
-async function openSyncDialog() {
-  const dialog = document.getElementById("sync-dialog");
-  const result = document.getElementById("sync-result");
-  result.textContent = "";
-  result.hidden = true;
-  try {
-    const response = await fetch("/api/sync/config");
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not load sync settings");
-    document.getElementById("sync-remote-url").value = data.remoteUrl || "";
-    document.getElementById("sync-token").value = data.syncToken || "";
-    if (data.lastResult) {
-      const last = data.lastResult;
-      result.textContent = \`Last sync: pulled \${last.pulled}, pushed \${last.pushed}\${last.errors?.length ? \` (\${last.errors.length} errors)\` : ""}\`;
-      result.hidden = false;
-    }
-  } catch (error) {
-    result.textContent = String(error);
-    result.hidden = false;
-  }
-  dialog.classList.add("open");
-  dialog.setAttribute("aria-hidden", "false");
-}
-
-async function saveSyncSettings() {
-  const response = await fetch("/api/sync/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      remoteUrl: document.getElementById("sync-remote-url").value.trim(),
-      syncToken: document.getElementById("sync-token").value.trim(),
-    }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Could not save sync settings");
-}
-
-async function runSyncNow() {
-  const result = document.getElementById("sync-result");
-  const button = document.getElementById("sync-run");
-  result.textContent = "Syncing...";
-  result.hidden = false;
-  button.disabled = true;
-  try {
-    await saveSyncSettings();
-    const response = await fetch("/api/sync/run", { method: "POST" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Sync failed");
-    const sync = data.result;
-    result.textContent = \`Done: pulled \${sync.pulled}, pushed \${sync.pushed}\${sync.errors?.length ? \`. \${sync.errors.join("; ")}\` : ""}\`;
-    refreshListing();
-  } catch (error) {
-    result.textContent = String(error);
-  } finally {
-    button.disabled = false;
-  }
-}
-
 document.getElementById("new-folder").addEventListener("click", openNewFolderDialog);
-document.getElementById("sync-open").addEventListener("click", openSyncDialog);
-document.getElementById("sync-cancel").addEventListener("click", closeSyncDialog);
-document.getElementById("sync-run").addEventListener("click", runSyncNow);
-document.getElementById("sync-dialog").addEventListener("click", (event) => {
-  if (event.target.id === "sync-dialog") closeSyncDialog();
-});
 document.getElementById("new-folder-cancel").addEventListener("click", closeNewFolderDialog);
 document.getElementById("new-folder-create").addEventListener("click", submitNewFolder);
 document.getElementById("new-folder-name").addEventListener("keydown", (event) => {
@@ -1474,7 +1370,6 @@ function renderPage(): string {
       </label>
       <div class="toolbar toolbar-drive">
         <button id="new-folder" class="secondary" type="button">New folder</button>
-        <button id="sync-open" class="secondary" type="button">Sync</button>
         <label class="upload-btn">
           Upload
           <input id="upload-input" type="file" multiple>
@@ -1506,25 +1401,6 @@ function renderPage(): string {
       <div class="dialog-actions">
         <button id="new-folder-cancel" class="secondary" type="button">Cancel</button>
         <button id="new-folder-create" class="primary" type="button">Create</button>
-      </div>
-    </div>
-  </div>
-  <div id="sync-dialog" class="dialog-backdrop" aria-hidden="true">
-    <div class="dialog" role="dialog" aria-labelledby="sync-title">
-      <h2 id="sync-title">Sync with another instance</h2>
-      <p class="hint">Use the same sync token on both instances. Newer files win. Deletes are not synced in v1.</p>
-      <div class="field">
-        <label for="sync-remote-url">Remote instance URL</label>
-        <input id="sync-remote-url" type="url" placeholder="http://umbrel.local:4010" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="sync-token">Sync token</label>
-        <input id="sync-token" type="text" placeholder="Shared secret" autocomplete="off">
-      </div>
-      <div id="sync-result" class="sync-result" hidden></div>
-      <div class="dialog-actions">
-        <button id="sync-cancel" class="secondary" type="button">Close</button>
-        <button id="sync-run" class="primary" type="button">Sync now</button>
       </div>
     </div>
   </div>
@@ -1799,10 +1675,6 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
 
-  if (await handleSyncGet(syncContext, req, res, route, (name) => queryParam(url, name))) {
-    return;
-  }
-
   if (route === "/icon.svg" || route === "/favicon.ico") {
     try {
       const icon = await readFile(ICON_PATH);
@@ -1958,10 +1830,6 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 500, { error: message });
     }
-    return;
-  }
-
-  if (await handleSyncPost(syncContext, req, res, route)) {
     return;
   }
 
