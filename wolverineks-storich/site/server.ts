@@ -651,7 +651,17 @@ function setView(view) {
 }
 
 function normalizePath(path) {
-  return String(path || "").replace(/\\/g, "/").replace(/^\\/+|\\/+$/g, "");
+  let normalized = String(path || "");
+  while (normalized.indexOf("\\\\") !== -1) {
+    normalized = normalized.split("\\\\").join("/");
+  }
+  while (normalized.charAt(0) === "/") {
+    normalized = normalized.slice(1);
+  }
+  while (normalized.endsWith("/")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
 }
 
 function parentPath(path) {
@@ -1045,6 +1055,7 @@ async function refreshListing() {
     renderEntries(data);
   } catch (error) {
     showError(String(error));
+    renderBreadcrumbs(state.view === "trash" ? "" : state.path);
     document.getElementById("files").innerHTML = "";
   }
 }
@@ -1174,6 +1185,7 @@ function applyShareLinkFromUrl() {
 }
 
 setActiveNav();
+renderBreadcrumbs(state.path);
 if (!applyShareLinkFromUrl()) {
   refreshListing();
 }

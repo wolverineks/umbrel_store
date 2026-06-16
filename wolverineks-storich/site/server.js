@@ -491,6 +491,52 @@ body.view-trash .toolbar-drive {
 body.view-trash .toolbar-trash {
   display: flex;
 }
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: none;
+  place-items: center;
+  padding: 1rem;
+  z-index: 1100;
+}
+.dialog-backdrop.open {
+  display: grid;
+}
+.dialog {
+  width: min(100%, 24rem);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18);
+}
+.dialog h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.1rem;
+}
+.dialog p {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.dialog input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.75rem 0.85rem;
+  font: inherit;
+  margin-bottom: 1rem;
+}
+.dialog input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
   aside { display: none; }
@@ -545,7 +591,17 @@ function setView(view) {
 }
 
 function normalizePath(path) {
-  return String(path || "").replace(/\\/g, "/").replace(/^\\/+|\\/+$/g, "");
+  let normalized = String(path || "");
+  while (normalized.indexOf("\\\\") !== -1) {
+    normalized = normalized.split("\\\\").join("/");
+  }
+  while (normalized.charAt(0) === "/") {
+    normalized = normalized.slice(1);
+  }
+  while (normalized.endsWith("/")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
 }
 
 function parentPath(path) {
@@ -939,13 +995,39 @@ async function refreshListing() {
     renderEntries(data);
   } catch (error) {
     showError(String(error));
+    renderBreadcrumbs(state.view === "trash" ? "" : state.path);
     document.getElementById("files").innerHTML = "";
   }
 }
 
-async function createFolder() {
-  const name = window.prompt("Folder name");
-  if (!name) return;
+function closeNewFolderDialog() {
+  const dialog = document.getElementById("new-folder-dialog");
+  dialog.classList.remove("open");
+  dialog.setAttribute("aria-hidden", "true");
+  document.getElementById("new-folder-name").value = "";
+}
+
+function openNewFolderDialog() {
+  if (state.view !== "drive") {
+    setView("drive");
+  }
+  const dialog = document.getElementById("new-folder-dialog");
+  const input = document.getElementById("new-folder-name");
+  const location = state.path ? state.path : "My Drive";
+  document.getElementById("new-folder-location").textContent = location;
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+  input.value = "";
+  input.focus();
+}
+
+async function submitNewFolder() {
+  const input = document.getElementById("new-folder-name");
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    return;
+  }
   const response = await fetch("/api/mkdir", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -956,6 +1038,7 @@ async function createFolder() {
     showError(data.error || "Could not create folder");
     return;
   }
+  closeNewFolderDialog();
   refreshListing();
 }
 
@@ -989,7 +1072,16 @@ document.getElementById("search").addEventListener("input", (event) => {
   state.query = event.target.value;
   refreshListing();
 });
-document.getElementById("new-folder").addEventListener("click", createFolder);
+document.getElementById("new-folder").addEventListener("click", openNewFolderDialog);
+document.getElementById("new-folder-cancel").addEventListener("click", closeNewFolderDialog);
+document.getElementById("new-folder-create").addEventListener("click", submitNewFolder);
+document.getElementById("new-folder-name").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") submitNewFolder();
+  if (event.key === "Escape") closeNewFolderDialog();
+});
+document.getElementById("new-folder-dialog").addEventListener("click", (event) => {
+  if (event.target.id === "new-folder-dialog") closeNewFolderDialog();
+});
 document.getElementById("upload-input").addEventListener("change", (event) => {
   uploadFiles(event.target.files);
   event.target.value = "";
@@ -1033,6 +1125,7 @@ function applyShareLinkFromUrl() {
 }
 
 setActiveNav();
+renderBreadcrumbs(state.path);
 if (!applyShareLinkFromUrl()) {
   refreshListing();
 }
@@ -1083,6 +1176,17 @@ function renderPage() {
     </div>
   </main>
   <div id="context-menu" class="context-menu" role="menu" aria-hidden="true"></div>
+  <div id="new-folder-dialog" class="dialog-backdrop" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-labelledby="new-folder-title">
+      <h2 id="new-folder-title">New folder</h2>
+      <p>Create in <span id="new-folder-location">My Drive</span></p>
+      <input id="new-folder-name" type="text" placeholder="Folder name" autocomplete="off" maxlength="255">
+      <div class="dialog-actions">
+        <button id="new-folder-cancel" class="secondary" type="button">Cancel</button>
+        <button id="new-folder-create" class="primary" type="button">Create</button>
+      </div>
+    </div>
+  </div>
   <script>${PAGE_SCRIPT}</script>
 </body>
 </html>`;
@@ -1350,6 +1454,7 @@ async function handlePost(req, res, url) {
             const { absPath: parentAbs, relPath: parentRel } = safePath(parent);
             const targetAbs = node_path_1.default.join(parentAbs, name);
             const targetRel = parentRel ? `${parentRel}/${name}` : name;
+            await (0, promises_1.mkdir)(parentAbs, { recursive: true });
             await (0, promises_1.mkdir)(targetAbs, { recursive: false });
             sendJson(res, 201, { entry: await fileEntry(targetAbs, targetRel) });
         }
