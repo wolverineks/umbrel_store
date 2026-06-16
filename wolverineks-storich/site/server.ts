@@ -13,7 +13,9 @@ const PWA_ICONS: Record<string, { file: string; type: string }> = {
 const TRASH_DIR = path.join(DATA_ROOT, ".trash");
 const TRASH_ITEMS_DIR = path.join(TRASH_DIR, "items");
 const TRASH_INDEX_PATH = path.join(TRASH_DIR, "index.json");
-const STARS_INDEX_PATH = path.join(DATA_ROOT, ".stars.json");
+const IMPORTANT_INDEX_PATH = path.join(DATA_ROOT, ".important.json");
+const LEGACY_STARS_INDEX_PATH = path.join(DATA_ROOT, ".stars.json");
+const PINNED_INDEX_PATH = path.join(DATA_ROOT, ".pinned.json");
 
 type FileEntry = {
   name: string;
@@ -47,19 +49,34 @@ type TrashListing = {
   >;
 };
 
-type StarItem = {
+type ImportantItem = {
   path: string;
-  starredAt: string;
+  markedAt: string;
 };
 
-type StarredEntry = FileEntry & {
-  starred: true;
-  starredAt: string;
+type ImportantEntry = FileEntry & {
+  important: true;
+  markedAt: string;
 };
 
-type StarListing = {
-  entries: StarredEntry[];
-  starredPaths: string[];
+type ImportantListing = {
+  entries: ImportantEntry[];
+  importantPaths: string[];
+};
+
+type PinnedItem = {
+  path: string;
+  pinnedAt: string;
+};
+
+type PinnedEntry = FileEntry & {
+  pinned: true;
+  pinnedAt: string;
+};
+
+type PinnedListing = {
+  entries: PinnedEntry[];
+  pinnedPaths: string[];
 };
 
 async function ensureDataRoot(): Promise<void> {
@@ -138,33 +155,22 @@ async function listDirectory(relativePath = ""): Promise<DirectoryListing> {
   return { path: relPath, entries };
 }
 
-async function readStarsIndex(): Promise<StarItem[]> {
-  if (!existsSync(STARS_INDEX_PATH)) {
+function parseMarkedItems(raw: string): Array<{ path: string; markedAt: string }> {
+  const parsed = JSON.parse(raw) as { items?: Array<{ path: string; markedAt?: string; starredAt?: string }> };
+  if (!Array.isArray(parsed.items)) {
     return [];
   }
-  try {
-    const raw = await readFile(STARS_INDEX_PATH, "utf8");
-    const parsed = JSON.parse(raw) as { items?: StarItem[] };
-    return Array.isArray(parsed.items) ? parsed.items : [];
-  } catch {
-    return [];
-  }
+  return parsed.items.map((item) => ({
+    path: item.path,
+    markedAt: item.markedAt || item.starredAt || new Date().toISOString(),
+  }));
 }
 
-async function writeStarsIndex(items: StarItem[]): Promise<void> {
-  await writeFile(STARS_INDEX_PATH, JSON.stringify({ items }, null, 2));
-}
-
-async function starredPathSet(): Promise<Set<string>> {
-  const items = await readStarsIndex();
-  return new Set(items.map((item) => item.path));
-}
-
-function remapStarPaths(items: StarItem[], oldPath: string, newPath: string): StarItem[] {
+function remapMarkedPaths<T extends { path: string }>(items: T[], oldPath: string, newPath: string): T[] {
   const oldNorm = oldPath.replace(/\\/g, "/");
   const newNorm = newPath.replace(/\\/g, "/");
   const seen = new Set<string>();
-  const result: StarItem[] = [];
+  const result: T[] = [];
   for (const item of items) {
     let nextPath = item.path;
     if (nextPath === oldNorm) {
@@ -181,24 +187,84 @@ function remapStarPaths(items: StarItem[], oldPath: string, newPath: string): St
   return result;
 }
 
-async function updateStarPaths(oldPath: string, newPath: string): Promise<void> {
-  const items = await readStarsIndex();
-  const updated = remapStarPaths(items, oldPath, newPath);
-  if (updated.length !== items.length || updated.some((item, index) => item.path !== items[index]?.path)) {
-    await writeStarsIndex(updated);
+async function readImportantIndex(): Promise<ImportantItem[]> {
+  if (existsSync(IMPORTANT_INDEX_PATH)) {
+    try {
+      const raw = await readFile(IMPORTANT_INDEX_PATH, "utf8");
+      return parseMarkedItems(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (existsSync(LEGACY_STARS_INDEX_PATH)) {
+    try {
+      const raw = await readFile(LEGACY_STARS_INDEX_PATH, "utf8");
+      const items = parseMarkedItems(raw);
+      await writeImportantIndex(items);
+      return items;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+async function writeImportantIndex(items: ImportantItem[]): Promise<void> {
+  await writeFile(IMPORTANT_INDEX_PATH, JSON.stringify({ items }, null, 2));
+}
+
+async function readPinnedIndex(): Promise<PinnedItem[]> {
+  if (!existsSync(PINNED_INDEX_PATH)) {
+    return [];
+  }
+  try {
+    const raw = await readFile(PINNED_INDEX_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { items?: PinnedItem[] };
+    return Array.isArray(parsed.items) ? parsed.items : [];
+  } catch {
+    return [];
   }
 }
 
-async function removeStarsForPath(relPath: string): Promise<void> {
+async function writePinnedIndex(items: PinnedItem[]): Promise<void> {
+  await writeFile(PINNED_INDEX_PATH, JSON.stringify({ items }, null, 2));
+}
+
+async function updateImportantPaths(oldPath: string, newPath: string): Promise<void> {
+  const items = await readImportantIndex();
+  const updated = remapMarkedPaths(items, oldPath, newPath);
+  if (updated.length !== items.length || updated.some((item, index) => item.path !== items[index]?.path)) {
+    await writeImportantIndex(updated);
+  }
+}
+
+async function updatePinnedPaths(oldPath: string, newPath: string): Promise<void> {
+  const items = await readPinnedIndex();
+  const updated = remapMarkedPaths(items, oldPath, newPath);
+  if (updated.length !== items.length || updated.some((item, index) => item.path !== items[index]?.path)) {
+    await writePinnedIndex(updated);
+  }
+}
+
+async function removeImportantForPath(relPath: string): Promise<void> {
   const normalized = relPath.replace(/\\/g, "/");
-  const items = await readStarsIndex();
+  const items = await readImportantIndex();
   const next = items.filter((item) => item.path !== normalized && !item.path.startsWith(`${normalized}/`));
   if (next.length !== items.length) {
-    await writeStarsIndex(next);
+    await writeImportantIndex(next);
   }
 }
 
-async function starEntry(relPath: string): Promise<StarItem> {
+async function removePinnedForPath(relPath: string): Promise<void> {
+  const normalized = relPath.replace(/\\/g, "/");
+  const items = await readPinnedIndex();
+  const next = items.filter((item) => item.path !== normalized && !item.path.startsWith(`${normalized}/`));
+  if (next.length !== items.length) {
+    await writePinnedIndex(next);
+  }
+}
+
+async function markImportantEntry(relPath: string): Promise<ImportantItem> {
   const { relPath: normalized } = safePath(relPath);
   if (isProtectedPath(normalized)) {
     throw new Error("invalid path");
@@ -206,50 +272,93 @@ async function starEntry(relPath: string): Promise<StarItem> {
   const { absPath } = safePath(normalized);
   await stat(absPath);
 
-  const items = await readStarsIndex();
+  const items = await readImportantIndex();
   const existing = items.find((item) => item.path === normalized);
   if (existing) {
     return existing;
   }
 
-  const item: StarItem = {
+  const item: ImportantItem = {
     path: normalized,
-    starredAt: new Date().toISOString(),
+    markedAt: new Date().toISOString(),
   };
   items.unshift(item);
-  await writeStarsIndex(items);
+  await writeImportantIndex(items);
   return item;
 }
 
-async function unstarEntry(relPath: string): Promise<void> {
+async function unmarkImportantEntry(relPath: string): Promise<void> {
   const { relPath: normalized } = safePath(relPath);
-  const items = await readStarsIndex();
+  const items = await readImportantIndex();
   const next = items.filter((item) => item.path !== normalized);
   if (next.length === items.length) {
-    throw new FileNotFoundError("star not found");
+    throw new FileNotFoundError("important marker not found");
   }
-  await writeStarsIndex(next);
+  await writeImportantIndex(next);
 }
 
-async function listDirectoryWithStars(
+async function pinEntry(relPath: string): Promise<PinnedItem> {
+  const { relPath: normalized } = safePath(relPath);
+  if (isProtectedPath(normalized)) {
+    throw new Error("invalid path");
+  }
+  const { absPath } = safePath(normalized);
+  await stat(absPath);
+
+  const items = await readPinnedIndex();
+  const existing = items.find((item) => item.path === normalized);
+  if (existing) {
+    return existing;
+  }
+
+  const item: PinnedItem = {
+    path: normalized,
+    pinnedAt: new Date().toISOString(),
+  };
+  items.unshift(item);
+  await writePinnedIndex(items);
+  return item;
+}
+
+async function unpinEntry(relPath: string): Promise<void> {
+  const { relPath: normalized } = safePath(relPath);
+  const items = await readPinnedIndex();
+  const next = items.filter((item) => item.path !== normalized);
+  if (next.length === items.length) {
+    throw new FileNotFoundError("pin not found");
+  }
+  await writePinnedIndex(next);
+}
+
+async function listDirectoryWithMarkers(
   relativePath = "",
-): Promise<DirectoryListing & { entries: Array<FileEntry & { starred: boolean }>; starredPaths: string[] }> {
+): Promise<
+  DirectoryListing & {
+    entries: Array<FileEntry & { important: boolean; pinned: boolean }>;
+    importantPaths: string[];
+    pinnedPaths: string[];
+  }
+> {
   const listing = await listDirectory(relativePath);
-  const starItems = await readStarsIndex();
-  const stars = new Set(starItems.map((item) => item.path));
+  const importantItems = await readImportantIndex();
+  const pinnedItems = await readPinnedIndex();
+  const important = new Set(importantItems.map((item) => item.path));
+  const pinned = new Set(pinnedItems.map((item) => item.path));
   return {
     ...listing,
     entries: listing.entries.map((entry) => ({
       ...entry,
-      starred: stars.has(entry.path),
+      important: important.has(entry.path),
+      pinned: pinned.has(entry.path),
     })),
-    starredPaths: starItems.map((item) => item.path),
+    importantPaths: importantItems.map((item) => item.path),
+    pinnedPaths: pinnedItems.map((item) => item.path),
   };
 }
 
-async function listStarred(): Promise<StarListing> {
-  const items = await readStarsIndex();
-  const entries: StarredEntry[] = [];
+async function listImportant(): Promise<ImportantListing> {
+  const items = await readImportantIndex();
+  const entries: ImportantEntry[] = [];
   const stale: string[] = [];
 
   for (const item of items) {
@@ -262,8 +371,8 @@ async function listStarred(): Promise<StarListing> {
       const entry = await fileEntry(absPath, item.path);
       entries.push({
         ...entry,
-        starred: true,
-        starredAt: item.starredAt,
+        important: true,
+        markedAt: item.markedAt,
       });
     } catch {
       stale.push(item.path);
@@ -272,11 +381,43 @@ async function listStarred(): Promise<StarListing> {
 
   if (stale.length) {
     const next = items.filter((item) => !stale.includes(item.path));
-    await writeStarsIndex(next);
+    await writeImportantIndex(next);
   }
 
-  entries.sort((a, b) => new Date(b.starredAt).getTime() - new Date(a.starredAt).getTime());
-  return { entries, starredPaths: entries.map((entry) => entry.path) };
+  entries.sort((a, b) => new Date(b.markedAt).getTime() - new Date(a.markedAt).getTime());
+  return { entries, importantPaths: entries.map((entry) => entry.path) };
+}
+
+async function listPinned(): Promise<PinnedListing> {
+  const items = await readPinnedIndex();
+  const entries: PinnedEntry[] = [];
+  const stale: string[] = [];
+
+  for (const item of items) {
+    try {
+      const { absPath } = safePath(item.path);
+      if (!existsSync(absPath)) {
+        stale.push(item.path);
+        continue;
+      }
+      const entry = await fileEntry(absPath, item.path);
+      entries.push({
+        ...entry,
+        pinned: true,
+        pinnedAt: item.pinnedAt,
+      });
+    } catch {
+      stale.push(item.path);
+    }
+  }
+
+  if (stale.length) {
+    const next = items.filter((item) => !stale.includes(item.path));
+    await writePinnedIndex(next);
+  }
+
+  entries.sort((a, b) => new Date(b.pinnedAt).getTime() - new Date(a.pinnedAt).getTime());
+  return { entries, pinnedPaths: entries.map((entry) => entry.path) };
 }
 
 async function ensureTrashDir(): Promise<void> {
@@ -368,7 +509,8 @@ async function renameEntry(sourcePath: string, newName: string): Promise<FileEnt
 
   await mkdir(path.dirname(targetAbs), { recursive: true });
   await rename(sourceAbs, targetAbs);
-  await updateStarPaths(sourceRel, targetRel);
+  await updateImportantPaths(sourceRel, targetRel);
+  await updatePinnedPaths(sourceRel, targetRel);
   return fileEntry(targetAbs, targetRel);
 }
 
@@ -404,7 +546,8 @@ async function moveEntry(sourcePath: string, destinationFolder: string): Promise
   const { absPath: targetAbs } = safePath(targetRel);
   await mkdir(path.dirname(targetAbs), { recursive: true });
   await rename(sourceAbs, targetAbs);
-  await updateStarPaths(sourceRel, targetRel);
+  await updateImportantPaths(sourceRel, targetRel);
+  await updatePinnedPaths(sourceRel, targetRel);
   return fileEntry(targetAbs, targetRel);
 }
 
@@ -443,7 +586,8 @@ async function moveToTrash(relPath: string): Promise<TrashItem> {
   const items = await readTrashIndex();
   items.unshift(item);
   await writeTrashIndex(items);
-  await removeStarsForPath(normalized.replace(/\\/g, "/"));
+  await removeImportantForPath(normalized.replace(/\\/g, "/"));
+  await removePinnedForPath(normalized.replace(/\\/g, "/"));
   return item;
 }
 
@@ -565,6 +709,8 @@ aside {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-height: 0;
+  overflow: hidden;
 }
 .brand {
   display: flex;
@@ -886,20 +1032,85 @@ label.upload-btn input { display: none; }
   display: none;
 }
 body.view-trash .toolbar-drive,
-body.view-starred .toolbar-drive {
+body.view-important .toolbar-drive {
   display: none;
 }
 body.view-trash .toolbar-trash {
   display: flex;
 }
-.card-star {
+.card-important {
   position: absolute;
   top: 0.55rem;
   right: 0.55rem;
   color: #ca8a04;
-  font-size: 0.95rem;
+  font-size: 0.8rem;
+  font-weight: 700;
   line-height: 1;
   pointer-events: none;
+}
+.pinned-section {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.pinned-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 0 0.75rem 0.5rem;
+}
+.pinned-list {
+  display: grid;
+  gap: 0.2rem;
+}
+.pinned-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  background: transparent;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.65rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.pinned-item:hover,
+.pinned-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pinned-icon {
+  flex-shrink: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.pinned-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pinned-empty {
+  padding: 0.35rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.mobile-pinned {
+  display: none;
+  width: 100%;
+  padding: 0.5rem 1rem 0.75rem;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border);
+}
+.mobile-pinned .pinned-label {
+  padding-left: 0.25rem;
 }
 .dialog-backdrop {
   position: fixed;
@@ -1073,6 +1284,12 @@ body.view-trash .toolbar-trash {
     background: var(--accent-soft);
     color: var(--accent);
   }
+  .pinned-section {
+    display: none;
+  }
+  .mobile-pinned {
+    display: block;
+  }
 }
 @media (display-mode: standalone) {
   body {
@@ -1095,7 +1312,7 @@ self.addEventListener("fetch", (event) => {
 `;
 
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null, starredPaths: new Set() };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [] };
 const menuState = { entry: null, longPress: false };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
@@ -1145,19 +1362,20 @@ function formatDate(value) {
 
 function setActiveNav() {
   document.getElementById("nav-drive").classList.toggle("active", state.view === "drive");
-  document.getElementById("nav-starred").classList.toggle("active", state.view === "starred");
+  document.getElementById("nav-important").classList.toggle("active", state.view === "important");
   document.getElementById("nav-trash").classList.toggle("active", state.view === "trash");
   document.getElementById("mobile-nav-drive")?.classList.toggle("active", state.view === "drive");
-  document.getElementById("mobile-nav-starred")?.classList.toggle("active", state.view === "starred");
+  document.getElementById("mobile-nav-important")?.classList.toggle("active", state.view === "important");
   document.getElementById("mobile-nav-trash")?.classList.toggle("active", state.view === "trash");
   document.body.classList.toggle("view-trash", state.view === "trash");
-  document.body.classList.toggle("view-starred", state.view === "starred");
+  document.body.classList.toggle("view-important", state.view === "important");
   document.getElementById("search").placeholder =
     state.view === "trash"
       ? "Search in Trash"
-      : state.view === "starred"
-        ? "Search in Starred"
+      : state.view === "important"
+        ? "Search in Important"
         : "Search in My Drive";
+  renderPinnedSidebar();
 }
 
 function setView(view) {
@@ -1250,8 +1468,8 @@ function renderBreadcrumbs(path) {
     root.innerHTML = '<span>Trash</span>';
     return;
   }
-  if (state.view === "starred") {
-    root.innerHTML = '<span>Starred</span>';
+  if (state.view === "important") {
+    root.innerHTML = '<span>Important</span>';
     return;
   }
   const parts = path ? path.split("/") : [];
@@ -1370,7 +1588,8 @@ function entryFromCard(card) {
     name: decodeDataValue(card.dataset.name),
     type: card.dataset.type || "file",
     originalPath: decodeDataValue(card.dataset.originalPath),
-    starred: card.dataset.starred === "true",
+    important: card.dataset.important === "true",
+    pinned: card.dataset.pinned === "true",
   };
 }
 
@@ -1387,8 +1606,68 @@ function closeContextMenu() {
   clearContextSelection();
 }
 
-function isStarredEntry(entry) {
-  return !!entry.starred || state.starredPaths.has(entry.path);
+function isImportantEntry(entry) {
+  return !!entry.important || state.importantPaths.has(entry.path);
+}
+
+function isPinnedEntry(entry) {
+  return !!entry.pinned || state.pinnedPaths.has(entry.path);
+}
+
+function pinnedTargetPath(entry) {
+  return entry.type === "folder" ? entry.path : parentPath(entry.path);
+}
+
+function renderPinnedList(root) {
+  const items = state.pinnedItems || [];
+  if (!items.length) {
+    root.innerHTML = '<div class="pinned-empty">Pin items for quick access</div>';
+    return;
+  }
+  const currentPath = normalizePath(state.path);
+  root.innerHTML = items.map((entry) => {
+    const targetPath = pinnedTargetPath(entry);
+    const active = state.view === "drive" && currentPath === normalizePath(targetPath);
+    const icon = entry.type === "folder" ? "📁" : "📄";
+    return \`
+      <button
+        type="button"
+        class="pinned-item\${active ? " active" : ""}"
+        data-path="\${encodeDataValue(entry.path)}"
+        data-type="\${entry.type}"
+      >
+        <span class="pinned-icon">\${icon}</span>
+        <span class="pinned-name">\${escapeHtml(entry.name)}</span>
+      </button>\`;
+  }).join("");
+  root.querySelectorAll(".pinned-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const path = decodeDataValue(button.dataset.path);
+      const type = button.dataset.type;
+      setView("drive");
+      setPath(type === "folder" ? path : parentPath(path));
+    });
+  });
+}
+
+function renderPinnedSidebar() {
+  for (const id of ["pinned-list", "mobile-pinned-list"]) {
+    const root = document.getElementById(id);
+    if (root) renderPinnedList(root);
+  }
+}
+
+async function refreshPinnedSidebar() {
+  try {
+    const response = await fetch("/api/pinned");
+    const data = await response.json();
+    if (!response.ok) return;
+    state.pinnedItems = data.entries || [];
+    state.pinnedPaths = new Set(data.pinnedPaths || state.pinnedItems.map((entry) => entry.path));
+    renderPinnedSidebar();
+  } catch {
+    // ignore sidebar refresh errors
+  }
 }
 
 function contextMenuActions(entry, source) {
@@ -1396,18 +1675,19 @@ function contextMenuActions(entry, source) {
     return [
       { id: "open", label: "Open" },
       { id: "rename", label: "Rename", hidden: !entry.path },
-      { id: isStarredEntry(entry) ? "unstar" : "star", label: isStarredEntry(entry) ? "Remove from starred" : "Add to starred", hidden: !entry.path },
+      { id: isImportantEntry(entry) ? "unmark-important" : "mark-important", label: isImportantEntry(entry) ? "Remove from important" : "Mark as important", hidden: !entry.path },
+      { id: isPinnedEntry(entry) ? "unpin" : "pin", label: isPinnedEntry(entry) ? "Unpin from sidebar" : "Pin to sidebar", hidden: !entry.path },
       { id: "share", label: "Share" },
       { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
     ];
   }
-  if (state.view === "starred") {
+  if (state.view === "important") {
     const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
     return [
       { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
       { id: "preview", label: "Preview", hidden: !isImage },
       { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
-      { id: "unstar", label: "Remove from starred" },
+      { id: "unmark-important", label: "Remove from important" },
       { id: "share", label: "Share" },
     ];
   }
@@ -1428,7 +1708,8 @@ function contextMenuActions(entry, source) {
     { id: "preview", label: "Preview", hidden: !isImage },
     { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
     { id: "rename", label: "Rename" },
-    { id: isStarredEntry(entry) ? "unstar" : "star", label: isStarredEntry(entry) ? "Remove from starred" : "Add to starred" },
+    { id: isImportantEntry(entry) ? "unmark-important" : "mark-important", label: isImportantEntry(entry) ? "Remove from important" : "Mark as important" },
+    { id: isPinnedEntry(entry) ? "unpin" : "pin", label: isPinnedEntry(entry) ? "Unpin from sidebar" : "Pin to sidebar" },
     { id: "share", label: "Share" },
     { id: "delete", label: "Move to trash", danger: true },
   ];
@@ -1582,29 +1863,43 @@ async function downloadEntry(entry) {
   URL.revokeObjectURL(objectUrl);
 }
 
-function openFromStarred(entry) {
+function openFromImportant(entry) {
   const targetPath = entry.type === "folder" ? entry.path : parentPath(entry.path);
   setView("drive");
   setPath(targetPath);
 }
 
-async function setStarred(entry, starred) {
-  const response = await fetch(starred ? "/api/unstar" : "/api/star", {
+async function setImportant(entry, important) {
+  const response = await fetch(important ? "/api/unmark-important" : "/api/mark-important", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: entry.path }),
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "Could not update starred items");
+    throw new Error(data.error || "Could not update important items");
   }
+  refreshListing();
+}
+
+async function setPinned(entry, pinned) {
+  const response = await fetch(pinned ? "/api/unpin" : "/api/pin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: entry.path }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || "Could not update pinned items");
+  }
+  await refreshPinnedSidebar();
   refreshListing();
 }
 
 async function runMenuAction(action, entry) {
   if (action === "open") {
-    if (state.view === "starred") {
-      openFromStarred(entry);
+    if (state.view === "important") {
+      openFromImportant(entry);
       return;
     }
     if (entry.type === "folder") {
@@ -1635,12 +1930,20 @@ async function runMenuAction(action, entry) {
     openRenameDialog(entry);
     return;
   }
-  if (action === "star") {
-    await setStarred(entry, false);
+  if (action === "mark-important") {
+    await setImportant(entry, false);
     return;
   }
-  if (action === "unstar") {
-    await setStarred(entry, true);
+  if (action === "unmark-important") {
+    await setImportant(entry, true);
+    return;
+  }
+  if (action === "pin") {
+    await setPinned(entry, false);
+    return;
+  }
+  if (action === "unpin") {
+    await setPinned(entry, true);
     return;
   }
   if (action === "delete") {
@@ -1837,9 +2140,9 @@ function bindCard(card) {
     }
     const entry = entryFromCard(card);
     if (state.view === "trash") return;
-    if (state.view === "starred") {
+    if (state.view === "important") {
       if (entry.type === "folder") {
-        openFromStarred(entry);
+        openFromImportant(entry);
         return;
       }
       await downloadEntry(entry);
@@ -1924,8 +2227,8 @@ function renderEntries() {
   const entries = filteredEntries(allEntries);
   const locationLabel = state.view === "trash"
     ? "Trash"
-    : state.view === "starred"
-      ? "Starred"
+    : state.view === "important"
+      ? "Important"
       : (data.path ? data.path : "My Drive");
   const filterLabel = state.fileFilter !== "all" ? \` · \${document.getElementById("file-filter").selectedOptions[0].textContent}\` : "";
   document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\${filterLabel}\`;
@@ -1937,8 +2240,8 @@ function renderEntries() {
     }
     container.innerHTML = state.view === "trash"
       ? '<div class="empty">Trash is empty.</div>'
-      : state.view === "starred"
-        ? '<div class="empty">No starred items yet. Star files and folders from My Drive.</div>'
+      : state.view === "important"
+        ? '<div class="empty">No important items yet. Mark files and folders from My Drive.</div>'
         : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
     return;
   }
@@ -1947,14 +2250,14 @@ function renderEntries() {
     const icon = renderFileIcon(entry);
     const meta = state.view === "trash"
       ? \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`
-      : state.view === "starred"
+      : state.view === "important"
         ? (entry.type === "folder"
           ? \`Folder · \${escapeHtml(entry.path || "/")}\`
           : \`\${formatSize(entry.size)} · \${escapeHtml(entry.path || "/")}\`)
         : (entry.type === "folder"
           ? \`Folder · \${formatDate(entry.modified)}\`
           : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
-    const starBadge = entry.starred ? '<div class="card-star" aria-label="Starred">★</div>' : "";
+    const importantBadge = entry.important ? '<div class="card-important" aria-label="Important">!</div>' : "";
     return \`
       <article
         class="card"
@@ -1963,9 +2266,10 @@ function renderEntries() {
         data-name="\${encodeDataValue(entry.name)}"
         data-type="\${entry.type}"
         data-original-path="\${encodeDataValue(entry.originalPath || "")}"
-        data-starred="\${entry.starred ? "true" : "false"}"
+        data-important="\${entry.important ? "true" : "false"}"
+        data-pinned="\${entry.pinned ? "true" : "false"}"
       >
-        \${starBadge}
+        \${importantBadge}
         <div class="icon">\${icon}</div>
         <div class="name">\${escapeHtml(entry.name)}</div>
         <div class="meta">\${meta}</div>
@@ -1988,8 +2292,8 @@ async function refreshListing() {
   try {
     const response = state.view === "trash"
       ? await fetch("/api/trash")
-      : state.view === "starred"
-        ? await fetch("/api/stars")
+      : state.view === "important"
+        ? await fetch("/api/important")
         : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
     const data = await response.json();
     if (!response.ok) {
@@ -2003,9 +2307,13 @@ async function refreshListing() {
       throw new Error(data.error || "Could not load files");
     }
     state.listing = data;
-    state.starredPaths = new Set(data.starredPaths || (data.entries || []).filter((entry) => entry.starred).map((entry) => entry.path));
+    state.importantPaths = new Set(data.importantPaths || (data.entries || []).filter((entry) => entry.important).map((entry) => entry.path));
+    state.pinnedPaths = new Set(data.pinnedPaths || (data.entries || []).filter((entry) => entry.pinned).map((entry) => entry.path));
     renderBreadcrumbs(state.view === "drive" ? (data.path || "") : "");
     renderEntries();
+    if (state.view === "drive") {
+      refreshPinnedSidebar();
+    }
   } catch (error) {
     showError(String(error));
     renderBreadcrumbs(state.view === "drive" ? state.path : "");
@@ -2252,10 +2560,10 @@ document.getElementById("upload-input").addEventListener("change", (event) => {
   event.target.value = "";
 });
 document.getElementById("nav-drive").addEventListener("click", () => setView("drive"));
-document.getElementById("nav-starred").addEventListener("click", () => setView("starred"));
+document.getElementById("nav-important").addEventListener("click", () => setView("important"));
 document.getElementById("nav-trash").addEventListener("click", () => setView("trash"));
 document.getElementById("mobile-nav-drive")?.addEventListener("click", () => setView("drive"));
-document.getElementById("mobile-nav-starred")?.addEventListener("click", () => setView("starred"));
+document.getElementById("mobile-nav-important")?.addEventListener("click", () => setView("important"));
 document.getElementById("mobile-nav-trash")?.addEventListener("click", () => setView("trash"));
 document.getElementById("empty-trash").addEventListener("click", emptyTrash);
 document.getElementById("context-menu").addEventListener("click", async (event) => {
@@ -2356,6 +2664,7 @@ bindFileDrop();
 bindTrashDrop();
 setActiveNav();
 renderBreadcrumbs(state.path);
+refreshPinnedSidebar();
 if (!applyShareLinkFromUrl()) {
   refreshListing();
 }
@@ -2410,9 +2719,13 @@ function renderPage(): string {
     </div>
     <nav class="nav">
       <button id="nav-drive" class="active" type="button">My Drive</button>
-      <button id="nav-starred" type="button">Starred</button>
+      <button id="nav-important" type="button">Important</button>
       <button id="nav-trash" type="button">Trash</button>
     </nav>
+    <div class="pinned-section">
+      <div class="pinned-label">Pinned</div>
+      <div id="pinned-list" class="pinned-list"></div>
+    </div>
   </aside>
   <main>
     <nav id="mobile-nav" class="mobile-nav" aria-label="Main navigation">
@@ -2421,9 +2734,13 @@ function renderPage(): string {
         <span>Storich</span>
       </div>
       <button id="mobile-nav-drive" class="active" type="button">My Drive</button>
-      <button id="mobile-nav-starred" type="button">Starred</button>
+      <button id="mobile-nav-important" type="button">Important</button>
       <button id="mobile-nav-trash" type="button">Trash</button>
     </nav>
+    <div class="mobile-pinned">
+      <div class="pinned-label">Pinned</div>
+      <div id="mobile-pinned-list" class="pinned-list"></div>
+    </div>
     <div class="topbar">
       <label class="search">
         <span>⌕</span>
@@ -2710,9 +3027,20 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   await ensureDataRoot();
 
-  if (route === "/api/stars") {
+  if (route === "/api/important") {
     try {
-      const payload = await listStarred();
+      const payload = await listImportant();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
+  if (route === "/api/pinned") {
+    try {
+      const payload = await listPinned();
       sendJson(res, 200, payload);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2723,7 +3051,7 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   if (route === "/api/files") {
     try {
-      const payload = await listDirectoryWithStars(queryParam(url, "path"));
+      const payload = await listDirectoryWithMarkers(queryParam(url, "path"));
       sendJson(res, 200, payload);
     } catch (error) {
       if (error instanceof FileNotFoundError) {
@@ -2939,7 +3267,7 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
     return;
   }
 
-  if (route === "/api/star") {
+  if (route === "/api/mark-important") {
     try {
       const body = await readBody(req);
       const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string };
@@ -2948,7 +3276,7 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
         sendJson(res, 400, { error: "path is required" });
         return;
       }
-      const item = await starEntry(relPath);
+      const item = await markImportantEntry(relPath);
       sendJson(res, 200, { item });
     } catch (error) {
       if (error instanceof FileNotFoundError) {
@@ -2965,7 +3293,7 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
     return;
   }
 
-  if (route === "/api/unstar") {
+  if (route === "/api/unmark-important") {
     try {
       const body = await readBody(req);
       const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string };
@@ -2974,11 +3302,61 @@ async function handlePost(req: IncomingMessage, res: ServerResponse, url: URL): 
         sendJson(res, 400, { error: "path is required" });
         return;
       }
-      await unstarEntry(relPath);
+      await unmarkImportantEntry(relPath);
       sendJson(res, 200, { ok: true });
     } catch (error) {
       if (error instanceof FileNotFoundError) {
-        sendJson(res, 404, { error: "star not found" });
+        sendJson(res, 404, { error: "important marker not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/pin") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string };
+      const relPath = (payload.path ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      const item = await pinEntry(relPath);
+      sendJson(res, 200, { item });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "item not found" });
+      } else if (error instanceof Error && error.message === "invalid path") {
+        sendJson(res, 400, { error: error.message });
+      } else if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        sendJson(res, 404, { error: "item not found" });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(res, 400, { error: message });
+      }
+    }
+    return;
+  }
+
+  if (route === "/api/unpin") {
+    try {
+      const body = await readBody(req);
+      const payload = JSON.parse(body.toString("utf8") || "{}") as { path?: string };
+      const relPath = (payload.path ?? "").trim();
+      if (!relPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      await unpinEntry(relPath);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      if (error instanceof FileNotFoundError) {
+        sendJson(res, 404, { error: "pin not found" });
       } else if (error instanceof Error && error.message === "invalid path") {
         sendJson(res, 400, { error: error.message });
       } else {
