@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.9",
   "scripts": {
-    "build": "tsc && cp dist/server.js server.js",
+    "build": "tsc && cp dist/server.js server.js && cp dist/sync.js sync.js",
     "start": "node server.js",
     "dev": "tsc --watch"
   },

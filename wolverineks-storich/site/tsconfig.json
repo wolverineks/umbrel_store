@@ -9,5 +9,5 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["server.ts"]
+  "include": ["server.ts", "sync.ts"]
 }
