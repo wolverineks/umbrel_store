@@ -8,11 +8,16 @@ services:
 
   server:
     image: node:22-alpine
-    user: "1000:1000"
-    command: node /app/server.js
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /data
+        chown -R 1000:1000 /data
+        exec su -s /bin/sh node -c "node /app/server.js"
     volumes:
       - ${APP_DATA_DIR}/site:/app:ro
-      - ${APP_DATA_DIR}/drive:/data
+      - ${APP_DATA_DIR}/data:/data
     environment:
       STORICH_DATA_DIR: /data
       NODE_ENV: production

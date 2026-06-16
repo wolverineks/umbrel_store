@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://svgur.com/i/mvA.svg
 category: files
-version: "1.0.2"
+version: "1.0.3"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,7 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Rewrite the server in TypeScript/Node.js. Same drive UI and APIs; no Python runtime required.
+  Fix persistent storage permissions so uploads and new folders work on Umbrel. Files are stored
+  in the app data volume and survive restarts.
 dependencies: []
 path: ""
 defaultUsername: ""
