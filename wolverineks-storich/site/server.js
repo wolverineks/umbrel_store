@@ -722,6 +722,7 @@ body.view-trash .toolbar-trash {
   background: rgba(255, 255, 255, 0.04);
   min-height: 12rem;
   max-height: calc(100vh - 8rem);
+  touch-action: pan-y pinch-zoom;
 }
 .preview-image-wrap img {
   max-width: 100%;
@@ -770,6 +771,7 @@ const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: 
 const menuState = { entry: null, longPress: false };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
+const previewTouch = { startX: 0, startY: 0, active: false };
 let longPressTimer = null;
 let dragEntry = null;
 
@@ -1789,12 +1791,49 @@ document.addEventListener("keydown", (event) => {
     closeContextMenu();
   }
 });
+function bindPreviewSwipe() {
+  const surface = document.getElementById("preview-image-wrap");
+  surface.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1) return;
+    previewTouch.startX = event.touches[0].clientX;
+    previewTouch.startY = event.touches[0].clientY;
+    previewTouch.active = true;
+  }, { passive: true });
+
+  surface.addEventListener("touchmove", (event) => {
+    if (!previewTouch.active || event.touches.length !== 1) return;
+    const dx = event.touches[0].clientX - previewTouch.startX;
+    const dy = event.touches[0].clientY - previewTouch.startY;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+      event.preventDefault();
+    }
+  }, { passive: false });
+
+  surface.addEventListener("touchend", (event) => {
+    if (!previewTouch.active) return;
+    previewTouch.active = false;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - previewTouch.startX;
+    const dy = touch.clientY - previewTouch.startY;
+    const threshold = 48;
+    if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy)) return;
+    if (dx < 0) stepPreview(1);
+    else stepPreview(-1);
+  }, { passive: true });
+
+  surface.addEventListener("touchcancel", () => {
+    previewTouch.active = false;
+  }, { passive: true });
+}
+
 document.getElementById("preview-close").addEventListener("click", closePreviewDialog);
 document.getElementById("preview-prev").addEventListener("click", () => stepPreview(-1));
 document.getElementById("preview-next").addEventListener("click", () => stepPreview(1));
 document.getElementById("preview-dialog").addEventListener("click", (event) => {
   if (event.target.id === "preview-dialog") closePreviewDialog();
 });
+bindPreviewSwipe();
 document.addEventListener("contextmenu", (event) => {
   if (!event.target.closest(".card") && !event.target.closest(".crumb")) closeContextMenu();
 });
