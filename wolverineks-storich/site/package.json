@@ -1,7 +1,7 @@
 {
   "name": "storich",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "scripts": {
     "build": "tsc && cp dist/server.js server.js",
     "start": "node server.js",

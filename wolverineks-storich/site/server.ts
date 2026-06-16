@@ -668,10 +668,12 @@ function openContextMenu(entry, x, y, card) {
     ? [
         { id: "restore", label: "Restore" },
         { id: "download", label: "Download", hidden: entry.type === "folder" },
+        { id: "share", label: "Share", hidden: entry.type === "folder" },
         { id: "delete-forever", label: "Delete forever", danger: true },
       ]
     : [
         { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
+        { id: "share", label: "Share" },
         { id: "delete", label: "Move to trash", danger: true },
       ];
 
@@ -690,6 +692,34 @@ function openContextMenu(entry, x, y, card) {
   const top = Math.min(y, window.innerHeight - rect.height - 8);
   menu.style.left = \`\${Math.max(8, left)}px\`;
   menu.style.top = \`\${Math.max(8, top)}px\`;
+}
+
+function shareLink(entry) {
+  const origin = window.location.origin;
+  if (state.view === "trash") {
+    return \`\${origin}/api/trash/download?id=\${encodeURIComponent(entry.id)}\`;
+  }
+  if (entry.type === "folder") {
+    return \`\${origin}/?open=\${encodeURIComponent(entry.path)}\`;
+  }
+  return \`\${origin}/api/download?path=\${encodeURIComponent(entry.path)}\`;
+}
+
+async function copyShareLink(entry) {
+  const url = shareLink(entry);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(url);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = url;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.left = "-9999px";
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand("copy");
+  input.remove();
 }
 
 async function downloadEntry(entry) {
@@ -724,6 +754,11 @@ async function runMenuAction(action, entry) {
   }
   if (action === "download") {
     await downloadEntry(entry);
+    return;
+  }
+  if (action === "share") {
+    await copyShareLink(entry);
+    document.getElementById("status").textContent = "Link copied to clipboard";
     return;
   }
   if (action === "delete") {
@@ -942,8 +977,23 @@ document.addEventListener("contextmenu", (event) => {
   if (!event.target.closest(".card")) closeContextMenu();
 });
 
+function applyShareLinkFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const openPath = params.get("open");
+  if (openPath === null) return false;
+  setView("drive");
+  setPath(openPath);
+  params.delete("open");
+  const nextSearch = params.toString();
+  const nextUrl = \`\${window.location.pathname}\${nextSearch ? \`?\${nextSearch}\` : ""}\`;
+  window.history.replaceState({}, "", nextUrl);
+  return true;
+}
+
 setActiveNav();
-refreshListing();
+if (!applyShareLinkFromUrl()) {
+  refreshListing();
+}
 `;
 
 function renderPage(): string {
