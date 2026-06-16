@@ -1090,6 +1090,49 @@ label.upload-btn input { display: none; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.menu-submenu {
+  position: relative;
+}
+.menu-submenu-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.menu-submenu-chevron {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.menu-submenu-panel {
+  display: none;
+  position: absolute;
+  left: calc(100% + 0.2rem);
+  top: 0;
+  z-index: 1;
+  min-width: 11rem;
+  max-width: 16rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  padding: 0.35rem;
+}
+.menu-submenu.open .menu-submenu-panel,
+.menu-submenu:hover .menu-submenu-panel,
+.menu-submenu:focus-within .menu-submenu-panel {
+  display: grid;
+}
+.menu-submenu-panel.flip-left {
+  left: auto;
+  right: calc(100% + 0.2rem);
+}
+.menu-submenu-empty {
+  padding: 0.65rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
 .card.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
@@ -2094,6 +2137,50 @@ function categoryAssignmentActions(entry) {
   return actions;
 }
 
+function withCategorySubmenu(actions, entry) {
+  const categoryActions = categoryAssignmentActions(entry);
+  if (!categoryActions.length) return actions;
+  const shareIndex = actions.findIndex((action) => action.id === "share");
+  const insertAt = shareIndex === -1 ? actions.length : shareIndex;
+  const submenu = { id: "categories-submenu", label: "Categories", submenu: categoryActions };
+  return [...actions.slice(0, insertAt), submenu, ...actions.slice(insertAt)];
+}
+
+function renderMenuAction(action) {
+  if (action.submenu) {
+    const items = (action.submenu || []).filter((item) => !item.hidden);
+    if (!items.length) return "";
+    const panel = items
+      .map((item) =>
+        \`<button type="button" data-action="\${item.id}" class="\${item.danger ? "danger" : ""}">\${escapeHtml(item.label)}</button>\`
+      )
+      .join("");
+    return \`
+      <div class="menu-submenu">
+        <button type="button" class="menu-submenu-trigger" aria-haspopup="true" aria-expanded="false">
+          <span>\${escapeHtml(action.label)}</span>
+          <span class="menu-submenu-chevron" aria-hidden="true">›</span>
+        </button>
+        <div class="menu-submenu-panel" role="menu">\${panel}</div>
+      </div>\`;
+  }
+  return \`<button type="button" data-action="\${action.id}" class="\${action.danger ? "danger" : ""}">\${escapeHtml(action.label)}</button>\`;
+}
+
+function positionContextSubmenus() {
+  document.querySelectorAll("#context-menu .menu-submenu-panel").forEach((panel) => {
+    panel.classList.remove("flip-left");
+    const submenu = panel.closest(".menu-submenu");
+    if (!submenu) return;
+    submenu.classList.add("open");
+    const rect = panel.getBoundingClientRect();
+    submenu.classList.remove("open");
+    if (rect.right > window.innerWidth - 8) {
+      panel.classList.add("flip-left");
+    }
+  });
+}
+
 function currentFolderEntry() {
   const folderPath = normalizePath(state.path);
   if (!folderPath) {
@@ -2165,25 +2252,22 @@ function contextMenuActions(entry, source) {
   }
   if (state.view === "category") {
     const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
-    return [
+    return withCategorySubmenu([
       { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
       { id: "preview", label: "Preview", hidden: !isImage },
       { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
-      { id: \`unassign-category:\${state.categoryId}\`, label: "Remove from category" },
       { id: "share", label: "Share" },
-      ...categoryAssignmentActions(entry).filter((action) => !action.id.endsWith(\`:\${state.categoryId}\`)),
-    ];
+    ], entry);
   }
   if (state.view === "important") {
     const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
-    return [
+    return withCategorySubmenu([
       { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
       { id: "preview", label: "Preview", hidden: !isImage },
       { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
       { id: "unmark-important", label: "Remove from important" },
       { id: "share", label: "Share" },
-      ...categoryAssignmentActions(entry),
-    ];
+    ], entry);
   }
   if (state.view === "trash") {
     const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
@@ -2197,17 +2281,16 @@ function contextMenuActions(entry, source) {
     ];
   }
   const isImage = entry.type === "file" && fileTypeCategory(entry) === "image";
-  return [
+  return withCategorySubmenu([
     { id: "open", label: entry.type === "folder" ? "Open" : "Download" },
     { id: "preview", label: "Preview", hidden: !isImage },
     { id: "open-new-tab", label: "Open in new tab", hidden: entry.type === "folder" },
     { id: "rename", label: "Rename" },
     { id: isImportantEntry(entry) ? "unmark-important" : "mark-important", label: isImportantEntry(entry) ? "Remove from important" : "Mark as important" },
     { id: isPinnedEntry(entry) ? "unpin" : "pin", label: isPinnedEntry(entry) ? "Unpin from sidebar" : "Pin to sidebar" },
-    ...categoryAssignmentActions(entry),
     { id: "share", label: "Share" },
     { id: "delete", label: "Move to trash", danger: true },
-  ];
+  ], entry);
 }
 
 function openContextMenu(entry, x, y, highlight, source = "card") {
@@ -2225,9 +2308,7 @@ function openContextMenu(entry, x, y, highlight, source = "card") {
     \`<div class="menu-label">\${escapeHtml(entry.name)}</div>\` +
     actions
       .filter((action) => !action.hidden)
-      .map((action) =>
-        \`<button type="button" data-action="\${action.id}" class="\${action.danger ? "danger" : ""}">\${escapeHtml(action.label)}</button>\`
-      )
+      .map((action) => renderMenuAction(action))
       .join("");
 
   menu.classList.add("open");
@@ -2236,6 +2317,19 @@ function openContextMenu(entry, x, y, highlight, source = "card") {
   const top = Math.min(y, window.innerHeight - rect.height - 8);
   menu.style.left = \`\${Math.max(8, left)}px\`;
   menu.style.top = \`\${Math.max(8, top)}px\`;
+  positionContextSubmenus();
+
+  menu.querySelectorAll(".menu-submenu-trigger").forEach((trigger) => {
+    trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const submenu = trigger.closest(".menu-submenu");
+      if (!submenu) return;
+      const open = submenu.classList.contains("open");
+      menu.querySelectorAll(".menu-submenu.open").forEach((node) => node.classList.remove("open"));
+      if (!open) submenu.classList.add("open");
+      trigger.setAttribute("aria-expanded", submenu.classList.contains("open") ? "true" : "false");
+    });
+  });
 }
 
 function shareLink(entry) {
@@ -3059,14 +3153,9 @@ async function submitCategoryDialog() {
     showError(data.error || "Could not save category");
     return;
   }
-  const createdCategory = categoryDialogMode === "create" ? data.category : null;
   const wasCategoryView = state.view === "category";
   closeCategoryDialog();
   await refreshCategoriesSidebar();
-  if (createdCategory?.id) {
-    setCategoryView(createdCategory.id);
-    return;
-  }
   if (wasCategoryView) {
     refreshListing();
   }
@@ -3272,6 +3361,7 @@ document.getElementById("mobile-nav-important")?.addEventListener("click", () =>
 document.getElementById("mobile-nav-trash")?.addEventListener("click", () => setView("trash"));
 document.getElementById("empty-trash").addEventListener("click", emptyTrash);
 document.getElementById("context-menu").addEventListener("click", async (event) => {
+  if (event.target.closest(".menu-submenu-trigger")) return;
   const button = event.target.closest("button[data-action]");
   if (!button || !menuState.entry) return;
   const action = button.dataset.action;

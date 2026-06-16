@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-storich/icon.svg
 category: files
-version: "1.0.26"
+version: "1.0.27"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,8 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Add categories to organize files. Create, rename, and delete categories from
-  the sidebar, browse by category, and add or remove items from the context menu.
+  Move category actions into a Categories submenu on the context menu. Creating a
+  category no longer navigates away from the current view.
 dependencies: []
 path: ""
 defaultUsername: ""
