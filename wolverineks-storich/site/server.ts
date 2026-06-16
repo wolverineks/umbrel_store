@@ -376,6 +376,7 @@ main {
   display: flex;
   gap: 0.75rem;
   align-items: center;
+  flex-wrap: wrap;
   padding: 1rem 1.25rem;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
@@ -400,9 +401,23 @@ main {
   color: var(--text);
 }
 .search input:focus { outline: none; }
+.file-filter {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.65rem 0.85rem;
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.file-filter:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
 .toolbar {
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
 }
 button.primary,
 label.upload-btn {
@@ -507,7 +522,33 @@ label.upload-btn input { display: none; }
 }
 .card .icon {
   font-size: 1.8rem;
+  line-height: 1;
 }
+.file-icon-badge {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.65rem;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.file-icon-badge.type-folder {
+  font-size: 1.45rem;
+  background: #dbeafe;
+}
+.file-icon-badge.type-image { background: #fce7f3; color: #9d174d; }
+.file-icon-badge.type-video { background: #ede9fe; color: #5b21b6; }
+.file-icon-badge.type-audio { background: #ffedd5; color: #c2410c; }
+.file-icon-badge.type-document { background: #dbeafe; color: #1d4ed8; }
+.file-icon-badge.type-spreadsheet { background: #dcfce7; color: #166534; }
+.file-icon-badge.type-presentation { background: #ffedd5; color: #c2410c; }
+.file-icon-badge.type-archive { background: #f3f4f6; color: #374151; }
+.file-icon-badge.type-code { background: #e0e7ff; color: #3730a3; }
+.file-icon-badge.type-file { background: #f1f5f9; color: #475569; }
 .card .name {
   font-weight: 600;
   word-break: break-word;
@@ -645,7 +686,7 @@ body.view-trash .toolbar-trash {
 `;
 
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive" };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null };
 const menuState = { entry: null, longPress: false };
 let longPressTimer = null;
 
@@ -700,7 +741,10 @@ function setView(view) {
   state.view = view;
   state.path = "";
   state.query = "";
+  state.fileFilter = "all";
+  state.listing = null;
   document.getElementById("search").value = "";
+  document.getElementById("file-filter").value = "all";
   closeContextMenu();
   dropDepth = 0;
   setDropActive(false);
@@ -780,14 +824,99 @@ function renderBreadcrumbs(path) {
   root.querySelectorAll(".crumb").forEach(bindBreadcrumb);
 }
 
+function fileExtension(name) {
+  const index = String(name || "").lastIndexOf(".");
+  if (index <= 0) return "";
+  return String(name).slice(index + 1).toLowerCase();
+}
+
+function fileTypeCategory(entry) {
+  if (entry.type === "folder") return "folder";
+  const ext = fileExtension(entry.name);
+  const image = ["jpg", "jpeg", "png", "gif", "webp", "svg", "heic", "heif", "bmp", "ico", "avif", "tif", "tiff"];
+  const video = ["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv", "mpeg", "mpg"];
+  const audio = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma"];
+  const document = ["pdf", "doc", "docx", "txt", "md", "rtf", "odt", "pages"];
+  const spreadsheet = ["xls", "xlsx", "csv", "ods", "numbers"];
+  const presentation = ["ppt", "pptx", "odp", "key"];
+  const archive = ["zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "7z"];
+  const code = ["js", "ts", "jsx", "tsx", "py", "json", "html", "htm", "css", "xml", "yaml", "yml", "sh", "rs", "go", "java", "c", "cpp", "h", "rb", "php", "sql"];
+  if (image.includes(ext)) return "image";
+  if (video.includes(ext)) return "video";
+  if (audio.includes(ext)) return "audio";
+  if (document.includes(ext)) return "document";
+  if (spreadsheet.includes(ext)) return "spreadsheet";
+  if (presentation.includes(ext)) return "presentation";
+  if (archive.includes(ext)) return "archive";
+  if (code.includes(ext)) return "code";
+  return "file";
+}
+
+function fileTypeInfo(entry) {
+  if (entry.type === "folder") {
+    return { category: "folder", label: "Folder", badge: "📁" };
+  }
+  const ext = fileExtension(entry.name);
+  const category = fileTypeCategory(entry);
+  const known = {
+    pdf: "PDF",
+    doc: "DOC",
+    docx: "DOC",
+    txt: "TXT",
+    md: "MD",
+    xls: "XLS",
+    xlsx: "XLS",
+    csv: "CSV",
+    ppt: "PPT",
+    pptx: "PPT",
+    zip: "ZIP",
+    rar: "RAR",
+    "7z": "7Z",
+    mp3: "MP3",
+    wav: "WAV",
+    flac: "FLAC",
+    mp4: "MP4",
+    mov: "MOV",
+    mkv: "MKV",
+    jpg: "JPG",
+    jpeg: "JPG",
+    png: "PNG",
+    gif: "GIF",
+    webp: "WEBP",
+    svg: "SVG",
+    js: "JS",
+    ts: "TS",
+    json: "JSON",
+    html: "HTML",
+    css: "CSS",
+    py: "PY",
+  };
+  const badge = known[ext] || (ext ? ext.slice(0, 4).toUpperCase() : "FILE");
+  return { category, label: badge, badge };
+}
+
+function renderFileIcon(entry) {
+  const info = fileTypeInfo(entry);
+  return \`<div class="icon file-icon-badge type-\${info.category}" title="\${escapeHtml(info.label)}">\${info.category === "folder" ? info.badge : escapeHtml(info.badge)}</div>\`;
+}
+
 function filteredEntries(entries) {
   const query = state.query.trim().toLowerCase();
-  if (!query) return entries;
+  const filter = state.fileFilter || "all";
   return entries.filter((entry) => {
+    const category = fileTypeCategory(entry);
+    if (filter === "folder") {
+      if (entry.type !== "folder") return false;
+    } else if (filter !== "all") {
+      if (entry.type === "folder") return true;
+      if (category !== filter) return false;
+    }
+    if (!query) return true;
     const haystack = [
       entry.name,
       entry.path,
       entry.originalPath || "",
+      fileTypeInfo(entry).label,
     ].join(" ").toLowerCase();
     return haystack.includes(query);
   });
@@ -1044,15 +1173,22 @@ function bindBreadcrumb(button) {
   button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
 }
 
-function renderEntries(data) {
+function renderEntries() {
   const container = document.getElementById("files");
-  const entries = filteredEntries(data.entries || []);
+  const data = state.listing || { path: state.path, entries: [] };
+  const allEntries = data.entries || [];
+  const entries = filteredEntries(allEntries);
   const locationLabel = state.view === "trash"
     ? "Trash"
     : (data.path ? data.path : "My Drive");
-  document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\`;
+  const filterLabel = state.fileFilter !== "all" ? \` · \${document.getElementById("file-filter").selectedOptions[0].textContent}\` : "";
+  document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\${filterLabel}\`;
 
   if (!entries.length) {
+    if (allEntries.length && (state.query || state.fileFilter !== "all")) {
+      container.innerHTML = '<div class="empty">No items match your search or filter.</div>';
+      return;
+    }
     container.innerHTML = state.view === "trash"
       ? '<div class="empty">Trash is empty.</div>'
       : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
@@ -1060,7 +1196,7 @@ function renderEntries(data) {
   }
 
   container.innerHTML = entries.map((entry) => {
-    const icon = entry.type === "folder" ? "📁" : "📄";
+    const icon = renderFileIcon(entry);
     const meta = state.view === "trash"
       ? \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`
       : (entry.type === "folder"
@@ -1109,8 +1245,9 @@ async function refreshListing() {
       }
       throw new Error(data.error || "Could not load files");
     }
+    state.listing = data;
     renderBreadcrumbs(state.view === "trash" ? "" : (data.path || ""));
-    renderEntries(data);
+    renderEntries();
   } catch (error) {
     showError(String(error));
     renderBreadcrumbs(state.view === "trash" ? "" : state.path);
@@ -1278,7 +1415,11 @@ async function emptyTrash() {
 
 document.getElementById("search").addEventListener("input", (event) => {
   state.query = event.target.value;
-  refreshListing();
+  renderEntries();
+});
+document.getElementById("file-filter").addEventListener("change", (event) => {
+  state.fileFilter = event.target.value;
+  renderEntries();
 });
 document.getElementById("new-folder").addEventListener("click", openNewFolderDialog);
 document.getElementById("new-folder-cancel").addEventListener("click", closeNewFolderDialog);
@@ -1368,6 +1509,19 @@ function renderPage(): string {
         <span>⌕</span>
         <input id="search" type="search" placeholder="Search in My Drive">
       </label>
+      <select id="file-filter" class="file-filter" aria-label="Filter by file type">
+        <option value="all">All types</option>
+        <option value="folder">Folders</option>
+        <option value="image">Images</option>
+        <option value="video">Videos</option>
+        <option value="audio">Audio</option>
+        <option value="document">Documents</option>
+        <option value="spreadsheet">Spreadsheets</option>
+        <option value="presentation">Presentations</option>
+        <option value="archive">Archives</option>
+        <option value="code">Code</option>
+        <option value="file">Other files</option>
+      </select>
       <div class="toolbar toolbar-drive">
         <button id="new-folder" class="secondary" type="button">New folder</button>
         <label class="upload-btn">
