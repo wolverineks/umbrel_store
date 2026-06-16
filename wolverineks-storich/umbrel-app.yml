@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://svgur.com/i/mvA.svg
 category: files
-version: "1.0.10"
+version: "1.0.11"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,7 +15,7 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fix folder and file names with special characters (ampersands, quotes, unicode) breaking navigation and downloads.
+  Drag and drop files onto the drive to upload them to the current folder.
 dependencies: []
 path: ""
 defaultUsername: ""

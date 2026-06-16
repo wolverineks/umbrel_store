@@ -425,10 +425,38 @@ button.secondary {
 }
 label.upload-btn input { display: none; }
 .content {
+  position: relative;
   padding: 1.25rem;
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+.drop-overlay {
+  position: absolute;
+  inset: 0.75rem;
+  display: none;
+  place-items: center;
+  background: rgba(37, 99, 235, 0.08);
+  border: 2px dashed var(--accent);
+  border-radius: 1rem;
+  pointer-events: none;
+  z-index: 5;
+}
+.content.drop-active .drop-overlay {
+  display: grid;
+}
+.drop-overlay-inner {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  padding: 1.25rem 1.5rem;
+  text-align: center;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+  max-width: 20rem;
+}
+.drop-overlay-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
 }
 .breadcrumbs {
   display: flex;
@@ -673,6 +701,8 @@ function setView(view) {
   state.query = "";
   document.getElementById("search").value = "";
   closeContextMenu();
+  dropDepth = 0;
+  setDropActive(false);
   setActiveNav();
   refreshListing();
 }
@@ -1130,7 +1160,12 @@ async function submitNewFolder() {
 }
 
 async function uploadFiles(fileList) {
-  for (const file of fileList) {
+  const files = Array.from(fileList || []).filter((file) => file && file.name);
+  if (!files.length) return;
+  const status = document.getElementById("status");
+  const previousStatus = status.textContent;
+  status.textContent = \`Uploading \${files.length} file(s)...\`;
+  for (const file of files) {
     const form = new FormData();
     form.append("path", state.path);
     form.append("file", file);
@@ -1138,10 +1173,95 @@ async function uploadFiles(fileList) {
     const data = await response.json();
     if (!response.ok) {
       showError(data.error || \`Could not upload \${file.name}\`);
+      status.textContent = previousStatus;
       return;
     }
   }
   refreshListing();
+}
+
+let dropDepth = 0;
+
+function isFileDrag(event) {
+  return Array.from(event.dataTransfer?.types || []).includes("Files");
+}
+
+function setDropActive(active) {
+  const content = document.getElementById("content");
+  const overlay = document.getElementById("drop-overlay");
+  content.classList.toggle("drop-active", active);
+  overlay.setAttribute("aria-hidden", active ? "false" : "true");
+  if (active) {
+    document.getElementById("drop-location").textContent = state.path || "My Drive";
+  }
+}
+
+function collectDroppedFiles(dataTransfer) {
+  const files = [];
+  const items = dataTransfer.items;
+  if (items && items.length) {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (!files.length && dataTransfer.files?.length) {
+    for (const file of dataTransfer.files) files.push(file);
+  }
+  return files;
+}
+
+function bindFileDrop() {
+  const content = document.getElementById("content");
+
+  window.addEventListener("dragover", (event) => {
+    if (isFileDrag(event)) event.preventDefault();
+  });
+  window.addEventListener("drop", (event) => {
+    if (!event.target.closest("#content") && isFileDrag(event)) {
+      event.preventDefault();
+    }
+  });
+
+  content.addEventListener("dragenter", (event) => {
+    if (state.view !== "drive" || !isFileDrag(event)) return;
+    event.preventDefault();
+    dropDepth += 1;
+    setDropActive(true);
+  });
+
+  content.addEventListener("dragover", (event) => {
+    if (state.view !== "drive" || !isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+
+  content.addEventListener("dragleave", (event) => {
+    if (state.view !== "drive") return;
+    if (!content.contains(event.relatedTarget)) {
+      dropDepth = 0;
+      setDropActive(false);
+      return;
+    }
+    dropDepth = Math.max(0, dropDepth - 1);
+    if (dropDepth === 0) setDropActive(false);
+  });
+
+  content.addEventListener("drop", async (event) => {
+    if (state.view !== "drive" || !isFileDrag(event)) return;
+    event.preventDefault();
+    dropDepth = 0;
+    setDropActive(false);
+    const files = collectDroppedFiles(event.dataTransfer);
+    if (!files.length) return;
+    try {
+      await uploadFiles(files);
+    } catch (error) {
+      showError(String(error));
+    }
+  });
 }
 
 async function emptyTrash() {
@@ -1211,6 +1331,7 @@ function applyShareLinkFromUrl() {
   return true;
 }
 
+bindFileDrop();
 setActiveNav();
 renderBreadcrumbs(state.path);
 if (!applyShareLinkFromUrl()) {
@@ -1256,11 +1377,17 @@ function renderPage(): string {
         <button id="empty-trash" class="secondary" type="button">Empty trash</button>
       </div>
     </div>
-    <div class="content">
+    <div id="content" class="content">
       <div id="error" class="error" hidden></div>
       <div id="breadcrumbs" class="breadcrumbs"></div>
       <div id="status" class="status"></div>
       <div id="files" class="grid"></div>
+      <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
+        <div class="drop-overlay-inner">
+          <div class="drop-overlay-icon">⬆</div>
+          <div>Drop files to upload to <strong id="drop-location">My Drive</strong></div>
+        </div>
+      </div>
     </div>
   </main>
   <div id="context-menu" class="context-menu" role="menu" aria-hidden="true"></div>
