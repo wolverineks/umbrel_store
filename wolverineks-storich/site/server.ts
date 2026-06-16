@@ -877,6 +877,10 @@ label.upload-btn input { display: none; }
   font: inherit;
   padding: 0;
   border-radius: 0.35rem;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .breadcrumbs button.crumb.selected,
 .breadcrumbs button.crumb.drop-target {
@@ -895,6 +899,7 @@ label.upload-btn input { display: none; }
 }
 .card {
   position: relative;
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 0.9rem;
@@ -941,12 +946,19 @@ label.upload-btn input { display: none; }
 .file-icon-badge.type-file { background: #f1f5f9; color: #475569; }
 .card .name {
   font-weight: 600;
-  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .card .meta {
   color: var(--muted);
   font-size: 0.85rem;
   margin-top: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .empty {
   padding: 2rem;
@@ -1009,6 +1021,10 @@ label.upload-btn input { display: none; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .card.selected {
   border-color: var(--accent);
@@ -1043,8 +1059,7 @@ body.view-trash .toolbar-trash {
   top: 0.55rem;
   right: 0.55rem;
   color: #ca8a04;
-  font-size: 0.8rem;
-  font-weight: 700;
+  font-size: 0.95rem;
   line-height: 1;
   pointer-events: none;
 }
@@ -1081,6 +1096,7 @@ body.view-trash .toolbar-trash {
   cursor: pointer;
   text-align: left;
   width: 100%;
+  min-width: 0;
 }
 .pinned-item:hover,
 .pinned-item.active {
@@ -1093,9 +1109,15 @@ body.view-trash .toolbar-trash {
   line-height: 1;
 }
 .pinned-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pinned-item.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .pinned-empty {
   padding: 0.35rem 0.75rem;
@@ -1141,6 +1163,14 @@ body.view-trash .toolbar-trash {
   color: var(--muted);
   font-size: 0.95rem;
 }
+.dialog p strong {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
 .dialog input {
   width: 100%;
   border: 1px solid var(--border);
@@ -1152,6 +1182,35 @@ body.view-trash .toolbar-trash {
 .dialog input:focus {
   outline: 2px solid var(--accent-soft);
   border-color: var(--accent);
+}
+.rename-field {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 1rem;
+}
+.rename-field input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin-bottom: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.rename-field input:only-child {
+  border-radius: 0.65rem;
+}
+.rename-extension {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-radius: 0 0.65rem 0.65rem 0;
+  background: var(--bg);
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
 }
 .dialog-actions {
   display: flex;
@@ -1313,7 +1372,7 @@ self.addEventListener("fetch", (event) => {
 
 const PAGE_SCRIPT = `
 const state = { path: "", query: "", view: "drive", fileFilter: "all", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [] };
-const menuState = { entry: null, longPress: false };
+const menuState = { entry: null, longPress: false, source: "card" };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
 const previewTouch = { startX: 0, startY: 0, active: false };
@@ -1594,7 +1653,7 @@ function entryFromCard(card) {
 }
 
 function clearContextSelection() {
-  document.querySelectorAll(".card.selected, .crumb.selected").forEach((node) => {
+  document.querySelectorAll(".card.selected, .crumb.selected, .pinned-item.selected").forEach((node) => {
     node.classList.remove("selected");
   });
 }
@@ -1603,6 +1662,7 @@ function closeContextMenu() {
   const menu = document.getElementById("context-menu");
   menu.classList.remove("open");
   menuState.entry = null;
+  menuState.source = "card";
   clearContextSelection();
 }
 
@@ -1616,6 +1676,34 @@ function isPinnedEntry(entry) {
 
 function pinnedTargetPath(entry) {
   return entry.type === "folder" ? entry.path : parentPath(entry.path);
+}
+
+function entryFromPinned(button) {
+  const path = decodeDataValue(button.dataset.path);
+  const existing = (state.pinnedItems || []).find((item) => item.path === path);
+  if (existing) return existing;
+  return {
+    path,
+    name: decodeDataValue(button.dataset.name),
+    type: button.dataset.type || "file",
+    pinned: true,
+  };
+}
+
+function renameStem(name, type) {
+  if (type === "folder") return String(name || "");
+  const value = String(name || "");
+  const index = value.lastIndexOf(".");
+  if (index <= 0) return value;
+  return value.slice(0, index);
+}
+
+function renameExtension(name, type) {
+  if (type === "folder") return "";
+  const value = String(name || "");
+  const index = value.lastIndexOf(".");
+  if (index <= 0) return "";
+  return value.slice(index);
 }
 
 function renderPinnedList(root) {
@@ -1634,6 +1722,7 @@ function renderPinnedList(root) {
         type="button"
         class="pinned-item\${active ? " active" : ""}"
         data-path="\${encodeDataValue(entry.path)}"
+        data-name="\${encodeDataValue(entry.name)}"
         data-type="\${entry.type}"
       >
         <span class="pinned-icon">\${icon}</span>
@@ -1642,11 +1731,35 @@ function renderPinnedList(root) {
   }).join("");
   root.querySelectorAll(".pinned-item").forEach((button) => {
     button.addEventListener("click", () => {
+      if (menuState.longPress) {
+        menuState.longPress = false;
+        return;
+      }
       const path = decodeDataValue(button.dataset.path);
       const type = button.dataset.type;
       setView("drive");
       setPath(type === "folder" ? path : parentPath(path));
     });
+
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openContextMenu(entryFromPinned(button), event.clientX, event.clientY, button, "pinned");
+    });
+
+    button.addEventListener("touchstart", (event) => {
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const entry = entryFromPinned(button);
+      clearTimeout(longPressTimer);
+      longPressTimer = window.setTimeout(() => {
+        menuState.longPress = true;
+        openContextMenu(entry, touch.clientX, touch.clientY, button, "pinned");
+      }, 500);
+    }, { passive: true });
+
+    button.addEventListener("touchend", () => clearTimeout(longPressTimer));
+    button.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+    button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
   });
 }
 
@@ -1671,6 +1784,12 @@ async function refreshPinnedSidebar() {
 }
 
 function contextMenuActions(entry, source) {
+  if (source === "pinned") {
+    return [
+      { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
+      { id: "unpin", label: "Unpin from sidebar" },
+    ];
+  }
   if (source === "breadcrumb") {
     return [
       { id: "open", label: "Open" },
@@ -1718,6 +1837,7 @@ function contextMenuActions(entry, source) {
 function openContextMenu(entry, x, y, highlight, source = "card") {
   const menu = document.getElementById("context-menu");
   menuState.entry = entry;
+  menuState.source = source;
   clearContextSelection();
   if (highlight) highlight.classList.add("selected");
 
@@ -1896,9 +2016,9 @@ async function setPinned(entry, pinned) {
   refreshListing();
 }
 
-async function runMenuAction(action, entry) {
+async function runMenuAction(action, entry, source = "card") {
   if (action === "open") {
-    if (state.view === "important") {
+    if (source === "pinned" || state.view === "important") {
       openFromImportant(entry);
       return;
     }
@@ -2257,7 +2377,7 @@ function renderEntries() {
         : (entry.type === "folder"
           ? \`Folder · \${formatDate(entry.modified)}\`
           : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
-    const importantBadge = entry.important ? '<div class="card-important" aria-label="Important">!</div>' : "";
+    const importantBadge = entry.important ? '<div class="card-important" aria-label="Important">★</div>' : "";
     return \`
       <article
         class="card"
@@ -2368,6 +2488,8 @@ function closeRenameDialog() {
   dialog.classList.remove("open");
   dialog.setAttribute("aria-hidden", "true");
   document.getElementById("rename-input").value = "";
+  document.getElementById("rename-extension").textContent = "";
+  document.getElementById("rename-extension").hidden = true;
   renameEntry = null;
 }
 
@@ -2376,21 +2498,28 @@ function openRenameDialog(entry) {
   renameEntry = entry;
   const dialog = document.getElementById("rename-dialog");
   const input = document.getElementById("rename-input");
+  const extension = document.getElementById("rename-extension");
+  const stem = renameStem(entry.name, entry.type);
+  const suffix = renameExtension(entry.name, entry.type);
   document.getElementById("rename-current-name").textContent = entry.name;
   dialog.classList.add("open");
   dialog.setAttribute("aria-hidden", "false");
-  input.value = entry.name;
+  input.value = stem;
+  extension.textContent = suffix;
+  extension.hidden = !suffix;
   input.focus();
   input.select();
 }
 
 async function submitRename() {
   const input = document.getElementById("rename-input");
-  const name = input.value.trim();
-  if (!name || !renameEntry) {
+  const stem = input.value.trim();
+  if (!stem || !renameEntry) {
     input.focus();
     return;
   }
+  const suffix = renameExtension(renameEntry.name, renameEntry.type);
+  const name = suffix ? \`\${stem}\${suffix}\` : stem;
   if (name === renameEntry.name) {
     closeRenameDialog();
     return;
@@ -2571,9 +2700,10 @@ document.getElementById("context-menu").addEventListener("click", async (event) 
   if (!button || !menuState.entry) return;
   const action = button.dataset.action;
   const entry = menuState.entry;
+  const source = menuState.source;
   closeContextMenu();
   try {
-    await runMenuAction(action, entry);
+    await runMenuAction(action, entry, source);
   } catch (error) {
     showError(String(error));
   }
@@ -2644,7 +2774,7 @@ document.getElementById("preview-dialog").addEventListener("click", (event) => {
 });
 bindPreviewSwipe();
 document.addEventListener("contextmenu", (event) => {
-  if (!event.target.closest(".card") && !event.target.closest(".crumb")) closeContextMenu();
+  if (!event.target.closest(".card") && !event.target.closest(".crumb") && !event.target.closest(".pinned-item")) closeContextMenu();
 });
 
 function applyShareLinkFromUrl() {
@@ -2799,7 +2929,10 @@ function renderPage(): string {
     <div class="dialog" role="dialog" aria-labelledby="rename-title">
       <h2 id="rename-title">Rename</h2>
       <p>Rename <strong id="rename-current-name"></strong></p>
-      <input id="rename-input" type="text" placeholder="New name" autocomplete="off" maxlength="255">
+      <div class="rename-field">
+        <input id="rename-input" type="text" placeholder="New name" autocomplete="off" maxlength="255">
+        <span id="rename-extension" class="rename-extension" hidden></span>
+      </div>
       <div class="dialog-actions">
         <button id="rename-cancel" class="secondary" type="button">Cancel</button>
         <button id="rename-submit" class="primary" type="button">Rename</button>

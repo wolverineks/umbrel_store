@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-storich/icon.svg
 category: files
-version: "1.0.22"
+version: "1.0.23"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,7 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Rename Starred to Important, and pin files or folders to the sidebar for quick access.
+  Ellipsis clipped names, star icon for important items, rename keeps file extensions,
+  and unpin pinned sidebar items from their context menu.
 dependencies: []
 path: ""
 defaultUsername: ""
