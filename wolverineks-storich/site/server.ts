@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
+const ICON_PATH = path.join(__dirname, "icon.svg");
 const TRASH_DIR = path.join(DATA_ROOT, ".trash");
 const TRASH_ITEMS_DIR = path.join(TRASH_DIR, "items");
 const TRASH_INDEX_PATH = path.join(TRASH_DIR, "index.json");
@@ -1345,6 +1346,7 @@ function renderPage(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <title>Storich</title>
   <style>${PAGE_STYLES}</style>
 </head>
@@ -1669,6 +1671,16 @@ async function handleGet(req: IncomingMessage, res: ServerResponse, url: URL): P
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
+  if (route === "/icon.svg" || route === "/favicon.ico") {
+    try {
+      const icon = await readFile(ICON_PATH);
+      sendBytes(res, 200, "image/svg+xml", icon);
+    } catch {
+      sendJson(res, 404, { error: "icon not found" });
     }
     return;
   }

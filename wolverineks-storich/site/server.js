@@ -8,6 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
+const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const TRASH_DIR = node_path_1.default.join(DATA_ROOT, ".trash");
 const TRASH_ITEMS_DIR = node_path_1.default.join(TRASH_DIR, "items");
 const TRASH_INDEX_PATH = node_path_1.default.join(TRASH_DIR, "index.json");
@@ -1283,6 +1284,7 @@ function renderPage() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <title>Storich</title>
   <style>${PAGE_STYLES}</style>
 </head>
@@ -1585,6 +1587,16 @@ async function handleGet(req, res, url) {
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             sendJson(res, 500, { error: message });
+        }
+        return;
+    }
+    if (route === "/icon.svg" || route === "/favicon.ico") {
+        try {
+            const icon = await (0, promises_1.readFile)(ICON_PATH);
+            sendBytes(res, 200, "image/svg+xml", icon);
+        }
+        catch {
+            sendJson(res, 404, { error: "icon not found" });
         }
         return;
     }
