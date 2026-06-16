@@ -1944,7 +1944,7 @@ function renderPage() {
       </div>
       <div class="preview-stage">
         <button id="preview-prev" class="preview-nav" type="button" aria-label="Previous image">‹</button>
-        <div class="preview-image-wrap">
+        <div id="preview-image-wrap" class="preview-image-wrap">
           <img id="preview-image" alt="">
         </div>
         <button id="preview-next" class="preview-nav" type="button" aria-label="Next image">›</button>
