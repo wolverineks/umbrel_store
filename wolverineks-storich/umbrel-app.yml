@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://svgur.com/i/mvA.svg
 category: files
-version: "1.0.6"
+version: "1.0.7"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,7 +15,7 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Add right-click and long-press context menus to breadcrumb folders with open, share, and move to trash.
+  Fix errors when deleting the folder you are currently browsing by navigating to the parent folder.
 dependencies: []
 path: ""
 defaultUsername: ""

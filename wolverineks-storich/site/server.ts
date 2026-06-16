@@ -604,6 +604,32 @@ function setView(view) {
   refreshListing();
 }
 
+function normalizePath(path) {
+  return String(path || "").replace(/\\/g, "/").replace(/^\\/+|\\/+$/g, "");
+}
+
+function parentPath(path) {
+  const normalized = normalizePath(path);
+  if (!normalized) return "";
+  const index = normalized.lastIndexOf("/");
+  return index === -1 ? "" : normalized.slice(0, index);
+}
+
+function isPathInsideTree(currentPath, deletedPath) {
+  const current = normalizePath(currentPath);
+  const deleted = normalizePath(deletedPath);
+  if (!deleted) return false;
+  if (current === deleted) return true;
+  return current.startsWith(deleted + "/");
+}
+
+function navigateAfterDelete(deletedPath) {
+  if (!isPathInsideTree(state.path, deletedPath)) return;
+  state.path = parentPath(deletedPath);
+  state.query = "";
+  document.getElementById("search").value = "";
+}
+
 function setPath(path) {
   if (state.view !== "drive") return;
   state.path = path || "";
@@ -800,6 +826,7 @@ async function runMenuAction(action, entry) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not move to trash");
+    navigateAfterDelete(entry.path);
     refreshListing();
     return;
   }
@@ -958,7 +985,16 @@ async function refreshListing() {
       ? await fetch("/api/trash")
       : await fetch(\`/api/files?path=\${encodeURIComponent(state.path)}\`);
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not load files");
+    if (!response.ok) {
+      if (state.view === "drive" && response.status === 404) {
+        const previousPath = state.path;
+        state.path = parentPath(state.path);
+        if (state.path !== previousPath) {
+          return refreshListing();
+        }
+      }
+      throw new Error(data.error || "Could not load files");
+    }
     renderBreadcrumbs(state.view === "trash" ? "" : (data.path || ""));
     renderEntries(data);
   } catch (error) {
