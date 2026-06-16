@@ -1668,7 +1668,52 @@ async function refreshPinnedSidebar() {
   }
 }
 
+function currentFolderEntry() {
+  const folderPath = normalizePath(state.path);
+  if (!folderPath) {
+    return { id: "", path: "", name: "My Drive", type: "folder" };
+  }
+  const slash = folderPath.lastIndexOf("/");
+  const name = slash === -1 ? folderPath : folderPath.slice(slash + 1);
+  return { id: "", path: folderPath, name, type: "folder" };
+}
+
+function isFolderBackgroundTarget(target) {
+  if (!target?.closest?.("#content")) return false;
+  if (target.closest(".card")) return false;
+  if (target.closest(".crumb")) return false;
+  if (target.closest(".pinned-item")) return false;
+  if (target.closest("#context-menu")) return false;
+  if (target.closest("#drop-overlay")) return false;
+  if (target.closest(".topbar")) return false;
+  if (target.closest("button, a, input, select, label, textarea")) return false;
+  return true;
+}
+
 function contextMenuActions(entry, source) {
+  if (source === "folder") {
+    if (state.view === "trash") {
+      return [{ id: "empty-trash", label: "Empty trash", danger: true }];
+    }
+    if (state.view !== "drive") return [];
+    return [
+      { id: "new-folder", label: "New folder" },
+      { id: "upload", label: "Upload files" },
+      { id: "rename", label: "Rename folder", hidden: !entry.path },
+      {
+        id: isImportantEntry(entry) ? "unmark-important" : "mark-important",
+        label: isImportantEntry(entry) ? "Remove from important" : "Mark as important",
+        hidden: !entry.path,
+      },
+      {
+        id: isPinnedEntry(entry) ? "unpin" : "pin",
+        label: isPinnedEntry(entry) ? "Unpin from sidebar" : "Pin to sidebar",
+        hidden: !entry.path,
+      },
+      { id: "share", label: "Share folder" },
+      { id: "delete", label: "Move to trash", danger: true, hidden: !entry.path },
+    ];
+  }
   if (source === "pinned") {
     return [
       { id: "open", label: entry.type === "folder" ? "Open" : "Show in Drive" },
@@ -1727,6 +1772,8 @@ function openContextMenu(entry, x, y, highlight, source = "card") {
   if (highlight) highlight.classList.add("selected");
 
   const actions = contextMenuActions(entry, source);
+  const visibleActions = actions.filter((action) => !action.hidden);
+  if (!visibleActions.length) return;
 
   menu.innerHTML =
     \`<div class="menu-label">\${escapeHtml(entry.name)}</div>\` +
@@ -1900,6 +1947,18 @@ async function setPinned(entry, pinned) {
 }
 
 async function runMenuAction(action, entry, source = "card") {
+  if (action === "new-folder") {
+    openNewFolderDialog();
+    return;
+  }
+  if (action === "upload") {
+    document.getElementById("upload-input").click();
+    return;
+  }
+  if (action === "empty-trash") {
+    await emptyTrash();
+    return;
+  }
   if (action === "open") {
     if (source === "pinned" || state.view === "important") {
       openFromImportant(entry);
@@ -2481,6 +2540,39 @@ function collectDroppedFiles(dataTransfer) {
   return files;
 }
 
+function bindFolderBackgroundMenu() {
+  const content = document.getElementById("content");
+
+  function openFolderBackgroundMenu(x, y) {
+    if (state.view !== "drive" && state.view !== "trash") return;
+    const entry = currentFolderEntry();
+    const actions = contextMenuActions(entry, "folder").filter((action) => !action.hidden);
+    if (!actions.length) return;
+    openContextMenu(entry, x, y, null, "folder");
+  }
+
+  content.addEventListener("contextmenu", (event) => {
+    if (!isFolderBackgroundTarget(event.target)) return;
+    event.preventDefault();
+    openFolderBackgroundMenu(event.clientX, event.clientY);
+  });
+
+  content.addEventListener("touchstart", (event) => {
+    if (!isFolderBackgroundTarget(event.target)) return;
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    clearTimeout(longPressTimer);
+    longPressTimer = window.setTimeout(() => {
+      menuState.longPress = true;
+      openFolderBackgroundMenu(touch.clientX, touch.clientY);
+    }, 500);
+  }, { passive: true });
+
+  content.addEventListener("touchend", () => clearTimeout(longPressTimer));
+  content.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+  content.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
+}
+
 function bindFileDrop() {
   const content = document.getElementById("content");
 
@@ -2660,7 +2752,11 @@ document.getElementById("preview-dialog").addEventListener("click", (event) => {
 });
 bindPreviewSwipe();
 document.addEventListener("contextmenu", (event) => {
-  if (!event.target.closest(".card") && !event.target.closest(".crumb") && !event.target.closest(".pinned-item")) closeContextMenu();
+  if (event.target.closest(".card")) return;
+  if (event.target.closest(".crumb")) return;
+  if (event.target.closest(".pinned-item")) return;
+  if (isFolderBackgroundTarget(event.target)) return;
+  closeContextMenu();
 });
 
 function applyShareLinkFromUrl() {
@@ -2676,6 +2772,7 @@ function applyShareLinkFromUrl() {
 }
 
 bindFileDrop();
+bindFolderBackgroundMenu();
 bindTrashDrop();
 setActiveNav();
 renderBreadcrumbs(state.path);
