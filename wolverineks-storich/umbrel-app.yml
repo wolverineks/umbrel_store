@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-storich/icon.svg
 category: files
-version: "1.0.34"
+version: "1.0.35"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,9 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Add quick filters for type (folders, images, documents, and more) and
-  modified date (today, past 7 days, past 30 days, this year). Filters also
-  appear in the search options modal.
+  Sort files by name, modified date, or size. Use the Sort quick filters or
+  search options modal; click an active sort chip again to reverse direction.
 dependencies: []
 path: ""
 defaultUsername: ""

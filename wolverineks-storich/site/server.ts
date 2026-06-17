@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.34";
+const APP_VERSION = "1.0.35";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PWA_ICONS: Record<string, { file: string; type: string }> = {
@@ -1996,7 +1996,7 @@ self.addEventListener("fetch", (event) => {
 `;
 
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive", fileFilter: "all", modifiedFilter: "all", layoutView: "grid", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", modifiedFilter: "all", sortBy: "name", sortDir: "asc", layoutView: "grid", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
 const QUICK_TYPE_FILTERS = [
   { id: "all", label: "All" },
   { id: "folder", label: "Folders" },
@@ -2023,6 +2023,16 @@ const MODIFIED_FILTER_LABELS = {
   week: "Past 7 days",
   month: "Past 30 days",
   year: "This year",
+};
+const QUICK_SORT_OPTIONS = [
+  { id: "name", label: "Name" },
+  { id: "modified", label: "Modified" },
+  { id: "size", label: "Size" },
+];
+const SORT_BY_LABELS = {
+  name: "Name",
+  modified: "Modified",
+  size: "Size",
 };
 const menuState = { entry: null, longPress: false, source: "card" };
 const DRAG_MIME = "application/x-storich-entry";
@@ -2161,11 +2171,82 @@ function matchesModifiedFilter(entry, filter = state.modifiedFilter) {
   return true;
 }
 
+function sortLabel() {
+  if (state.sortBy === "name" && state.sortDir === "asc") return "";
+  const label = SORT_BY_LABELS[state.sortBy] || "Name";
+  return \`\${label} \${state.sortDir === "asc" ? "↑" : "↓"}\`;
+}
+
 function activeFilterLabels() {
   const labels = [];
   if (state.fileFilter !== "all") labels.push(fileFilterLabel());
   if (state.modifiedFilter !== "all") labels.push(modifiedFilterLabel());
+  const sort = sortLabel();
+  if (sort) labels.push(sort);
   return labels;
+}
+
+function defaultSortDir(sortBy) {
+  if (sortBy === "name") return "asc";
+  return "desc";
+}
+
+function loadSortPreference() {
+  try {
+    const raw = localStorage.getItem("storich-sort");
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved.by === "name" || saved.by === "modified" || saved.by === "size") {
+      state.sortBy = saved.by;
+    }
+    if (saved.dir === "asc" || saved.dir === "desc") {
+      state.sortDir = saved.dir;
+    }
+  } catch {
+    // ignore saved state errors
+  }
+}
+
+function saveSortPreference() {
+  try {
+    localStorage.setItem("storich-sort", JSON.stringify({ by: state.sortBy, dir: state.sortDir }));
+  } catch {
+    // ignore saved state errors
+  }
+}
+
+function syncSortControls() {
+  const sortBy = document.getElementById("sort-by");
+  const sortDir = document.getElementById("sort-dir");
+  if (sortBy) sortBy.value = state.sortBy;
+  if (sortDir) sortDir.value = state.sortDir;
+}
+
+function setSortBy(value, options = {}) {
+  const next = value || "name";
+  const toggle = options.toggle !== false;
+  if (toggle && state.sortBy === next) {
+    state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+  } else {
+    state.sortBy = next;
+    if (!options.keepDirection) {
+      state.sortDir = defaultSortDir(next);
+    }
+  }
+  saveSortPreference();
+  syncSortControls();
+  updateSearchOptionsButton();
+  renderQuickFilters();
+  renderEntries();
+}
+
+function setSortDir(value) {
+  state.sortDir = value === "desc" ? "desc" : "asc";
+  saveSortPreference();
+  syncSortControls();
+  updateSearchOptionsButton();
+  renderQuickFilters();
+  renderEntries();
 }
 
 function updateSearchOptionsButton() {
@@ -2196,7 +2277,11 @@ function renderQuickFilterChips(filters, kind, activeValue) {
   return filters
     .map((filter) => {
       const active = filter.id === activeValue ? " active" : "";
-      return \`<button type="button" class="quick-filter-chip\${active}" data-filter-kind="\${kind}" data-filter-value="\${filter.id}">\${escapeHtml(filter.label)}</button>\`;
+      let label = filter.label;
+      if (kind === "sort" && filter.id === state.sortBy) {
+        label = \`\${filter.label} \${state.sortDir === "asc" ? "↑" : "↓"}\`;
+      }
+      return \`<button type="button" class="quick-filter-chip\${active}" data-filter-kind="\${kind}" data-filter-value="\${filter.id}">\${escapeHtml(label)}</button>\`;
     })
     .join("");
 }
@@ -2212,6 +2297,10 @@ function renderQuickFilters() {
     <div class="quick-filter-group">
       <span class="quick-filter-label">Modified</span>
       <div class="quick-filter-chips">\${renderQuickFilterChips(QUICK_MODIFIED_FILTERS, "modified", state.modifiedFilter)}</div>
+    </div>
+    <div class="quick-filter-group">
+      <span class="quick-filter-label">Sort</span>
+      <div class="quick-filter-chips">\${renderQuickFilterChips(QUICK_SORT_OPTIONS, "sort", state.sortBy)}</div>
     </div>\`;
 }
 
@@ -2226,6 +2315,7 @@ function bindQuickFilters() {
     const value = chip.dataset.filterValue;
     if (kind === "type") setFileFilter(value);
     if (kind === "modified") setModifiedFilter(value);
+    if (kind === "sort") setSortBy(value);
   });
 }
 
@@ -2547,6 +2637,39 @@ function fileTypeInfo(entry) {
 function renderFileIcon(entry) {
   const info = fileTypeInfo(entry);
   return \`<div class="icon file-icon-badge type-\${info.category}" title="\${escapeHtml(info.label)}">\${info.category === "folder" ? info.badge : escapeHtml(info.badge)}</div>\`;
+}
+
+function compareEntries(a, b) {
+  const sortBy = state.sortBy || "name";
+  const direction = state.sortDir === "desc" ? -1 : 1;
+  let result = 0;
+  if (sortBy === "name") {
+    result = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  } else if (sortBy === "modified") {
+    const aTime = entryTimestamp(a)?.getTime() ?? 0;
+    const bTime = entryTimestamp(b)?.getTime() ?? 0;
+    result = aTime - bTime;
+  } else if (sortBy === "size") {
+    const aSize = a.type === "folder" ? 0 : Number(a.size ?? 0);
+    const bSize = b.type === "folder" ? 0 : Number(b.size ?? 0);
+    result = aSize - bSize;
+  }
+  if (result === 0) {
+    result = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  }
+  return result * direction;
+}
+
+function sortEntries(entries) {
+  const folders = [];
+  const files = [];
+  for (const entry of entries) {
+    if (entry.type === "folder") folders.push(entry);
+    else files.push(entry);
+  }
+  folders.sort(compareEntries);
+  files.sort(compareEntries);
+  return [...folders, ...files];
 }
 
 function filteredEntries(entries) {
@@ -3571,7 +3694,7 @@ function renderEntries() {
   const container = document.getElementById("files");
   const data = state.listing || { path: state.path, entries: [] };
   const allEntries = data.entries || [];
-  const entries = filteredEntries(allEntries);
+  const entries = sortEntries(filteredEntries(allEntries));
   const locationLabel = state.view === "trash"
     ? "Trash"
     : state.view === "important"
@@ -4015,6 +4138,12 @@ document.getElementById("file-filter").addEventListener("change", (event) => {
 document.getElementById("modified-filter").addEventListener("change", (event) => {
   setModifiedFilter(event.target.value);
 });
+document.getElementById("sort-by").addEventListener("change", (event) => {
+  setSortBy(event.target.value, { toggle: false });
+});
+document.getElementById("sort-dir").addEventListener("change", (event) => {
+  setSortDir(event.target.value);
+});
 document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
 document.getElementById("mobile-add-category")?.addEventListener("click", () => openCategoryDialog("create"));
 document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
@@ -4164,9 +4293,11 @@ loadSidebarSectionState();
 bindSidebarSectionToggles();
 applySidebarSectionState();
 loadLayoutView();
+loadSortPreference();
 bindLayoutViewToggle();
 applyLayoutView();
 bindQuickFilters();
+syncSortControls();
 renderQuickFilters();
 setActiveNav();
 renderBreadcrumbs(state.path);
@@ -4347,6 +4478,21 @@ function renderPage(): string {
           <option value="week">Past 7 days</option>
           <option value="month">Past 30 days</option>
           <option value="year">This year</option>
+        </select>
+      </label>
+      <label class="search-option-field">
+        <span>Sort by</span>
+        <select id="sort-by" class="file-filter" aria-label="Sort by">
+          <option value="name">Name</option>
+          <option value="modified">Modified</option>
+          <option value="size">Size</option>
+        </select>
+      </label>
+      <label class="search-option-field">
+        <span>Sort direction</span>
+        <select id="sort-dir" class="file-filter" aria-label="Sort direction">
+          <option value="asc">Ascending</option>
+          <option value="desc">Descending</option>
         </select>
       </label>
       <div class="dialog-actions">
