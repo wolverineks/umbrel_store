@@ -7,6 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
+const APP_VERSION = "1.0.30";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -1608,10 +1609,24 @@ body.view-trash .toolbar-trash {
     display: block;
   }
 }
+.app-version {
+  position: fixed;
+  right: 0.85rem;
+  bottom: 0.45rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+  z-index: 1;
+}
 @media (display-mode: standalone) {
   body {
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+  .app-version {
+    bottom: calc(0.45rem + env(safe-area-inset-bottom));
   }
 }
 `;
@@ -3824,6 +3839,7 @@ function renderPage() {
       <div id="preview-counter" class="preview-counter"></div>
     </div>
   </div>
+  <div class="app-version" aria-hidden="true">v${APP_VERSION}</div>
   <script>${PAGE_SCRIPT}</script>
 </body>
 </html>`;
