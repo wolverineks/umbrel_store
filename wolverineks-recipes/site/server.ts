@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.0.4";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
@@ -210,6 +210,187 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function renderPrintPage(recipe: Recipe, autoPrint: boolean): string {
+  const metaItems = [
+    recipe.servings ? `Servings: ${escapeHtml(recipe.servings)}` : "",
+    recipe.prep_time ? `Prep: ${escapeHtml(recipe.prep_time)}` : "",
+    recipe.cook_time ? `Cook: ${escapeHtml(recipe.cook_time)}` : "",
+    recipe.total_time ? `Total: ${escapeHtml(recipe.total_time)}` : "",
+  ]
+    .filter(Boolean)
+    .map((item) => `<li>${item}</li>`)
+    .join("");
+
+  const ingredients = (recipe.ingredients || [])
+    .map((item) => `<li>${escapeHtml(item)}</li>`)
+    .join("");
+  const instructions = (recipe.instructions || [])
+    .map((item) => `<li>${escapeHtml(item)}</li>`)
+    .join("");
+
+  const description = recipe.description
+    ? `<p class="description">${escapeHtml(recipe.description)}</p>`
+    : "";
+  const notes = recipe.notes
+    ? `<section class="notes"><h2>Notes</h2><p>${escapeHtml(recipe.notes)}</p></section>`
+    : "";
+  const source = recipe.source_url
+    ? `<p>Source: ${escapeHtml(recipe.source_url)}</p>`
+    : "";
+  const printedOn = `Printed: ${new Date().toLocaleDateString("en-US")}`;
+  const autoPrintScript = autoPrint
+    ? `<script>window.addEventListener("load", () => setTimeout(() => window.print(), 250));</script>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(recipe.title)}</title>
+  <style>
+    @page { size: letter; margin: 0.75in; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: #111827;
+      background: #f3f4f6;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      background: #fff;
+      border-bottom: 1px solid #e5e7eb;
+      font-family: system-ui, sans-serif;
+    }
+    .toolbar button {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .recipe-card {
+      max-width: 8.5in;
+      margin: 0 auto;
+      padding: 0.5in 0.75in 0.75in;
+      background: #fff;
+    }
+    .recipe-header {
+      text-align: center;
+      margin-bottom: 24px;
+      border-bottom: 2px solid #e67e22;
+      padding-bottom: 16px;
+    }
+    .recipe-header h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.2;
+    }
+    .description {
+      margin: 0 0 10px;
+      font-size: 14px;
+      color: #4b5563;
+    }
+    .meta {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px 16px;
+      font-size: 13px;
+      color: #374151;
+    }
+    .recipe-body {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 28px;
+    }
+    .column h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #e67e22;
+    }
+    .column ul, .column ol {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .column ul { padding-left: 18px; }
+    .column ol { padding-left: 20px; line-height: 1.65; }
+    .column ol li + li { margin-top: 8px; }
+    .notes {
+      margin-top: 24px;
+      padding-top: 12px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .notes h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      color: #e67e22;
+    }
+    .notes p {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .recipe-footer {
+      margin-top: 28px;
+      padding-top: 10px;
+      border-top: 1px solid #e5e7eb;
+      font-size: 11px;
+      color: #6b7280;
+    }
+    .recipe-footer p { margin: 0; }
+    @media print {
+      body { background: #fff; }
+      .no-print { display: none !important; }
+      .recipe-card { margin: 0; padding: 0; max-width: none; }
+    }
+    @media (max-width: 720px) {
+      .recipe-body { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar no-print">
+    <button type="button" onclick="window.print()">Print</button>
+    <button type="button" onclick="window.close()">Close</button>
+  </div>
+  <article class="recipe-card">
+    <header class="recipe-header">
+      <h1>${escapeHtml(recipe.title)}</h1>
+      ${description}
+      ${metaItems ? `<ul class="meta">${metaItems}</ul>` : ""}
+    </header>
+    <section class="recipe-body">
+      <div class="column">
+        <h2>Ingredients</h2>
+        <ul>${ingredients}</ul>
+      </div>
+      <div class="column">
+        <h2>Instructions</h2>
+        <ol>${instructions}</ol>
+      </div>
+    </section>
+    ${notes}
+    <footer class="recipe-footer">
+      ${source}
+      <p>${printedOn}</p>
+    </footer>
+  </article>
+  ${autoPrintScript}
+</body>
+</html>`;
+}
+
 const HTML_PAGE = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -324,6 +505,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       padding: 24px 0;
     }
     .danger { color: #b91c1c; border-color: #fecaca; }
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
     .hidden { display: none; }
     .setup-steps {
       margin: 16px 0 0;
@@ -429,6 +616,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       card.innerHTML = \`
         <h2>\${escapeHtml(recipe.title)}</h2>
         <div class="meta">Saved \${formatDate(recipe.updated_at || recipe.created_at)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
+        <div class="card-actions">
+          <button class="print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
+        </div>
         <div class="detail">
           \${recipe.description ? '<p>' + escapeHtml(recipe.description) + '</p>' : ''}
           <div class="columns">
@@ -448,6 +638,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       card.addEventListener("click", (event) => {
         if (event.target.closest("a, button")) return;
         card.classList.toggle("open");
+      });
+      card.querySelector(".print-btn")?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const id = event.currentTarget.getAttribute("data-id");
+        window.open("/recipes/" + encodeURIComponent(id) + "/print?auto=1", "_blank", "noopener");
       });
       card.querySelector(".delete-btn")?.addEventListener("click", async (event) => {
         event.stopPropagation();
@@ -547,6 +742,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   if (req.method === "GET" && route === "/") {
     sendText(res, 200, HTML_PAGE, "text/html; charset=utf-8");
+    return;
+  }
+
+  const printMatch = route.match(/^\/recipes\/([^/]+)\/print$/);
+  if (printMatch && req.method === "GET") {
+    const id = decodeURIComponent(printMatch[1]);
+    const recipe = await loadRecipe(id);
+    if (!recipe) {
+      sendText(res, 404, "Recipe not found", "text/plain; charset=utf-8");
+      return;
+    }
+    const autoPrint = url.searchParams.get("auto") === "1";
+    sendText(res, 200, renderPrintPage(recipe, autoPrint), "text/html; charset=utf-8");
     return;
   }
 
