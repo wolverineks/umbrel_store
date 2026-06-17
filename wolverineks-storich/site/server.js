@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.37";
+const APP_VERSION = "1.0.38";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -1052,7 +1052,7 @@ button.secondary {
   display: none;
 }
 .quick-filter-clear {
-  display: inline-flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: 1.1rem;
@@ -1062,6 +1062,9 @@ button.secondary {
   line-height: 1;
   opacity: 0.75;
   flex-shrink: 0;
+}
+.quick-filter-btn.active .quick-filter-clear {
+  display: inline-flex;
 }
 .quick-filter-clear:hover {
   opacity: 1;

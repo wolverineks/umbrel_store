@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.37";
+const APP_VERSION = "1.0.38";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PWA_ICONS: Record<string, { file: string; type: string }> = {
@@ -1235,7 +1235,7 @@ button.secondary {
   display: none;
 }
 .quick-filter-clear {
-  display: inline-flex;
+  display: none;
   align-items: center;
   justify-content: center;
   width: 1.1rem;
@@ -1245,6 +1245,9 @@ button.secondary {
   line-height: 1;
   opacity: 0.75;
   flex-shrink: 0;
+}
+.quick-filter-btn.active .quick-filter-clear {
+  display: inline-flex;
 }
 .quick-filter-clear:hover {
   opacity: 1;
