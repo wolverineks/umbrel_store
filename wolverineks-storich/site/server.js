@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.36";
+const APP_VERSION = "1.0.37";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -1010,40 +1010,112 @@ button.secondary {
 .quick-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.65rem 1rem;
+  gap: 0.45rem;
   margin-bottom: 1rem;
   align-items: center;
 }
-.quick-filter-group {
-  display: flex;
+.quick-filter-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  min-width: 0;
-  flex: 1 1 10rem;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
 }
-.quick-filter-label {
-  flex-shrink: 0;
+.quick-filter-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.quick-filter-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.quick-filter-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quick-filter-chevron {
   font-size: 0.72rem;
+  opacity: 0.65;
+  line-height: 1;
+}
+.quick-filter-btn.active .quick-filter-chevron {
+  display: none;
+}
+.quick-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  line-height: 1;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+.quick-filter-clear:hover {
+  opacity: 1;
+  background: rgba(15, 23, 42, 0.08);
+}
+.quick-filter-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 10.5rem;
+  max-width: 16rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  padding: 0.35rem;
+  display: none;
+}
+.quick-filter-menu.open {
+  display: grid;
+}
+.quick-filter-menu-item {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.quick-filter-menu-item:hover,
+.quick-filter-menu-item:focus {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+}
+.quick-filter-menu-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.quick-filter-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.25rem 0.35rem;
+}
+.quick-filter-menu-label {
+  padding: 0.4rem 0.75rem 0.15rem;
+  font-size: 0.72rem;
+  color: var(--muted);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted);
-}
-.quick-filter-select {
-  flex: 1;
-  min-width: 6.5rem;
-  max-width: 11rem;
-  padding: 0.45rem 0.65rem;
-  font-size: 0.85rem;
-}
-.quick-filter-sort {
-  display: flex;
-  gap: 0.35rem;
-  flex: 1;
-  min-width: 0;
-}
-.quick-filter-sort .quick-filter-select {
-  max-width: none;
 }
 .view-toggle {
   display: flex;
@@ -1852,6 +1924,7 @@ let categoryDialogMode = "create";
 let categoryDialogId = null;
 let listingRequestId = 0;
 const sidebarSections = { pinned: false, categories: false };
+let quickFilterMenuKind = "";
 
 function escapeHtml(value) {
   return String(value)
@@ -2021,25 +2094,128 @@ function saveSortPreference() {
 }
 
 function syncFilterControls() {
-  for (const id of ["file-filter", "quick-file-filter"]) {
-    const select = document.getElementById(id);
-    if (select) select.value = state.fileFilter;
-  }
-  for (const id of ["modified-filter", "quick-modified-filter"]) {
-    const select = document.getElementById(id);
-    if (select) select.value = state.modifiedFilter;
-  }
+  const fileSelect = document.getElementById("file-filter");
+  const modifiedSelect = document.getElementById("modified-filter");
+  if (fileSelect) fileSelect.value = state.fileFilter;
+  if (modifiedSelect) modifiedSelect.value = state.modifiedFilter;
 }
 
 function syncSortControls() {
-  for (const id of ["sort-by", "quick-sort-by"]) {
-    const select = document.getElementById(id);
-    if (select) select.value = state.sortBy;
+  const sortBy = document.getElementById("sort-by");
+  const sortDir = document.getElementById("sort-dir");
+  if (sortBy) sortBy.value = state.sortBy;
+  if (sortDir) sortDir.value = state.sortDir;
+}
+
+function isTypeFilterActive() {
+  return state.fileFilter !== "all";
+}
+
+function isModifiedFilterActive() {
+  return state.modifiedFilter !== "all";
+}
+
+function isSortFilterActive() {
+  return !(state.sortBy === "name" && state.sortDir === "asc");
+}
+
+function sortFilterButtonLabel() {
+  const label = SORT_BY_LABELS[state.sortBy] || "Name";
+  return \`\${label} \${state.sortDir === "asc" ? "↑" : "↓"}\`;
+}
+
+function updateQuickFilterButton(kind) {
+  const button = document.querySelector(\`[data-filter-toggle="\${kind}"]\`);
+  if (!button) return;
+  const text = button.querySelector(".quick-filter-text");
+  const clear = button.querySelector(".quick-filter-clear");
+  if (!text || !clear) return;
+  if (kind === "type") {
+    const active = isTypeFilterActive();
+    text.textContent = active ? fileFilterLabel() : "Type";
+    button.classList.toggle("active", active);
+    clear.hidden = !active;
   }
-  for (const id of ["sort-dir", "quick-sort-dir"]) {
-    const select = document.getElementById(id);
-    if (select) select.value = state.sortDir;
+  if (kind === "modified") {
+    const active = isModifiedFilterActive();
+    text.textContent = active ? modifiedFilterLabel() : "Modified";
+    button.classList.toggle("active", active);
+    clear.hidden = !active;
   }
+  if (kind === "sort") {
+    const active = isSortFilterActive();
+    text.textContent = active ? sortFilterButtonLabel() : "Sort";
+    button.classList.toggle("active", active);
+    clear.hidden = !active;
+  }
+  button.setAttribute("aria-expanded", quickFilterMenuKind === kind ? "true" : "false");
+}
+
+function syncQuickFilterButtons() {
+  updateQuickFilterButton("type");
+  updateQuickFilterButton("modified");
+  updateQuickFilterButton("sort");
+}
+
+function closeQuickFilterMenu() {
+  const menu = document.getElementById("quick-filter-menu");
+  if (!menu) return;
+  menu.classList.remove("open");
+  menu.setAttribute("aria-hidden", "true");
+  quickFilterMenuKind = "";
+  syncQuickFilterButtons();
+}
+
+function renderQuickFilterMenuItems(kind) {
+  if (kind === "type") {
+    return QUICK_TYPE_FILTERS
+      .filter((filter) => filter.id !== "all")
+      .map((filter) => {
+        const active = state.fileFilter === filter.id ? " active" : "";
+        return \`<button type="button" class="quick-filter-menu-item\${active}" data-menu-action="type" data-menu-value="\${filter.id}">\${escapeHtml(filter.label)}</button>\`;
+      })
+      .join("");
+  }
+  if (kind === "modified") {
+    return QUICK_MODIFIED_FILTERS
+      .filter((filter) => filter.id !== "all")
+      .map((filter) => {
+        const active = state.modifiedFilter === filter.id ? " active" : "";
+        return \`<button type="button" class="quick-filter-menu-item\${active}" data-menu-action="modified" data-menu-value="\${filter.id}">\${escapeHtml(filter.label)}</button>\`;
+      })
+      .join("");
+  }
+  const sortItems = QUICK_SORT_OPTIONS
+    .map((filter) => {
+      const active = state.sortBy === filter.id ? " active" : "";
+      const arrow = state.sortBy === filter.id ? (state.sortDir === "asc" ? " ↑" : " ↓") : "";
+      return \`<button type="button" class="quick-filter-menu-item\${active}" data-menu-action="sort-by" data-menu-value="\${filter.id}">\${escapeHtml(filter.label)}\${arrow}</button>\`;
+    })
+    .join("");
+  const dirItems = QUICK_SORT_DIR_OPTIONS
+    .map((filter) => {
+      const active = state.sortDir === filter.id ? " active" : "";
+      return \`<button type="button" class="quick-filter-menu-item\${active}" data-menu-action="sort-dir" data-menu-value="\${filter.id}">\${escapeHtml(filter.label)}</button>\`;
+    })
+    .join("");
+  return \`\${sortItems}<div class="quick-filter-menu-divider" role="separator"></div><div class="quick-filter-menu-label">Direction</div>\${dirItems}\`;
+}
+
+function openQuickFilterMenu(kind, anchor) {
+  const menu = document.getElementById("quick-filter-menu");
+  if (!menu || !anchor) return;
+  if (quickFilterMenuKind === kind) {
+    closeQuickFilterMenu();
+    return;
+  }
+  quickFilterMenuKind = kind;
+  menu.innerHTML = renderQuickFilterMenuItems(kind);
+  menu.classList.add("open");
+  menu.setAttribute("aria-hidden", "false");
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = \`\${rect.left}px\`;
+  menu.style.top = \`\${rect.bottom + 6}px\`;
+  syncQuickFilterButtons();
 }
 
 function setSortBy(value, options = {}) {
@@ -2087,63 +2263,81 @@ function setModifiedFilter(value) {
   renderEntries();
 }
 
-function renderQuickFilterOptions(filters) {
-  return filters
-    .map((filter) => \`<option value="\${filter.id}">\${escapeHtml(filter.label)}</option>\`)
-    .join("");
-}
-
 function buildQuickFilters() {
   const root = document.getElementById("quick-filters");
   if (!root || root.dataset.ready === "true") return;
   root.dataset.ready = "true";
   root.innerHTML =
-    \`<label class="quick-filter-group">
-      <span class="quick-filter-label">Type</span>
-      <select id="quick-file-filter" class="quick-filter-select file-filter" data-quick-filter="type" aria-label="Filter by file type">
-        \${renderQuickFilterOptions(QUICK_TYPE_FILTERS)}
-      </select>
-    </label>
-    <label class="quick-filter-group">
-      <span class="quick-filter-label">Modified</span>
-      <select id="quick-modified-filter" class="quick-filter-select file-filter" data-quick-filter="modified" aria-label="Filter by modified date">
-        \${renderQuickFilterOptions(QUICK_MODIFIED_FILTERS)}
-      </select>
-    </label>
-    <label class="quick-filter-group">
-      <span class="quick-filter-label">Sort</span>
-      <div class="quick-filter-sort">
-        <select id="quick-sort-by" class="quick-filter-select file-filter" data-quick-filter="sort-by" aria-label="Sort by">
-          \${renderQuickFilterOptions(QUICK_SORT_OPTIONS)}
-        </select>
-        <select id="quick-sort-dir" class="quick-filter-select file-filter" data-quick-filter="sort-dir" aria-label="Sort direction">
-          \${renderQuickFilterOptions(QUICK_SORT_DIR_OPTIONS)}
-        </select>
-      </div>
-    </label>\`;
+    \`<div class="quick-filter" data-filter="type">
+      <button type="button" class="quick-filter-btn" data-filter-toggle="type" aria-haspopup="menu" aria-expanded="false" aria-label="Filter by file type">
+        <span class="quick-filter-text">Type</span>
+        <span class="quick-filter-chevron" aria-hidden="true">▾</span>
+        <span class="quick-filter-clear" hidden aria-label="Clear type filter" title="Clear type filter">×</span>
+      </button>
+    </div>
+    <div class="quick-filter" data-filter="modified">
+      <button type="button" class="quick-filter-btn" data-filter-toggle="modified" aria-haspopup="menu" aria-expanded="false" aria-label="Filter by modified date">
+        <span class="quick-filter-text">Modified</span>
+        <span class="quick-filter-chevron" aria-hidden="true">▾</span>
+        <span class="quick-filter-clear" hidden aria-label="Clear modified filter" title="Clear modified filter">×</span>
+      </button>
+    </div>
+    <div class="quick-filter" data-filter="sort">
+      <button type="button" class="quick-filter-btn" data-filter-toggle="sort" aria-haspopup="menu" aria-expanded="false" aria-label="Sort items">
+        <span class="quick-filter-text">Sort</span>
+        <span class="quick-filter-chevron" aria-hidden="true">▾</span>
+        <span class="quick-filter-clear" hidden aria-label="Reset sort" title="Reset sort">×</span>
+      </button>
+    </div>\`;
   bindQuickFilters();
 }
 
 function bindQuickFilters() {
   const root = document.getElementById("quick-filters");
+  const menu = document.getElementById("quick-filter-menu");
   if (!root || root.dataset.bound === "true") return;
   root.dataset.bound = "true";
-  root.addEventListener("change", (event) => {
-    const select = event.target;
-    if (!select.matches("[data-quick-filter]")) return;
-    const kind = select.dataset.quickFilter;
-    const value = select.value;
-    if (kind === "type") setFileFilter(value);
-    if (kind === "modified") setModifiedFilter(value);
-    if (kind === "sort-by") setSortBy(value, { toggle: false });
-    if (kind === "sort-dir") setSortDir(value);
+  root.addEventListener("click", (event) => {
+    const clear = event.target.closest(".quick-filter-clear");
+    if (clear) {
+      event.stopPropagation();
+      const kind = clear.closest("[data-filter]")?.dataset.filter;
+      if (kind === "type") setFileFilter("all");
+      if (kind === "modified") setModifiedFilter("all");
+      if (kind === "sort") setSortBy("name", { toggle: false });
+      closeQuickFilterMenu();
+      return;
+    }
+    const toggle = event.target.closest("[data-filter-toggle]");
+    if (!toggle) return;
+    openQuickFilterMenu(toggle.dataset.filterToggle, toggle);
+  });
+  menu?.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-menu-action][data-menu-value]");
+    if (!item) return;
+    const action = item.dataset.menuAction;
+    const value = item.dataset.menuValue;
+    if (action === "type") setFileFilter(value);
+    if (action === "modified") setModifiedFilter(value);
+    if (action === "sort-by") setSortBy(value, { toggle: false });
+    if (action === "sort-dir") setSortDir(value);
+    closeQuickFilterMenu();
   });
 }
 
 function renderQuickFilters() {
   buildQuickFilters();
-  syncFilterControls();
-  syncSortControls();
+  syncQuickFilterButtons();
+  if (quickFilterMenuKind) {
+    const anchor = document.querySelector(\`[data-filter-toggle="\${quickFilterMenuKind}"]\`);
+    const menu = document.getElementById("quick-filter-menu");
+    if (anchor && menu?.classList.contains("open")) {
+      menu.innerHTML = renderQuickFilterMenuItems(quickFilterMenuKind);
+      const rect = anchor.getBoundingClientRect();
+      menu.style.left = \`\${rect.left}px\`;
+      menu.style.top = \`\${rect.bottom + 6}px\`;
+    }
+  }
 }
 
 function resetListingFilters() {
@@ -4023,6 +4217,9 @@ document.getElementById("context-menu").addEventListener("click", async (event) 
 });
 document.addEventListener("click", (event) => {
   if (!event.target.closest("#context-menu")) closeContextMenu();
+  if (!event.target.closest("#quick-filter-menu") && !event.target.closest(".quick-filter-btn")) {
+    closeQuickFilterMenu();
+  }
 });
 document.addEventListener("keydown", (event) => {
   const previewOpen = document.getElementById("preview-dialog").classList.contains("open");
@@ -4042,6 +4239,7 @@ document.addEventListener("keydown", (event) => {
     closeNewFolderDialog();
     closeCategoryDialog();
     closeSearchOptionsDialog();
+    closeQuickFilterMenu();
     closeContextMenu();
   }
 });
@@ -4260,6 +4458,7 @@ function renderPage() {
         </div>
       </div>
       <div id="quick-filters" class="quick-filters"></div>
+      <div id="quick-filter-menu" class="quick-filter-menu" role="menu" aria-hidden="true"></div>
       <div id="files" class="grid"></div>
       <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
         <div class="drop-overlay-inner">
