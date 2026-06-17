@@ -4,9 +4,25 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.4";
+const APP_VERSION = "1.0.5";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
+const IMAGES_DIR = path.join(DATA_ROOT, "images");
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif"] as const;
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+const IMAGE_CONTENT_TYPES: Record<string, (typeof IMAGE_EXTENSIONS)[number]> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -41,6 +57,82 @@ type Settings = {
 
 async function ensureDataDirs(): Promise<void> {
   await mkdir(RECIPES_DIR, { recursive: true });
+  await mkdir(IMAGES_DIR, { recursive: true });
+}
+
+function imageFilePath(id: string, ext: string): string {
+  return path.join(IMAGES_DIR, `${id}${ext}`);
+}
+
+function findRecipeImagePath(id: string): string | null {
+  for (const ext of IMAGE_EXTENSIONS) {
+    const filePath = imageFilePath(id, ext);
+    if (existsSync(filePath)) return filePath;
+  }
+  return null;
+}
+
+function extensionFromImageUrl(imageUrl: string): (typeof IMAGE_EXTENSIONS)[number] | null {
+  try {
+    const pathname = new URL(imageUrl).pathname.toLowerCase();
+    for (const ext of IMAGE_EXTENSIONS) {
+      if (pathname.endsWith(ext)) return ext;
+    }
+  } catch {
+    // ignore invalid URLs
+  }
+  return null;
+}
+
+async function deleteRecipeImage(id: string): Promise<void> {
+  await Promise.all(
+    IMAGE_EXTENSIONS.map((ext) => rm(imageFilePath(id, ext), { force: true }))
+  );
+}
+
+async function saveRecipeImage(id: string, imageUrl: string): Promise<boolean> {
+  let parsed: URL;
+  try {
+    parsed = new URL(imageUrl);
+  } catch {
+    return false;
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return false;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(imageUrl, {
+      signal: controller.signal,
+      headers: { "User-Agent": `wolverineks-recipes/${APP_VERSION}` },
+    });
+    if (!response.ok) return false;
+
+    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() || "";
+    const ext =
+      IMAGE_CONTENT_TYPES[contentType] || extensionFromImageUrl(imageUrl) || null;
+    if (!ext) return false;
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length < 100 || buffer.length > MAX_IMAGE_BYTES) return false;
+
+    await deleteRecipeImage(id);
+    await writeFile(imageFilePath(id, ext), buffer);
+    return true;
+  } catch (error) {
+    console.error(`Failed to save image for recipe ${id}:`, error);
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function recipeHasImage(id: string): boolean {
+  return findRecipeImagePath(id) !== null;
+}
+
+function withImageFlag<T extends Recipe>(recipe: T): T & { has_image: boolean } {
+  return { ...recipe, has_image: recipeHasImage(recipe.id) };
 }
 
 async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
@@ -114,6 +206,10 @@ function normalizeIngestPayload(body: Record<string, unknown>): Omit<Recipe, "id
 }
 
 async function upsertRecipe(payload: Record<string, unknown>): Promise<Recipe> {
+  const imageUrl =
+    typeof payload.image_url === "string" && payload.image_url.trim()
+      ? payload.image_url.trim()
+      : "";
   const normalized = normalizeIngestPayload(payload);
   const now = new Date().toISOString();
   const index = await loadIndex();
@@ -128,6 +224,7 @@ async function upsertRecipe(payload: Record<string, unknown>): Promise<Recipe> {
       ...normalized,
     };
     await writeJsonAtomic(recipePath(updated.id), updated);
+    if (imageUrl) await saveRecipeImage(updated.id, imageUrl);
     await saveIndex(
       index.map((entry) =>
         entry.id === updated.id
@@ -151,6 +248,7 @@ async function upsertRecipe(payload: Record<string, unknown>): Promise<Recipe> {
     ...normalized,
   };
   await writeJsonAtomic(recipePath(recipe.id), recipe);
+  if (imageUrl) await saveRecipeImage(recipe.id, imageUrl);
   await saveIndex([
     ...index,
     {
@@ -170,6 +268,7 @@ async function deleteRecipe(id: string): Promise<boolean> {
   if (next.length === index.length) return false;
   await saveIndex(next);
   await rm(recipePath(id), { force: true });
+  await deleteRecipeImage(id);
   return true;
 }
 
@@ -448,6 +547,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       padding: 16px;
       cursor: pointer;
     }
+    .recipe-image {
+      width: 100%;
+      max-height: 220px;
+      object-fit: cover;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      display: block;
+    }
     .card h2 {
       margin: 0 0 6px;
       font-size: 22px;
@@ -613,7 +720,11 @@ const HTML_PAGE = `<!DOCTYPE html>
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
+      const imageMarkup = recipe.has_image
+        ? '<img class="recipe-image" src="/api/recipes/' + encodeURIComponent(recipe.id) + '/image" alt="" loading="lazy" />'
+        : "";
       card.innerHTML = \`
+        \${imageMarkup}
         <h2>\${escapeHtml(recipe.title)}</h2>
         <div class="meta">Saved \${formatDate(recipe.updated_at || recipe.created_at)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
         <div class="card-actions">
@@ -791,6 +902,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  const imageMatch = route.match(/^\/api\/recipes\/([^/]+)\/image$/);
+  if (imageMatch && req.method === "GET") {
+    const id = decodeURIComponent(imageMatch[1]);
+    const imagePath = findRecipeImagePath(id);
+    if (!imagePath) {
+      sendJson(res, 404, { error: "Image not found" });
+      return;
+    }
+    const ext = path.extname(imagePath).toLowerCase();
+    const contentType = IMAGE_MIME_TYPES[ext] || "application/octet-stream";
+    const image = await readFile(imagePath);
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": image.length,
+      "Cache-Control": "public, max-age=86400",
+    });
+    res.end(image);
+    return;
+  }
+
   if (route.startsWith("/api/recipes/") && req.method === "GET") {
     const id = decodeURIComponent(route.slice("/api/recipes/".length));
     const recipe = await loadRecipe(id);
@@ -798,7 +929,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 404, { error: "Recipe not found" });
       return;
     }
-    sendJson(res, 200, recipe);
+    sendJson(res, 200, withImageFlag(recipe));
     return;
   }
 
