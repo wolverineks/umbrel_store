@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.2";
+const APP_VERSION = "1.0.3";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
@@ -324,6 +324,31 @@ const HTML_PAGE = `<!DOCTYPE html>
       padding: 24px 0;
     }
     .danger { color: #b91c1c; border-color: #fecaca; }
+    .hidden { display: none; }
+    .setup-steps {
+      margin: 16px 0 0;
+      padding-left: 20px;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .setup-steps li + li { margin-top: 10px; }
+    .setup-field {
+      margin-top: 14px;
+    }
+    .setup-field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 6px;
+    }
+    .setup-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    a { color: #e67e22; }
     @media (max-width: 720px) {
       .columns { grid-template-columns: 1fr; }
     }
@@ -335,28 +360,54 @@ const HTML_PAGE = `<!DOCTYPE html>
     <p class="sub">Saved from the Recipe Printer Chrome extension.</p>
     <div class="toolbar">
       <button id="refresh-btn" type="button">Refresh</button>
-      <button id="settings-btn" type="button">Extension Settings</button>
+      <button id="add-device-btn" type="button" class="primary">Add new device</button>
     </div>
   </header>
   <main>
     <div id="list" class="grid"></div>
-    <div id="empty" class="empty hidden">No recipes saved yet. Use the Chrome extension to add one.</div>
+    <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
   </main>
-  <section id="settings-panel" class="panel">
-    <h2>Chrome Extension Setup</h2>
-    <p>Use this ingest token in the Recipe Printer extension options.</p>
-    <div class="token">
-      <code id="token-value">Loading…</code>
-      <button id="copy-token-btn" type="button">Copy token</button>
-      <button id="regenerate-token-btn" type="button" class="danger">Regenerate</button>
+  <section id="device-panel" class="panel hidden">
+    <h2>Add new device</h2>
+    <p>Set up the Recipe Printer Chrome extension on a new computer or browser profile.</p>
+    <ol class="setup-steps">
+      <li>
+        Install the extension from
+        <a href="https://github.com/wolverineks/recipe-printer-extension" target="_blank" rel="noreferrer">GitHub</a>
+        (Chrome → Extensions → Developer mode → Load unpacked).
+      </li>
+      <li>
+        Get an <a href="https://console.x.ai/team/default/api-keys" target="_blank" rel="noreferrer">xAI API key</a>
+        and paste it in the extension Settings on <strong>this device</strong> (each browser needs its own key entry).
+      </li>
+      <li>Copy the Umbrel URL and ingest token below into extension Settings on this device.</li>
+      <li>Click Save in the extension, allow Chrome network access, then Test Umbrel connection.</li>
+      <li>Open any recipe page and click <strong>Format, Save &amp; Print</strong>.</li>
+    </ol>
+    <div class="setup-field">
+      <label>Umbrel Recipes URL (include port :4020)</label>
+      <div class="token">
+        <code id="base-url">Loading…</code>
+        <button id="copy-url-btn" type="button">Copy URL</button>
+      </div>
     </div>
-    <p class="meta" style="margin-top:12px;">Paste this exact URL into the Chrome extension (include the port):</p>
-    <p class="meta"><code id="base-url"></code></p>
+    <div class="setup-field">
+      <label>Ingest token (same for all devices)</label>
+      <div class="token">
+        <code id="token-value">Loading…</code>
+        <button id="copy-token-btn" type="button">Copy token</button>
+      </div>
+    </div>
+    <div class="setup-actions">
+      <button id="copy-setup-btn" type="button">Copy all for extension</button>
+      <button id="regenerate-token-btn" type="button" class="danger">Regenerate token</button>
+      <button id="close-device-btn" type="button">Close</button>
+    </div>
   </section>
   <script>
     const listEl = document.getElementById("list");
     const emptyEl = document.getElementById("empty");
-    const settingsPanel = document.getElementById("settings-panel");
+    const devicePanel = document.getElementById("device-panel");
     const tokenValue = document.getElementById("token-value");
     const baseUrlEl = document.getElementById("base-url");
 
@@ -425,33 +476,59 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
-    async function loadToken() {
+    function extensionUrl() {
+      if (window.location.port) return window.location.origin;
+      const host = window.location.hostname || "YOUR-UMBREL-IP";
+      return window.location.protocol + "//" + host + ":4020";
+    }
+
+    async function loadDeviceSetup() {
       const response = await fetch("/api/settings/token");
       const payload = await response.json();
       tokenValue.textContent = payload.ingest_token || "";
-      baseUrlEl.textContent = window.location.origin;
-      if (!window.location.port) {
-        baseUrlEl.textContent += " (missing port — use http://YOUR-UMBREL-IP:4020)";
-      }
+      baseUrlEl.textContent = extensionUrl();
+    }
+
+    function setupClipboardText() {
+      return [
+        "Recipe Printer extension setup",
+        "",
+        "Umbrel Recipes URL:",
+        baseUrlEl.textContent || "",
+        "",
+        "Ingest token:",
+        tokenValue.textContent || "",
+      ].join("\\n");
+    }
+
+    function openDevicePanel() {
+      devicePanel.classList.remove("hidden");
+      loadDeviceSetup();
+      devicePanel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
-    document.getElementById("settings-btn").addEventListener("click", () => {
-      settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-      loadToken();
+    document.getElementById("add-device-btn").addEventListener("click", openDevicePanel);
+    document.getElementById("close-device-btn").addEventListener("click", () => {
+      devicePanel.classList.add("hidden");
+    });
+    document.getElementById("copy-url-btn").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(baseUrlEl.textContent || "");
     });
     document.getElementById("copy-token-btn").addEventListener("click", async () => {
       await navigator.clipboard.writeText(tokenValue.textContent || "");
     });
+    document.getElementById("copy-setup-btn").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(setupClipboardText());
+    });
     document.getElementById("regenerate-token-btn").addEventListener("click", async () => {
-      if (!confirm("Regenerate token? Update the Chrome extension with the new token.")) return;
+      if (!confirm("Regenerate token? You will need to update every device using the extension.")) return;
       const response = await fetch("/api/settings/regenerate-token", { method: "POST" });
       const payload = await response.json();
       tokenValue.textContent = payload.ingest_token || "";
     });
 
     loadRecipes();
-    loadToken();
   </script>
 </body>
 </html>`;
