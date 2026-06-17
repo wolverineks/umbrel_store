@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.42";
+const APP_VERSION = "1.0.43";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -753,7 +753,56 @@ const PAGE_STYLES = `
   --accent: #2563eb;
   --accent-soft: #dbeafe;
   --sidebar: #f1f5f9;
+  --shadow-color: 15, 23, 42;
+  --overlay: rgba(15, 23, 42, 0.45);
+  --backdrop: rgba(15, 23, 42, 0.88);
+  --hover-overlay: rgba(15, 23, 42, 0.08);
+  --drop-overlay: rgba(37, 99, 235, 0.08);
+  --danger: #b91c1c;
+  --danger-text: #991b1b;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --important: #ca8a04;
+  --important-bg: #fef9c3;
+  --important-text: #a16207;
+  --important-ring: #fde68a;
+  --theme-color: #2563eb;
 }
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --border: #334155;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-soft: #1e3a5f;
+  --sidebar: #111827;
+  --shadow-color: 0, 0, 0;
+  --overlay: rgba(0, 0, 0, 0.62);
+  --backdrop: rgba(0, 0, 0, 0.9);
+  --hover-overlay: rgba(255, 255, 255, 0.08);
+  --drop-overlay: rgba(96, 165, 250, 0.14);
+  --danger: #f87171;
+  --danger-text: #fecaca;
+  --danger-bg: #450a0a;
+  --danger-border: #7f1d1d;
+  --important: #fbbf24;
+  --important-bg: #422006;
+  --important-text: #fcd34d;
+  --important-ring: #78350f;
+  --theme-color: #0f172a;
+}
+html[data-theme="dark"] .file-icon-badge.type-folder { background: #1e3a5f; }
+html[data-theme="dark"] .file-icon-badge.type-image { background: #500724; color: #f9a8d4; }
+html[data-theme="dark"] .file-icon-badge.type-video { background: #2e1065; color: #c4b5fd; }
+html[data-theme="dark"] .file-icon-badge.type-audio { background: #431407; color: #fdba74; }
+html[data-theme="dark"] .file-icon-badge.type-document { background: #1e3a5f; color: #93c5fd; }
+html[data-theme="dark"] .file-icon-badge.type-spreadsheet { background: #052e16; color: #86efac; }
+html[data-theme="dark"] .file-icon-badge.type-presentation { background: #431407; color: #fdba74; }
+html[data-theme="dark"] .file-icon-badge.type-archive { background: #1f2937; color: #d1d5db; }
+html[data-theme="dark"] .file-icon-badge.type-code { background: #312e81; color: #a5b4fc; }
+html[data-theme="dark"] .file-icon-badge.type-file { background: #334155; color: #cbd5e1; }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
@@ -895,9 +944,25 @@ main {
   place-items: center;
 }
 .search-options:hover,
-.search-options.active {
+.search-options.active,
+.theme-toggle:hover {
   background: var(--accent-soft);
   color: var(--accent);
+}
+.theme-toggle {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  display: grid;
+  place-items: center;
 }
 .topbar {
   display: flex;
@@ -969,7 +1034,7 @@ button.secondary {
   inset: 0.75rem;
   display: none;
   place-items: center;
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--drop-overlay);
   border: 2px dashed var(--accent);
   border-radius: 1rem;
   pointer-events: none;
@@ -984,7 +1049,7 @@ button.secondary {
   border-radius: 0.9rem;
   padding: 1.25rem 1.5rem;
   text-align: center;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.12);
   max-width: 20rem;
 }
 .drop-overlay-icon {
@@ -1092,7 +1157,7 @@ button.secondary {
 }
 .quick-filter-clear:hover {
   opacity: 1;
-  background: rgba(15, 23, 42, 0.08);
+  background: var(--hover-overlay);
 }
 .quick-filter-menu {
   position: fixed;
@@ -1102,7 +1167,7 @@ button.secondary {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 0.75rem;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.14);
   padding: 0.35rem;
   display: none;
 }
@@ -1314,7 +1379,7 @@ button.secondary {
   transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
 .card:hover {
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 24px rgba(var(--shadow-color), 0.08);
   transform: translateY(-1px);
 }
 .card .icon {
@@ -1371,9 +1436,9 @@ button.secondary {
   text-align: center;
 }
 .error {
-  color: #b91c1c;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
   border-radius: 0.75rem;
   padding: 0.85rem 1rem;
   margin-bottom: 1rem;
@@ -1385,7 +1450,7 @@ button.secondary {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 0.75rem;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.14);
   padding: 0.35rem;
   display: none;
 }
@@ -1409,12 +1474,12 @@ button.secondary {
   outline: none;
 }
 .context-menu button.danger {
-  color: #b91c1c;
+  color: var(--danger);
 }
 .context-menu button.danger:hover,
 .context-menu button.danger:focus {
-  background: #fef2f2;
-  color: #991b1b;
+  background: var(--danger-bg);
+  color: var(--danger-text);
 }
 .context-menu .menu-label {
   padding: 0.45rem 0.75rem 0.2rem;
@@ -1454,7 +1519,7 @@ button.secondary {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 0.75rem;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.14);
   padding: 0.35rem;
 }
 .menu-submenu.open .menu-submenu-panel,
@@ -1494,13 +1559,13 @@ button.secondary {
   color: var(--accent);
 }
 .sidebar-trash.drop-target {
-  color: #b91c1c;
-  background: #fef2f2;
+  color: var(--danger);
+  background: var(--danger-bg);
 }
 #nav-important.drop-target {
-  color: #a16207;
-  background: #fef9c3;
-  box-shadow: 0 0 0 2px #fde68a;
+  color: var(--important-text);
+  background: var(--important-bg);
+  box-shadow: 0 0 0 2px var(--important-ring);
 }
 .sidebar-footer {
   margin-top: auto;
@@ -1524,8 +1589,8 @@ button.secondary {
 }
 .sidebar-trash:hover,
 .sidebar-trash.active {
-  background: #fef2f2;
-  color: #b91c1c;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 .sidebar-trash-icon {
   flex-shrink: 0;
@@ -1546,7 +1611,7 @@ body.view-trash .toolbar-trash {
   position: absolute;
   top: 0.55rem;
   right: 0.55rem;
-  color: #ca8a04;
+  color: var(--important);
   font-size: 0.95rem;
   line-height: 1;
   pointer-events: none;
@@ -1720,7 +1785,7 @@ body.view-trash .toolbar-trash {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--overlay);
   display: none;
   place-items: center;
   padding: 1rem;
@@ -1735,7 +1800,7 @@ body.view-trash .toolbar-trash {
   border: 1px solid var(--border);
   border-radius: 1rem;
   padding: 1.25rem;
-  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 24px 48px rgba(var(--shadow-color), 0.18);
 }
 .dialog h2 {
   margin: 0 0 0.35rem;
@@ -1760,6 +1825,8 @@ body.view-trash .toolbar-trash {
   border-radius: 0.65rem;
   padding: 0.75rem 0.85rem;
   font: inherit;
+  background: var(--panel);
+  color: var(--text);
   margin-bottom: 1rem;
 }
 .dialog input:focus {
@@ -1803,7 +1870,7 @@ body.view-trash .toolbar-trash {
 .preview-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.88);
+  background: var(--backdrop);
   display: none;
   place-items: center;
   padding: 1.5rem;
@@ -1904,7 +1971,7 @@ body.view-trash .toolbar-trash {
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(15, 23, 42, 0.45);
+    background: var(--overlay);
     z-index: 1050;
   }
   body.sidebar-open .sidebar-backdrop {
@@ -1925,7 +1992,7 @@ body.view-trash .toolbar-trash {
   }
   body.sidebar-open aside {
     transform: translateX(0);
-    box-shadow: 8px 0 24px rgba(15, 23, 42, 0.12);
+    box-shadow: 8px 0 24px rgba(var(--shadow-color), 0.12);
   }
 }
 .app-version {
@@ -2580,6 +2647,57 @@ function bindListHeader() {
 function bindLayoutViewToggle() {
   document.getElementById("view-grid")?.addEventListener("click", () => setLayoutView("grid"));
   document.getElementById("view-list")?.addEventListener("click", () => setLayoutView("list"));
+}
+
+function resolveTheme() {
+  try {
+    const saved = localStorage.getItem("storich-theme");
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {
+    // ignore saved state errors
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  const button = document.getElementById("theme-toggle");
+  if (button) {
+    button.textContent = next === "dark" ? "☀" : "☾";
+    button.setAttribute("aria-label", next === "dark" ? "Switch to light mode" : "Switch to dark mode");
+    button.title = next === "dark" ? "Light mode" : "Dark mode";
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", next === "dark" ? "#0f172a" : "#2563eb");
+}
+
+function loadTheme() {
+  applyTheme(resolveTheme());
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme || resolveTheme();
+  const next = current === "dark" ? "light" : "dark";
+  try {
+    localStorage.setItem("storich-theme", next);
+  } catch {
+    // ignore saved state errors
+  }
+  applyTheme(next);
+}
+
+function bindThemeToggle() {
+  document.getElementById("theme-toggle")?.addEventListener("click", toggleTheme);
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    try {
+      const saved = localStorage.getItem("storich-theme");
+      if (saved === "light" || saved === "dark") return;
+      applyTheme(resolveTheme());
+    } catch {
+      // ignore saved state errors
+    }
+  });
 }
 
 function openSearchOptionsDialog() {
@@ -4596,6 +4714,8 @@ applySidebarSectionState();
 loadLayoutView();
 loadSortPreference();
 bindLayoutViewToggle();
+bindThemeToggle();
+loadTheme();
 bindListHeader();
 applyLayoutView();
 renderQuickFilters();
@@ -4636,6 +4756,19 @@ function renderPage() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#2563EB">
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("storich-theme");
+        var theme = saved === "dark" || saved === "light"
+          ? saved
+          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", theme === "dark" ? "#0f172a" : "#2563eb");
+      } catch (e) {}
+    })();
+  </script>
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -4692,6 +4825,7 @@ function renderPage() {
         <input id="search" type="search" placeholder="Search in My Drive">
         <button id="search-options" class="search-options" type="button" aria-label="Search options" title="Search options">⚙</button>
       </label>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Dark mode">☾</button>
     </div>
     <div class="topbar">
       <div class="toolbar toolbar-trash">
