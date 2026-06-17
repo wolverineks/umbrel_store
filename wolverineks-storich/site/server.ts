@@ -1005,43 +1005,86 @@ main {
 .mobile-nav {
   display: none;
 }
-.topbar {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 1rem 1.25rem;
+.search-bar {
+  padding: 0.75rem 1.25rem;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 .search {
-  flex: 1;
-  max-width: 36rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0.65rem 1rem;
+  padding: 0.35rem 0.35rem 0.35rem 1rem;
   color: var(--muted);
+}
+.search-icon {
+  flex-shrink: 0;
+  line-height: 1;
 }
 .search input {
   border: 0;
   background: transparent;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   font: inherit;
   color: var(--text);
+  padding: 0.3rem 0;
 }
 .search input:focus { outline: none; }
+.search-options {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.search-options:hover,
+.search-options.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.topbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.search-option-field {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+.search-option-field span {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
 .file-filter {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 0.65rem;
   padding: 0.65rem 0.85rem;
   font: inherit;
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
+  width: 100%;
 }
 .file-filter:focus {
   outline: 2px solid var(--accent-soft);
@@ -1866,6 +1909,31 @@ function bindSidebarSectionToggles() {
   });
 }
 
+function fileFilterLabel(value = state.fileFilter) {
+  const select = document.getElementById("file-filter");
+  if (!select) return "All types";
+  const option = Array.from(select.options).find((item) => item.value === value);
+  return option?.textContent || "All types";
+}
+
+function updateSearchOptionsButton() {
+  const button = document.getElementById("search-options");
+  if (!button) return;
+  button.classList.toggle("active", state.fileFilter !== "all");
+}
+
+function openSearchOptionsDialog() {
+  const dialog = document.getElementById("search-options-dialog");
+  dialog.classList.add("open");
+  dialog.setAttribute("aria-hidden", "false");
+}
+
+function closeSearchOptionsDialog() {
+  const dialog = document.getElementById("search-options-dialog");
+  dialog.classList.remove("open");
+  dialog.setAttribute("aria-hidden", "true");
+}
+
 function setActiveNav() {
   document.getElementById("nav-drive").classList.toggle("active", state.view === "drive");
   document.getElementById("nav-important").classList.toggle("active", state.view === "important");
@@ -1886,6 +1954,7 @@ function setActiveNav() {
           : "Search in My Drive";
   renderPinnedSidebar();
   renderCategoriesSidebar();
+  updateSearchOptionsButton();
 }
 
 function setView(view) {
@@ -2449,6 +2518,7 @@ function isFolderBackgroundTarget(target) {
   if (target.closest(".pinned-item")) return false;
   if (target.closest("#context-menu")) return false;
   if (target.closest("#drop-overlay")) return false;
+  if (target.closest(".search-bar")) return false;
   if (target.closest(".topbar")) return false;
   if (target.closest("button, a, input, select, label, textarea")) return false;
   return true;
@@ -3146,7 +3216,7 @@ function renderEntries() {
       : state.view === "category"
         ? (categoryById(state.categoryId)?.name || "Category")
         : (data.path ? data.path : "My Drive");
-  const filterLabel = state.fileFilter !== "all" ? \` · \${document.getElementById("file-filter").selectedOptions[0].textContent}\` : "";
+  const filterLabel = state.fileFilter !== "all" ? \` · \${fileFilterLabel()}\` : "";
   document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\${filterLabel}\`;
 
   if (!entries.length) {
@@ -3566,8 +3636,14 @@ document.getElementById("search").addEventListener("input", (event) => {
   state.query = event.target.value;
   renderEntries();
 });
+document.getElementById("search-options").addEventListener("click", openSearchOptionsDialog);
+document.getElementById("search-options-close").addEventListener("click", closeSearchOptionsDialog);
+document.getElementById("search-options-dialog").addEventListener("click", (event) => {
+  if (event.target.id === "search-options-dialog") closeSearchOptionsDialog();
+});
 document.getElementById("file-filter").addEventListener("change", (event) => {
   state.fileFilter = event.target.value;
+  updateSearchOptionsButton();
   renderEntries();
 });
 document.getElementById("new-folder").addEventListener("click", openNewFolderDialog);
@@ -3645,6 +3721,7 @@ document.addEventListener("keydown", (event) => {
     closeRenameDialog();
     closeNewFolderDialog();
     closeCategoryDialog();
+    closeSearchOptionsDialog();
     closeContextMenu();
   }
 });
@@ -3800,6 +3877,13 @@ function renderPage(): string {
     </div>
   </aside>
   <main>
+    <div class="search-bar">
+      <label class="search">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input id="search" type="search" placeholder="Search in My Drive">
+        <button id="search-options" class="search-options" type="button" aria-label="Search options" title="Search options">⚙</button>
+      </label>
+    </div>
     <nav id="mobile-nav" class="mobile-nav" aria-label="Main navigation">
       <div class="mobile-brand">
         <div class="brand-badge">S</div>
@@ -3827,23 +3911,6 @@ function renderPage(): string {
       <div id="mobile-categories-list" class="categories-list sidebar-section-body"></div>
     </div>
     <div class="topbar">
-      <label class="search">
-        <span>⌕</span>
-        <input id="search" type="search" placeholder="Search in My Drive">
-      </label>
-      <select id="file-filter" class="file-filter" aria-label="Filter by file type">
-        <option value="all">All types</option>
-        <option value="folder">Folders</option>
-        <option value="image">Images</option>
-        <option value="video">Videos</option>
-        <option value="audio">Audio</option>
-        <option value="document">Documents</option>
-        <option value="spreadsheet">Spreadsheets</option>
-        <option value="presentation">Presentations</option>
-        <option value="archive">Archives</option>
-        <option value="code">Code</option>
-        <option value="file">Other files</option>
-      </select>
       <div class="toolbar toolbar-drive">
         <button id="new-folder" class="secondary" type="button">New folder</button>
         <label class="upload-btn">
@@ -3869,6 +3936,30 @@ function renderPage(): string {
     </div>
   </main>
   <div id="context-menu" class="context-menu" role="menu" aria-hidden="true"></div>
+  <div id="search-options-dialog" class="dialog-backdrop" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-labelledby="search-options-title">
+      <h2 id="search-options-title">Search options</h2>
+      <label class="search-option-field">
+        <span>File type</span>
+        <select id="file-filter" class="file-filter" aria-label="Filter by file type">
+          <option value="all">All types</option>
+          <option value="folder">Folders</option>
+          <option value="image">Images</option>
+          <option value="video">Videos</option>
+          <option value="audio">Audio</option>
+          <option value="document">Documents</option>
+          <option value="spreadsheet">Spreadsheets</option>
+          <option value="presentation">Presentations</option>
+          <option value="archive">Archives</option>
+          <option value="code">Code</option>
+          <option value="file">Other files</option>
+        </select>
+      </label>
+      <div class="dialog-actions">
+        <button id="search-options-close" class="primary" type="button">Done</button>
+      </div>
+    </div>
+  </div>
   <div id="new-folder-dialog" class="dialog-backdrop" aria-hidden="true">
     <div class="dialog" role="dialog" aria-labelledby="new-folder-title">
       <h2 id="new-folder-title">New folder</h2>
