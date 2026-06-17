@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-storich/icon.svg
 category: files
-version: "1.0.32"
+version: "1.0.33"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,8 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Remove New folder and Upload toolbar buttons. Use the folder context menu,
-  drag-and-drop, or right-click empty space to create folders and upload files.
+  Switch between grid and list layout for files using the toggle next to the
+  item count. Your layout preference is remembered across sessions.
 dependencies: []
 path: ""
 defaultUsername: ""

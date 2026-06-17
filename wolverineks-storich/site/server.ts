@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.32";
+const APP_VERSION = "1.0.33";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PWA_ICONS: Record<string, { file: string; type: string }> = {
@@ -1178,14 +1178,99 @@ button.secondary {
   border-radius: 0.35rem;
   padding: 0.1rem 0.35rem;
 }
-.status {
+.listing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   margin-bottom: 1rem;
+}
+.listing-header .status {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.view-toggle {
+  display: flex;
+  gap: 0.2rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.2rem;
+  flex-shrink: 0;
+}
+.view-toggle-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.45rem;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.view-toggle-btn:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+.view-toggle-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.status {
   color: var(--muted);
 }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 0.85rem;
+}
+.grid.list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.grid.list-view .card {
+  flex-direction: row;
+  align-items: center;
+  min-height: auto;
+  padding: 0.6rem 0.85rem;
+  gap: 0.75rem;
+  border-radius: 0.65rem;
+}
+.grid.list-view .card:hover {
+  transform: none;
+}
+.grid.list-view .card .icon {
+  flex-shrink: 0;
+}
+.grid.list-view .file-icon-badge {
+  width: 2.25rem;
+  height: 2.25rem;
+  font-size: 0.65rem;
+}
+.grid.list-view .file-icon-badge.type-folder {
+  font-size: 1.15rem;
+}
+.grid.list-view .card .name {
+  flex: 1;
+  min-width: 0;
+}
+.grid.list-view .card .meta {
+  margin-top: 0;
+  flex-shrink: 0;
+  max-width: 42%;
+  text-align: right;
+}
+.grid.list-view .card-categories {
+  margin-top: 0;
+  flex-shrink: 0;
+  max-width: 14rem;
+  text-align: right;
 }
 .card {
   position: relative;
@@ -1861,7 +1946,7 @@ self.addEventListener("fetch", (event) => {
 `;
 
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive", fileFilter: "all", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", layoutView: "grid", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
 const menuState = { entry: null, longPress: false, source: "card" };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
@@ -1969,6 +2054,51 @@ function updateSearchOptionsButton() {
   const button = document.getElementById("search-options");
   if (!button) return;
   button.classList.toggle("active", state.fileFilter !== "all");
+}
+
+function loadLayoutView() {
+  try {
+    const saved = localStorage.getItem("storich-layout-view");
+    if (saved === "grid" || saved === "list") {
+      state.layoutView = saved;
+    }
+  } catch {
+    // ignore saved state errors
+  }
+}
+
+function saveLayoutView() {
+  try {
+    localStorage.setItem("storich-layout-view", state.layoutView);
+  } catch {
+    // ignore saved state errors
+  }
+}
+
+function applyLayoutView() {
+  const container = document.getElementById("files");
+  if (container) {
+    container.classList.toggle("list-view", state.layoutView === "list");
+  }
+  const gridButton = document.getElementById("view-grid");
+  const listButton = document.getElementById("view-list");
+  gridButton?.classList.toggle("active", state.layoutView === "grid");
+  listButton?.classList.toggle("active", state.layoutView === "list");
+  gridButton?.setAttribute("aria-pressed", state.layoutView === "grid" ? "true" : "false");
+  listButton?.setAttribute("aria-pressed", state.layoutView === "list" ? "true" : "false");
+}
+
+function setLayoutView(layoutView) {
+  if (layoutView !== "grid" && layoutView !== "list") return;
+  if (state.layoutView === layoutView) return;
+  state.layoutView = layoutView;
+  saveLayoutView();
+  applyLayoutView();
+}
+
+function bindLayoutViewToggle() {
+  document.getElementById("view-grid")?.addEventListener("click", () => setLayoutView("grid"));
+  document.getElementById("view-list")?.addEventListener("click", () => setLayoutView("list"));
 }
 
 function openSearchOptionsDialog() {
@@ -3271,6 +3401,7 @@ function renderEntries() {
   if (!entries.length) {
     if (allEntries.length && (state.query || state.fileFilter !== "all")) {
       container.innerHTML = '<div class="empty">No items match your search or filter.</div>';
+      applyLayoutView();
       return;
     }
     container.innerHTML = state.view === "trash"
@@ -3280,6 +3411,7 @@ function renderEntries() {
         : state.view === "category"
           ? '<div class="empty">No items in this category yet. Add files from My Drive.</div>'
           : '<div class="empty">This folder is empty. Upload a file or create a folder to get started.</div>';
+    applyLayoutView();
     return;
   }
 
@@ -3320,6 +3452,7 @@ function renderEntries() {
   }).join("");
 
   container.querySelectorAll(".card").forEach(bindCard);
+  applyLayoutView();
 }
 
 function showError(message) {
@@ -3843,6 +3976,9 @@ bindTrashDrop();
 loadSidebarSectionState();
 bindSidebarSectionToggles();
 applySidebarSectionState();
+loadLayoutView();
+bindLayoutViewToggle();
+applyLayoutView();
 setActiveNav();
 renderBreadcrumbs(state.path);
 refreshPinnedSidebar();
@@ -3977,7 +4113,13 @@ function renderPage(): string {
     <div id="content" class="content">
       <div id="error" class="error" hidden></div>
       <div id="breadcrumbs" class="breadcrumbs"></div>
-      <div id="status" class="status"></div>
+      <div class="listing-header">
+        <div id="status" class="status"></div>
+        <div class="view-toggle" role="group" aria-label="Layout view">
+          <button id="view-grid" class="view-toggle-btn active" type="button" title="Grid view" aria-label="Grid view" aria-pressed="true">▦</button>
+          <button id="view-list" class="view-toggle-btn" type="button" title="List view" aria-label="List view" aria-pressed="false">≡</button>
+        </div>
+      </div>
       <div id="files" class="grid"></div>
       <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
         <div class="drop-overlay-inner">
