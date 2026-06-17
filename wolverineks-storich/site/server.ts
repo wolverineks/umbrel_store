@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.31";
+const APP_VERSION = "1.0.32";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PWA_ICONS: Record<string, { file: string; type: string }> = {
@@ -1096,8 +1096,7 @@ main {
   gap: 0.5rem;
   flex-wrap: wrap;
 }
-button.primary,
-label.upload-btn {
+button.primary {
   border: 0;
   border-radius: 999px;
   background: var(--accent);
@@ -1116,7 +1115,7 @@ button.secondary {
   font: inherit;
   cursor: pointer;
 }
-label.upload-btn input { display: none; }
+#upload-input { display: none; }
 .content {
   position: relative;
   padding: 1.25rem;
@@ -1417,9 +1416,7 @@ label.upload-btn input { display: none; }
 .toolbar-trash {
   display: none;
 }
-body.view-trash .toolbar-drive,
-body.view-important .toolbar-drive,
-body.view-category .toolbar-drive {
+body:not(.view-trash) .topbar {
   display: none;
 }
 body.view-trash .toolbar-trash {
@@ -3698,7 +3695,6 @@ document.getElementById("file-filter").addEventListener("change", (event) => {
   updateSearchOptionsButton();
   renderEntries();
 });
-document.getElementById("new-folder").addEventListener("click", openNewFolderDialog);
 document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
 document.getElementById("mobile-add-category")?.addEventListener("click", () => openCategoryDialog("create"));
 document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
@@ -3973,17 +3969,11 @@ function renderPage(): string {
       </button>
     </div>
     <div class="topbar">
-      <div class="toolbar toolbar-drive">
-        <button id="new-folder" class="secondary" type="button">New folder</button>
-        <label class="upload-btn">
-          Upload
-          <input id="upload-input" type="file" multiple>
-        </label>
-      </div>
       <div class="toolbar toolbar-trash">
         <button id="empty-trash" class="secondary" type="button">Empty trash</button>
       </div>
     </div>
+    <input id="upload-input" type="file" multiple hidden>
     <div id="content" class="content">
       <div id="error" class="error" hidden></div>
       <div id="breadcrumbs" class="breadcrumbs"></div>

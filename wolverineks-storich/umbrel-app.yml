@@ -4,7 +4,7 @@ name: Storich
 tagline: Self-hosted cloud storage for your files
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-storich/icon.svg
 category: files
-version: "1.0.31"
+version: "1.0.32"
 port: 4010
 description: >-
   A minimal self-hosted drive for your Umbrel. Store, browse, upload, and download
@@ -15,8 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Move Trash from the main navigation into the sidebar footer. Drag-and-drop to
-  trash still works from the sidebar Trash button on desktop and mobile.
+  Remove New folder and Upload toolbar buttons. Use the folder context menu,
+  drag-and-drop, or right-click empty space to create folders and upload files.
 dependencies: []
 path: ""
 defaultUsername: ""
