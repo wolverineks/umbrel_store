@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 node_modules/
 dist/
+wolverineks-recipes/data/*
+!wolverineks-recipes/data/.gitkeep
