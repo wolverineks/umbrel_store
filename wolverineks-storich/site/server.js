@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.39";
+const APP_VERSION = "1.0.40";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -1407,7 +1407,9 @@ button.secondary {
 }
 .card.drop-target,
 .breadcrumbs button.crumb.drop-target,
-.sidebar-trash.drop-target {
+.sidebar-trash.drop-target,
+.nav button.drop-target,
+.category-item.drop-target {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
   background: var(--accent-soft);
@@ -1415,6 +1417,11 @@ button.secondary {
 .sidebar-trash.drop-target {
   color: #b91c1c;
   background: #fef2f2;
+}
+#nav-important.drop-target {
+  color: #a16207;
+  background: #fef9c3;
+  box-shadow: 0 0 0 2px #fde68a;
 }
 .sidebar-footer {
   margin-top: auto;
@@ -2964,6 +2971,7 @@ function renderCategoriesList(root) {
     button.addEventListener("touchend", () => clearTimeout(longPressTimer));
     button.addEventListener("touchmove", () => clearTimeout(longPressTimer));
     button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
+    bindCategoryDropTarget(button);
   });
 }
 
@@ -3572,6 +3580,28 @@ async function trashDraggedEntry(entry) {
   refreshListing();
 }
 
+function draggedEntry(dataTransfer) {
+  return dragEntry || readDragEntry(dataTransfer);
+}
+
+function listingEntryForPath(path) {
+  return (state.listing?.entries || []).find((item) => item.path === path) || null;
+}
+
+function entryCategoryIds(entry) {
+  if (entry.categoryIds?.length) return entry.categoryIds;
+  return listingEntryForPath(entry.path)?.categoryIds || [];
+}
+
+function canMarkImportant(entry) {
+  return !!entry?.path && !isImportantEntry(entry);
+}
+
+function canAssignCategory(entry, categoryId) {
+  if (!entry?.path || !categoryId) return false;
+  return !entryCategoryIds(entry).includes(categoryId);
+}
+
 function bindFolderDropTarget(element, getDestinationPath) {
   element.addEventListener("dragover", (event) => {
     if (!isInternalDrag(event) || state.view !== "drive") return;
@@ -3607,36 +3637,69 @@ function bindFolderDropTarget(element, getDestinationPath) {
   });
 }
 
-function bindTrashDropTarget(trashNav) {
-  trashNav.addEventListener("dragover", (event) => {
+function bindActionDropTarget(element, options) {
+  const { canDrop, onDrop } = options;
+  element.addEventListener("dragover", (event) => {
     if (!isInternalDrag(event) || state.view !== "drive") return;
+    const entry = dragEntry;
+    if (!entry || !canDrop(entry)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    trashNav.classList.add("drop-target");
+    element.classList.add("drop-target");
   });
-  trashNav.addEventListener("dragleave", (event) => {
-    if (!trashNav.contains(event.relatedTarget)) {
-      trashNav.classList.remove("drop-target");
+  element.addEventListener("dragleave", (event) => {
+    if (!element.contains(event.relatedTarget)) {
+      element.classList.remove("drop-target");
     }
   });
-  trashNav.addEventListener("drop", async (event) => {
+  element.addEventListener("drop", async (event) => {
     if (!isInternalDrag(event) || state.view !== "drive") return;
     event.preventDefault();
     event.stopPropagation();
     clearDropTargets();
-    const entry = readDragEntry(event.dataTransfer) || dragEntry;
-    if (!entry) return;
+    const entry = draggedEntry(event.dataTransfer);
+    if (!entry || !canDrop(entry)) return;
     try {
-      await trashDraggedEntry(entry);
+      await onDrop(entry);
     } catch (error) {
       showError(String(error));
     }
   });
 }
 
-function bindTrashDrop() {
+function bindTrashDropTarget(trashNav) {
+  bindActionDropTarget(trashNav, {
+    canDrop: (entry) => !!entry.path,
+    onDrop: trashDraggedEntry,
+  });
+}
+
+function bindImportantDropTarget(importantNav) {
+  bindActionDropTarget(importantNav, {
+    canDrop: canMarkImportant,
+    onDrop: async (entry) => {
+      await setImportant(entry, false);
+    },
+  });
+}
+
+function bindCategoryDropTarget(button) {
+  if (button.dataset.dropBound === "true") return;
+  button.dataset.dropBound = "true";
+  const categoryId = decodeDataValue(button.dataset.id);
+  bindActionDropTarget(button, {
+    canDrop: (entry) => canAssignCategory(entry, categoryId),
+    onDrop: async (entry) => {
+      await assignCategory(entry, categoryId);
+    },
+  });
+}
+
+function bindSidebarDropTargets() {
   const trashNav = document.getElementById("nav-trash");
   if (trashNav) bindTrashDropTarget(trashNav);
+  const importantNav = document.getElementById("nav-important");
+  if (importantNav) bindImportantDropTarget(importantNav);
 }
 
 function bindCard(card) {
@@ -4349,7 +4412,7 @@ function applyShareLinkFromUrl() {
 
 bindFileDrop();
 bindFolderBackgroundMenu();
-bindTrashDrop();
+bindSidebarDropTargets();
 loadSidebarSectionState();
 bindSidebarSectionToggles();
 bindSidebarToggle();
