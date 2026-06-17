@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
 const INDEX_PATH = node_path_1.default.join(DATA_ROOT, "index.json");
@@ -305,7 +305,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="copy-token-btn" type="button">Copy token</button>
       <button id="regenerate-token-btn" type="button" class="danger">Regenerate</button>
     </div>
-    <p class="meta" style="margin-top:12px;">Umbrel URL for the extension: <code id="base-url"></code></p>
+    <p class="meta" style="margin-top:12px;">Paste this exact URL into the Chrome extension (include the port):</p>
+    <p class="meta"><code id="base-url"></code></p>
   </section>
   <script>
     const listEl = document.getElementById("list");
@@ -384,6 +385,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       const payload = await response.json();
       tokenValue.textContent = payload.ingest_token || "";
       baseUrlEl.textContent = window.location.origin;
+      if (!window.location.port) {
+        baseUrlEl.textContent += " (missing port — use http://YOUR-UMBREL-IP:4020)";
+      }
     }
 
     document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
@@ -420,7 +424,7 @@ async function handleRequest(req, res) {
         sendText(res, 200, HTML_PAGE, "text/html; charset=utf-8");
         return;
     }
-    if (route === "/api/ping" && req.method === "GET") {
+    if ((route === "/api/ping" || route === "/api/ingest") && req.method === "GET") {
         const token = getBearerToken(req);
         if (!token || token !== settings.ingest_token) {
             sendJson(res, 401, { error: "Invalid ingest token" });

@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
@@ -350,7 +350,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="copy-token-btn" type="button">Copy token</button>
       <button id="regenerate-token-btn" type="button" class="danger">Regenerate</button>
     </div>
-    <p class="meta" style="margin-top:12px;">Umbrel URL for the extension: <code id="base-url"></code></p>
+    <p class="meta" style="margin-top:12px;">Paste this exact URL into the Chrome extension (include the port):</p>
+    <p class="meta"><code id="base-url"></code></p>
   </section>
   <script>
     const listEl = document.getElementById("list");
@@ -429,6 +430,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       const payload = await response.json();
       tokenValue.textContent = payload.ingest_token || "";
       baseUrlEl.textContent = window.location.origin;
+      if (!window.location.port) {
+        baseUrlEl.textContent += " (missing port — use http://YOUR-UMBREL-IP:4020)";
+      }
     }
 
     document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
@@ -469,7 +473,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  if (route === "/api/ping" && req.method === "GET") {
+  if ((route === "/api/ping" || route === "/api/ingest") && req.method === "GET") {
     const token = getBearerToken(req);
     if (!token || token !== settings.ingest_token) {
       sendJson(res, 401, { error: "Invalid ingest token" });
