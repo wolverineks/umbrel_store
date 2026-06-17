@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.41";
+const APP_VERSION = "1.0.42";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -1183,13 +1183,63 @@ button.secondary {
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 0.85rem;
 }
+.list-header {
+  display: none;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.35rem 0.85rem;
+  margin-bottom: 0.15rem;
+  border-bottom: 1px solid var(--border);
+}
+.list-header.visible {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(12rem, 1fr) 10.5rem 5.5rem;
+}
+.list-header.visible.has-categories {
+  grid-template-columns: 2.75rem minmax(12rem, 1fr) 10.5rem 5.5rem 9rem;
+}
+.list-header-cell {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-align: left;
+  min-width: 0;
+}
+.list-header-cell.sortable {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.list-header-cell.sortable:hover,
+.list-header-cell.sortable.active {
+  color: var(--accent);
+}
+.list-header-cell.cell-modified,
+.list-header-cell.cell-size,
+.grid.list-view .cell-modified,
+.grid.list-view .cell-size {
+  text-align: right;
+}
+.list-header-cell.cell-categories,
+.grid.list-view .cell-categories {
+  text-align: right;
+}
 .grid.list-view {
+  --list-cols: 2.75rem minmax(12rem, 1fr) 10.5rem 5.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
 }
+.grid.list-view.has-categories {
+  --list-cols: 2.75rem minmax(12rem, 1fr) 10.5rem 5.5rem 9rem;
+}
 .grid.list-view .card {
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: var(--list-cols);
   align-items: center;
   min-height: auto;
   padding: 0.6rem 0.85rem;
@@ -1211,20 +1261,43 @@ button.secondary {
   font-size: 1.15rem;
 }
 .grid.list-view .card .name {
-  flex: 1;
   min-width: 0;
+  margin: 0;
 }
-.grid.list-view .card .meta {
-  margin-top: 0;
-  flex-shrink: 0;
-  max-width: 42%;
-  text-align: right;
+.grid.list-view .card .meta-combined,
+.grid.list-view .card .card-categories.grid-only {
+  display: none;
 }
-.grid.list-view .card-categories {
-  margin-top: 0;
-  flex-shrink: 0;
-  max-width: 14rem;
-  text-align: right;
+.card .cell-modified,
+.card .cell-size,
+.card .cell-categories {
+  display: none;
+}
+.grid.list-view .card .cell-modified,
+.grid.list-view .card .cell-size,
+.grid.list-view .card .cell-categories {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid.list-view .card .cell-categories {
+  font-size: 0.75rem;
+}
+@media (max-width: 700px) {
+  .list-header.has-categories.visible {
+    grid-template-columns: 2.5rem minmax(8rem, 1fr) 7rem 4.5rem;
+  }
+  .grid.list-view.has-categories {
+    --list-cols: 2.5rem minmax(8rem, 1fr) 7rem 4.5rem;
+  }
+  .list-header.has-categories .cell-categories,
+  .grid.list-view.has-categories .cell-categories {
+    display: none;
+  }
 }
 .card {
   position: relative;
@@ -2430,6 +2503,7 @@ function applyLayoutView() {
   const container = document.getElementById("files");
   if (container) {
     container.classList.toggle("list-view", state.layoutView === "list");
+    container.classList.toggle("has-categories", state.view === "drive");
   }
   const gridButton = document.getElementById("view-grid");
   const listButton = document.getElementById("view-list");
@@ -2445,6 +2519,62 @@ function setLayoutView(layoutView) {
   state.layoutView = layoutView;
   saveLayoutView();
   applyLayoutView();
+  renderEntries();
+}
+
+function listHeaderColumns() {
+  const modifiedLabel = state.view === "trash" ? "Deleted" : "Modified";
+  const columns = [
+    { id: "name", label: "Name", sortable: true, className: "cell-name" },
+    { id: "modified", label: modifiedLabel, sortable: true, className: "cell-modified" },
+    { id: "size", label: "Size", sortable: true, className: "cell-size" },
+  ];
+  if (state.view === "drive") {
+    columns.push({ id: "", label: "Categories", sortable: false, className: "cell-categories" });
+  }
+  return columns;
+}
+
+function sortHeaderIndicator(sortId) {
+  if (state.sortBy !== sortId) return "";
+  return state.sortDir === "asc" ? " ↑" : " ↓";
+}
+
+function renderListHeader(show) {
+  const header = document.getElementById("list-header");
+  if (!header) return;
+  if (!show || state.layoutView !== "list") {
+    header.hidden = true;
+    header.classList.remove("visible", "has-categories");
+    header.innerHTML = "";
+    return;
+  }
+  header.hidden = false;
+  header.classList.add("visible");
+  header.classList.toggle("has-categories", state.view === "drive");
+  header.innerHTML =
+    '<div class="list-header-spacer" aria-hidden="true"></div>' +
+    listHeaderColumns()
+      .map((column) => {
+        if (!column.sortable) {
+          return \`<div class="list-header-cell \${column.className}">\${escapeHtml(column.label)}</div>\`;
+        }
+        const active = state.sortBy === column.id ? " active" : "";
+        const indicator = sortHeaderIndicator(column.id);
+        return \`<button type="button" class="list-header-cell sortable \${column.className}\${active}" data-list-sort="\${column.id}">\${escapeHtml(column.label)}\${indicator}</button>\`;
+      })
+      .join("");
+}
+
+function bindListHeader() {
+  const header = document.getElementById("list-header");
+  if (!header || header.dataset.bound === "true") return;
+  header.dataset.bound = "true";
+  header.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-list-sort]");
+    if (!button) return;
+    setSortBy(button.dataset.listSort, { toggle: true });
+  });
 }
 
 function bindLayoutViewToggle() {
@@ -3832,6 +3962,64 @@ function bindBreadcrumb(button) {
   button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
 }
 
+function entryGridMeta(entry) {
+  if (state.view === "trash") {
+    return \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`;
+  }
+  if (state.view === "important" || state.view === "category") {
+    return entry.type === "folder"
+      ? \`Folder · \${escapeHtml(entry.path || "/")}\`
+      : \`\${formatSize(entry.size)} · \${escapeHtml(entry.path || "/")}\`;
+  }
+  return entry.type === "folder"
+    ? \`Folder · \${formatDate(entry.modified)}\`
+    : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`;
+}
+
+function entryModifiedCell(entry) {
+  if (state.view === "trash") return formatDate(entry.deletedAt);
+  return formatDate(entry.modified);
+}
+
+function entrySizeCell(entry) {
+  if (entry.type === "folder") return "—";
+  return formatSize(entry.size);
+}
+
+function renderEntryCard(entry) {
+  const icon = renderFileIcon(entry);
+  const importantBadge = entry.important ? '<div class="card-important" aria-label="Important">★</div>' : "";
+  const labels = categoryLabels(entry.categoryIds);
+  const categoryText = labels.join(", ");
+  const categoryLine = labels.length && state.view === "drive"
+    ? \`<div class="card-categories grid-only">\${escapeHtml(categoryText)}</div>\`
+    : "";
+  const categoryCell = state.view === "drive"
+    ? \`<div class="cell-categories">\${labels.length ? escapeHtml(categoryText) : ""}</div>\`
+    : "";
+  return \`
+    <article
+      class="card"
+      data-id="\${encodeDataValue(entry.id || "")}"
+      data-path="\${encodeDataValue(entry.path)}"
+      data-name="\${encodeDataValue(entry.name)}"
+      data-type="\${entry.type}"
+      data-original-path="\${encodeDataValue(entry.originalPath || "")}"
+      data-important="\${entry.important ? "true" : "false"}"
+      data-pinned="\${entry.pinned ? "true" : "false"}"
+      data-category-ids="\${encodeDataValue((entry.categoryIds || []).join(","))}"
+    >
+      \${importantBadge}
+      <div class="icon">\${icon}</div>
+      <div class="name">\${escapeHtml(entry.name)}</div>
+      <div class="cell-modified">\${escapeHtml(entryModifiedCell(entry))}</div>
+      <div class="cell-size">\${escapeHtml(entrySizeCell(entry))}</div>
+      \${categoryCell}
+      <div class="meta meta-combined">\${entryGridMeta(entry)}</div>
+      \${categoryLine}
+    </article>\`;
+}
+
 function renderEntries() {
   const container = document.getElementById("files");
   const data = state.listing || { path: state.path, entries: [] };
@@ -3850,6 +4038,7 @@ function renderEntries() {
   renderQuickFilters();
 
   if (!entries.length) {
+    renderListHeader(false);
     if (allEntries.length && (state.query || state.fileFilter !== "all" || state.modifiedFilter !== "all")) {
       container.innerHTML = '<div class="empty">No items match your search or filter.</div>';
       applyLayoutView();
@@ -3866,42 +4055,8 @@ function renderEntries() {
     return;
   }
 
-  container.innerHTML = entries.map((entry) => {
-    const icon = renderFileIcon(entry);
-    const meta = state.view === "trash"
-      ? \`Deleted \${formatDate(entry.deletedAt)} · was \${escapeHtml(entry.originalPath || "/")}\`
-      : state.view === "important" || state.view === "category"
-        ? (entry.type === "folder"
-          ? \`Folder · \${escapeHtml(entry.path || "/")}\`
-          : \`\${formatSize(entry.size)} · \${escapeHtml(entry.path || "/")}\`)
-        : (entry.type === "folder"
-          ? \`Folder · \${formatDate(entry.modified)}\`
-          : \`\${formatSize(entry.size)} · \${formatDate(entry.modified)}\`);
-    const importantBadge = entry.important ? '<div class="card-important" aria-label="Important">★</div>' : "";
-    const labels = categoryLabels(entry.categoryIds);
-    const categoryLine = labels.length && state.view === "drive"
-      ? \`<div class="card-categories">\${escapeHtml(labels.join(", "))}</div>\`
-      : "";
-    return \`
-      <article
-        class="card"
-        data-id="\${encodeDataValue(entry.id || "")}"
-        data-path="\${encodeDataValue(entry.path)}"
-        data-name="\${encodeDataValue(entry.name)}"
-        data-type="\${entry.type}"
-        data-original-path="\${encodeDataValue(entry.originalPath || "")}"
-        data-important="\${entry.important ? "true" : "false"}"
-        data-pinned="\${entry.pinned ? "true" : "false"}"
-        data-category-ids="\${encodeDataValue((entry.categoryIds || []).join(","))}"
-      >
-        \${importantBadge}
-        <div class="icon">\${icon}</div>
-        <div class="name">\${escapeHtml(entry.name)}</div>
-        <div class="meta">\${meta}</div>
-        \${categoryLine}
-      </article>\`;
-  }).join("");
-
+  renderListHeader(true);
+  container.innerHTML = entries.map((entry) => renderEntryCard(entry)).join("");
   container.querySelectorAll(".card").forEach(bindCard);
   applyLayoutView();
 }
@@ -4441,6 +4596,7 @@ applySidebarSectionState();
 loadLayoutView();
 loadSortPreference();
 bindLayoutViewToggle();
+bindListHeader();
 applyLayoutView();
 renderQuickFilters();
 setActiveNav();
@@ -4555,6 +4711,7 @@ function renderPage() {
       </div>
       <div id="quick-filters" class="quick-filters"></div>
       <div id="quick-filter-menu" class="quick-filter-menu" role="menu" aria-hidden="true"></div>
+      <div id="list-header" class="list-header" role="row" hidden></div>
       <div id="files" class="grid"></div>
       <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
         <div class="drop-overlay-inner">
