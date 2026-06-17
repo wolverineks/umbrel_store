@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.38";
+const APP_VERSION = "1.0.39";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PWA_ICONS: Record<string, { file: string; type: string }> = {
@@ -1003,10 +1003,32 @@ main {
   min-width: 0;
   min-height: 100vh;
 }
-.mobile-nav {
+.sidebar-backdrop {
   display: none;
 }
+.sidebar-toggle {
+  display: none;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  place-items: center;
+}
+.sidebar-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .search-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.75rem 1.25rem;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
@@ -1018,6 +1040,8 @@ main {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1605,12 +1629,7 @@ button.secondary {
   font-size: 0.95rem;
   line-height: 1;
 }
-.mobile-trash {
-  display: none;
-  padding: 0.5rem 1rem 0.75rem;
-  background: var(--sidebar);
-  border-bottom: 1px solid var(--border);
-}
+
 .toolbar-trash {
   display: none;
 }
@@ -1794,18 +1813,7 @@ body.view-trash .toolbar-trash {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.mobile-pinned,
-.mobile-categories {
-  display: none;
-  width: 100%;
-  padding: 0.5rem 1rem 0.75rem;
-  background: var(--sidebar);
-  border-bottom: 1px solid var(--border);
-}
-.mobile-pinned .sidebar-section-toggle,
-.mobile-categories .sidebar-section-toggle {
-  padding-left: 0.25rem;
-}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -1984,44 +1992,37 @@ body.view-trash .toolbar-trash {
 }
 @media (max-width: 800px) {
   body { grid-template-columns: 1fr; }
-  aside { display: none; }
-  .mobile-nav {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem 1rem;
-    background: var(--sidebar);
-    border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
+  body.sidebar-open {
+    overflow: hidden;
   }
-  .mobile-brand {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-weight: 700;
-    margin-right: auto;
+  .sidebar-toggle {
+    display: grid;
   }
-  .mobile-nav button {
-    border: 0;
-    background: transparent;
-    padding: 0.55rem 0.75rem;
-    border-radius: 0.65rem;
-    font: inherit;
-    color: var(--text);
-    cursor: pointer;
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    z-index: 1050;
   }
-  .mobile-nav button.active,
-  .mobile-nav button:hover {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .sidebar-scroll {
-    display: none;
-  }
-  .mobile-pinned,
-  .mobile-categories,
-  .mobile-trash {
+  body.sidebar-open .sidebar-backdrop {
     display: block;
+  }
+  aside {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: min(280px, 85vw);
+    z-index: 1060;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: none;
+    padding-top: max(1.25rem, env(safe-area-inset-top));
+    padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+  }
+  body.sidebar-open aside {
+    transform: translateX(0);
+    box-shadow: 8px 0 24px rgba(15, 23, 42, 0.12);
   }
 }
 .app-version {
@@ -2195,6 +2196,49 @@ function bindSidebarSectionToggles() {
       saveSidebarSectionState();
       applySidebarSectionState();
     });
+  });
+}
+
+function isMobileLayout() {
+  return window.matchMedia("(max-width: 800px)").matches;
+}
+
+function openSidebar() {
+  if (!isMobileLayout()) return;
+  document.body.classList.add("sidebar-open");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  const toggle = document.getElementById("sidebar-toggle");
+  if (backdrop) backdrop.setAttribute("aria-hidden", "false");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-label", "Close menu");
+  }
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  const toggle = document.getElementById("sidebar-toggle");
+  if (backdrop) backdrop.setAttribute("aria-hidden", "true");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-label", "Open menu");
+  }
+}
+
+function toggleSidebar() {
+  if (document.body.classList.contains("sidebar-open")) {
+    closeSidebar();
+  } else {
+    openSidebar();
+  }
+}
+
+function bindSidebarToggle() {
+  document.getElementById("sidebar-toggle")?.addEventListener("click", toggleSidebar);
+  document.getElementById("sidebar-backdrop")?.addEventListener("click", closeSidebar);
+  window.addEventListener("resize", () => {
+    if (!isMobileLayout()) closeSidebar();
   });
 }
 
@@ -2596,9 +2640,6 @@ function setActiveNav() {
   document.getElementById("nav-drive").classList.toggle("active", state.view === "drive");
   document.getElementById("nav-important").classList.toggle("active", state.view === "important");
   document.getElementById("nav-trash")?.classList.toggle("active", state.view === "trash");
-  document.getElementById("mobile-nav-drive")?.classList.toggle("active", state.view === "drive");
-  document.getElementById("mobile-nav-important")?.classList.toggle("active", state.view === "important");
-  document.getElementById("mobile-nav-trash")?.classList.toggle("active", state.view === "trash");
   document.body.classList.toggle("view-trash", state.view === "trash");
   document.body.classList.toggle("view-important", state.view === "important");
   document.body.classList.toggle("view-category", state.view === "category");
@@ -2624,6 +2665,7 @@ function setView(view) {
   document.getElementById("search").value = "";
   resetListingFilters();
   closeContextMenu();
+  closeSidebar();
   dropDepth = 0;
   setDropActive(false);
   setActiveNav();
@@ -2700,6 +2742,7 @@ function navigateToDrivePath(path) {
     resetListingFilters();
   }
   closeContextMenu();
+  closeSidebar();
   dropDepth = 0;
   setDropActive(false);
   setActiveNav();
@@ -2722,6 +2765,7 @@ function setCategoryView(categoryId) {
   state.listing = null;
   document.getElementById("search").value = "";
   closeContextMenu();
+  closeSidebar();
   dropDepth = 0;
   setDropActive(false);
   setActiveNav();
@@ -3031,10 +3075,8 @@ function renderPinnedList(root) {
 }
 
 function renderPinnedSidebar() {
-  for (const id of ["pinned-list", "mobile-pinned-list"]) {
-    const root = document.getElementById(id);
-    if (root) renderPinnedList(root);
-  }
+  const root = document.getElementById("pinned-list");
+  if (root) renderPinnedList(root);
 }
 
 async function refreshPinnedSidebar() {
@@ -3111,10 +3153,8 @@ function renderCategoriesList(root) {
 }
 
 function renderCategoriesSidebar() {
-  for (const id of ["categories-list", "mobile-categories-list"]) {
-    const root = document.getElementById(id);
-    if (root) renderCategoriesList(root);
-  }
+  const root = document.getElementById("categories-list");
+  if (root) renderCategoriesList(root);
 }
 
 async function refreshCategoriesSidebar() {
@@ -3781,9 +3821,7 @@ function bindTrashDropTarget(trashNav) {
 
 function bindTrashDrop() {
   const trashNav = document.getElementById("nav-trash");
-  const mobileTrashNav = document.getElementById("mobile-nav-trash");
   if (trashNav) bindTrashDropTarget(trashNav);
-  if (mobileTrashNav) bindTrashDropTarget(mobileTrashNav);
 }
 
 function bindCard(card) {
@@ -4350,7 +4388,7 @@ document.getElementById("sort-dir").addEventListener("change", (event) => {
   setSortDir(event.target.value);
 });
 document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
-document.getElementById("mobile-add-category")?.addEventListener("click", () => openCategoryDialog("create"));
+
 document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
 document.getElementById("category-submit").addEventListener("click", submitCategoryDialog);
 document.getElementById("category-name-input").addEventListener("keydown", (event) => {
@@ -4385,9 +4423,7 @@ document.getElementById("upload-input").addEventListener("change", (event) => {
 document.getElementById("nav-drive").addEventListener("click", () => setView("drive"));
 document.getElementById("nav-important").addEventListener("click", () => setView("important"));
 document.getElementById("nav-trash").addEventListener("click", () => setView("trash"));
-document.getElementById("mobile-nav-drive")?.addEventListener("click", () => setView("drive"));
-document.getElementById("mobile-nav-important")?.addEventListener("click", () => setView("important"));
-document.getElementById("mobile-nav-trash")?.addEventListener("click", () => setView("trash"));
+
 document.getElementById("empty-trash").addEventListener("click", emptyTrash);
 document.getElementById("context-menu").addEventListener("click", async (event) => {
   if (event.target.closest(".menu-submenu-trigger")) return;
@@ -4428,6 +4464,7 @@ document.addEventListener("keydown", (event) => {
     closeCategoryDialog();
     closeSearchOptionsDialog();
     closeQuickFilterMenu();
+    closeSidebar();
     closeContextMenu();
   }
 });
@@ -4500,6 +4537,7 @@ bindFolderBackgroundMenu();
 bindTrashDrop();
 loadSidebarSectionState();
 bindSidebarSectionToggles();
+bindSidebarToggle();
 applySidebarSectionState();
 loadLayoutView();
 loadSortPreference();
@@ -4557,7 +4595,8 @@ function renderPage(): string {
   <style>${PAGE_STYLES}</style>
 </head>
 <body>
-  <aside>
+  <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+  <aside id="app-sidebar">
     <div class="brand">
       <div class="brand-badge">S</div>
       <span>Storich</span>
@@ -4594,42 +4633,12 @@ function renderPage(): string {
   </aside>
   <main>
     <div class="search-bar">
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="app-sidebar">☰</button>
       <label class="search">
         <span class="search-icon" aria-hidden="true">⌕</span>
         <input id="search" type="search" placeholder="Search in My Drive">
         <button id="search-options" class="search-options" type="button" aria-label="Search options" title="Search options">⚙</button>
       </label>
-    </div>
-    <nav id="mobile-nav" class="mobile-nav" aria-label="Main navigation">
-      <div class="mobile-brand">
-        <div class="brand-badge">S</div>
-        <span>Storich</span>
-      </div>
-      <button id="mobile-nav-drive" class="active" type="button">My Drive</button>
-      <button id="mobile-nav-important" type="button">Important</button>
-    </nav>
-    <div class="mobile-pinned sidebar-section pinned-section" data-section="pinned">
-      <button type="button" class="sidebar-section-toggle" aria-expanded="true" aria-controls="mobile-pinned-list">
-        <span class="sidebar-section-chevron" aria-hidden="true">▾</span>
-        <span class="sidebar-section-label">Pinned</span>
-      </button>
-      <div id="mobile-pinned-list" class="pinned-list sidebar-section-body"></div>
-    </div>
-    <div class="mobile-categories sidebar-section categories-section" data-section="categories">
-      <div class="sidebar-section-header">
-        <button type="button" class="sidebar-section-toggle" aria-expanded="true" aria-controls="mobile-categories-list">
-          <span class="sidebar-section-chevron" aria-hidden="true">▾</span>
-          <span class="sidebar-section-label">Categories</span>
-        </button>
-        <button id="mobile-add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
-      </div>
-      <div id="mobile-categories-list" class="categories-list sidebar-section-body"></div>
-    </div>
-    <div class="mobile-trash">
-      <button id="mobile-nav-trash" class="sidebar-trash" type="button">
-        <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
-        <span>Trash</span>
-      </button>
     </div>
     <div class="topbar">
       <div class="toolbar toolbar-trash">
