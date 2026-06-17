@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.33";
+const APP_VERSION = "1.0.34";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PWA_ICONS = {
@@ -1007,6 +1007,56 @@ button.secondary {
   flex: 1;
   min-width: 0;
 }
+.quick-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.quick-filter-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.quick-filter-label {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  width: 4.75rem;
+  padding-top: 0.4rem;
+}
+.quick-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+}
+.quick-filter-chip {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.quick-filter-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.quick-filter-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
 .view-toggle {
   display: flex;
   gap: 0.2rem;
@@ -1761,7 +1811,34 @@ self.addEventListener("fetch", (event) => {
 });
 `;
 const PAGE_SCRIPT = `
-const state = { path: "", query: "", view: "drive", fileFilter: "all", layoutView: "grid", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
+const state = { path: "", query: "", view: "drive", fileFilter: "all", modifiedFilter: "all", layoutView: "grid", categoryId: "", listing: null, importantPaths: new Set(), pinnedPaths: new Set(), pinnedItems: [], categories: [] };
+const QUICK_TYPE_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "folder", label: "Folders" },
+  { id: "image", label: "Images" },
+  { id: "document", label: "Documents" },
+  { id: "video", label: "Videos" },
+  { id: "audio", label: "Audio" },
+  { id: "spreadsheet", label: "Spreadsheets" },
+  { id: "presentation", label: "Presentations" },
+  { id: "archive", label: "Archives" },
+  { id: "code", label: "Code" },
+  { id: "file", label: "Other" },
+];
+const QUICK_MODIFIED_FILTERS = [
+  { id: "all", label: "Any time" },
+  { id: "today", label: "Today" },
+  { id: "week", label: "Past 7 days" },
+  { id: "month", label: "Past 30 days" },
+  { id: "year", label: "This year" },
+];
+const MODIFIED_FILTER_LABELS = {
+  all: "Any time",
+  today: "Today",
+  week: "Past 7 days",
+  month: "Past 30 days",
+  year: "This year",
+};
 const menuState = { entry: null, longPress: false, source: "card" };
 const DRAG_MIME = "application/x-storich-entry";
 const previewState = { images: [], index: 0 };
@@ -1865,10 +1942,117 @@ function fileFilterLabel(value = state.fileFilter) {
   return option?.textContent || "All types";
 }
 
+function modifiedFilterLabel(value = state.modifiedFilter) {
+  return MODIFIED_FILTER_LABELS[value] || "Any time";
+}
+
+function entryTimestamp(entry) {
+  const value = state.view === "trash" ? entry.deletedAt : entry.modified;
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function matchesModifiedFilter(entry, filter = state.modifiedFilter) {
+  if (!filter || filter === "all") return true;
+  const date = entryTimestamp(entry);
+  if (!date) return false;
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (filter === "today") return date >= startOfToday;
+  if (filter === "week") {
+    const weekAgo = new Date(startOfToday);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    return date >= weekAgo;
+  }
+  if (filter === "month") {
+    const monthAgo = new Date(startOfToday);
+    monthAgo.setDate(monthAgo.getDate() - 30);
+    return date >= monthAgo;
+  }
+  if (filter === "year") {
+    return date >= new Date(now.getFullYear(), 0, 1);
+  }
+  return true;
+}
+
+function activeFilterLabels() {
+  const labels = [];
+  if (state.fileFilter !== "all") labels.push(fileFilterLabel());
+  if (state.modifiedFilter !== "all") labels.push(modifiedFilterLabel());
+  return labels;
+}
+
 function updateSearchOptionsButton() {
   const button = document.getElementById("search-options");
   if (!button) return;
-  button.classList.toggle("active", state.fileFilter !== "all");
+  button.classList.toggle("active", state.fileFilter !== "all" || state.modifiedFilter !== "all");
+}
+
+function setFileFilter(value) {
+  state.fileFilter = value || "all";
+  const select = document.getElementById("file-filter");
+  if (select) select.value = state.fileFilter;
+  updateSearchOptionsButton();
+  renderQuickFilters();
+  renderEntries();
+}
+
+function setModifiedFilter(value) {
+  state.modifiedFilter = value || "all";
+  const select = document.getElementById("modified-filter");
+  if (select) select.value = state.modifiedFilter;
+  updateSearchOptionsButton();
+  renderQuickFilters();
+  renderEntries();
+}
+
+function renderQuickFilterChips(filters, kind, activeValue) {
+  return filters
+    .map((filter) => {
+      const active = filter.id === activeValue ? " active" : "";
+      return \`<button type="button" class="quick-filter-chip\${active}" data-filter-kind="\${kind}" data-filter-value="\${filter.id}">\${escapeHtml(filter.label)}</button>\`;
+    })
+    .join("");
+}
+
+function renderQuickFilters() {
+  const root = document.getElementById("quick-filters");
+  if (!root) return;
+  root.innerHTML =
+    \`<div class="quick-filter-group">
+      <span class="quick-filter-label">Type</span>
+      <div class="quick-filter-chips">\${renderQuickFilterChips(QUICK_TYPE_FILTERS, "type", state.fileFilter)}</div>
+    </div>
+    <div class="quick-filter-group">
+      <span class="quick-filter-label">Modified</span>
+      <div class="quick-filter-chips">\${renderQuickFilterChips(QUICK_MODIFIED_FILTERS, "modified", state.modifiedFilter)}</div>
+    </div>\`;
+}
+
+function bindQuickFilters() {
+  const root = document.getElementById("quick-filters");
+  if (!root || root.dataset.bound === "true") return;
+  root.dataset.bound = "true";
+  root.addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-filter-kind][data-filter-value]");
+    if (!chip) return;
+    const kind = chip.dataset.filterKind;
+    const value = chip.dataset.filterValue;
+    if (kind === "type") setFileFilter(value);
+    if (kind === "modified") setModifiedFilter(value);
+  });
+}
+
+function resetListingFilters() {
+  state.fileFilter = "all";
+  state.modifiedFilter = "all";
+  const fileSelect = document.getElementById("file-filter");
+  const modifiedSelect = document.getElementById("modified-filter");
+  if (fileSelect) fileSelect.value = "all";
+  if (modifiedSelect) modifiedSelect.value = "all";
+  updateSearchOptionsButton();
+  renderQuickFilters();
 }
 
 function loadLayoutView() {
@@ -1956,10 +2140,9 @@ function setView(view) {
   state.path = "";
   state.categoryId = "";
   state.query = "";
-  state.fileFilter = "all";
   state.listing = null;
   document.getElementById("search").value = "";
-  document.getElementById("file-filter").value = "all";
+  resetListingFilters();
   closeContextMenu();
   dropDepth = 0;
   setDropActive(false);
@@ -2033,9 +2216,8 @@ function navigateToDrivePath(path) {
   state.query = "";
   document.getElementById("search").value = "";
   if (switchingView) {
-    state.fileFilter = "all";
     state.listing = null;
-    document.getElementById("file-filter").value = "all";
+    resetListingFilters();
   }
   closeContextMenu();
   dropDepth = 0;
@@ -2185,14 +2367,16 @@ function renderFileIcon(entry) {
 function filteredEntries(entries) {
   const query = state.query.trim().toLowerCase();
   const filter = state.fileFilter || "all";
+  const modified = state.modifiedFilter || "all";
   return entries.filter((entry) => {
     const category = fileTypeCategory(entry);
     if (filter === "folder") {
       if (entry.type !== "folder") return false;
     } else if (filter !== "all") {
-      if (entry.type === "folder") return true;
+      if (entry.type === "folder") return false;
       if (category !== filter) return false;
     }
+    if (!matchesModifiedFilter(entry, modified)) return false;
     if (!query) return true;
     const haystack = [
       entry.name,
@@ -3210,11 +3394,13 @@ function renderEntries() {
       : state.view === "category"
         ? (categoryById(state.categoryId)?.name || "Category")
         : (data.path ? data.path : "My Drive");
-  const filterLabel = state.fileFilter !== "all" ? \` · \${fileFilterLabel()}\` : "";
+  const filterLabels = activeFilterLabels();
+  const filterLabel = filterLabels.length ? \` · \${filterLabels.join(" · ")}\` : "";
   document.getElementById("status").textContent = \`\${entries.length} item(s) in \${locationLabel}\${filterLabel}\`;
+  renderQuickFilters();
 
   if (!entries.length) {
-    if (allEntries.length && (state.query || state.fileFilter !== "all")) {
+    if (allEntries.length && (state.query || state.fileFilter !== "all" || state.modifiedFilter !== "all")) {
       container.innerHTML = '<div class="empty">No items match your search or filter.</div>';
       applyLayoutView();
       return;
@@ -3639,9 +3825,10 @@ document.getElementById("search-options-dialog").addEventListener("click", (even
   if (event.target.id === "search-options-dialog") closeSearchOptionsDialog();
 });
 document.getElementById("file-filter").addEventListener("change", (event) => {
-  state.fileFilter = event.target.value;
-  updateSearchOptionsButton();
-  renderEntries();
+  setFileFilter(event.target.value);
+});
+document.getElementById("modified-filter").addEventListener("change", (event) => {
+  setModifiedFilter(event.target.value);
 });
 document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
 document.getElementById("mobile-add-category")?.addEventListener("click", () => openCategoryDialog("create"));
@@ -3794,6 +3981,8 @@ applySidebarSectionState();
 loadLayoutView();
 bindLayoutViewToggle();
 applyLayoutView();
+bindQuickFilters();
+renderQuickFilters();
 setActiveNav();
 renderBreadcrumbs(state.path);
 refreshPinnedSidebar();
@@ -3933,6 +4122,7 @@ function renderPage() {
           <button id="view-list" class="view-toggle-btn" type="button" title="List view" aria-label="List view" aria-pressed="false">≡</button>
         </div>
       </div>
+      <div id="quick-filters" class="quick-filters"></div>
       <div id="files" class="grid"></div>
       <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
         <div class="drop-overlay-inner">
@@ -3960,6 +4150,16 @@ function renderPage() {
           <option value="archive">Archives</option>
           <option value="code">Code</option>
           <option value="file">Other files</option>
+        </select>
+      </label>
+      <label class="search-option-field">
+        <span>Modified</span>
+        <select id="modified-filter" class="file-filter" aria-label="Filter by modified date">
+          <option value="all">Any time</option>
+          <option value="today">Today</option>
+          <option value="week">Past 7 days</option>
+          <option value="month">Past 30 days</option>
+          <option value="year">This year</option>
         </select>
       </label>
       <div class="dialog-actions">
