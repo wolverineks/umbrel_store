@@ -5,7 +5,7 @@ services:
     environment:
       APP_HOST: wolverineks-recipes_server_1
       APP_PORT: 3000
-      PROXY_AUTH_WHITELIST: "/api/ingest"
+      PROXY_AUTH_WHITELIST: "/api/ingest,/api/ping"
 
   server:
     image: node:22-alpine

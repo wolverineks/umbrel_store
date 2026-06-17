@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
@@ -342,7 +342,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     <div id="list" class="grid"></div>
     <div id="empty" class="empty hidden">No recipes saved yet. Use the Chrome extension to add one.</div>
   </main>
-  <section id="settings-panel" class="panel hidden">
+  <section id="settings-panel" class="panel">
     <h2>Chrome Extension Setup</h2>
     <p>Use this ingest token in the Recipe Printer extension options.</p>
     <div class="token">
@@ -433,8 +433,8 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
     document.getElementById("settings-btn").addEventListener("click", () => {
-      settingsPanel.classList.toggle("hidden");
-      if (!settingsPanel.classList.contains("hidden")) loadToken();
+      settingsPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadToken();
     });
     document.getElementById("copy-token-btn").addEventListener("click", async () => {
       await navigator.clipboard.writeText(tokenValue.textContent || "");
@@ -447,6 +447,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
 
     loadRecipes();
+    loadToken();
   </script>
 </body>
 </html>`;
@@ -465,6 +466,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   if (req.method === "GET" && route === "/") {
     sendText(res, 200, HTML_PAGE, "text/html; charset=utf-8");
+    return;
+  }
+
+  if (route === "/api/ping" && req.method === "GET") {
+    const token = getBearerToken(req);
+    if (!token || token !== settings.ingest_token) {
+      sendJson(res, 401, { error: "Invalid ingest token" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, app: "wolverineks-recipes", version: APP_VERSION });
     return;
   }
 
