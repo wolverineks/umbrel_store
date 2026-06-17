@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.40";
+const APP_VERSION = "1.0.41";
 const DATA_ROOT = process.env.STORICH_DATA_DIR ?? "/data";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PWA_ICONS: Record<string, { file: string; type: string }> = {
@@ -1592,10 +1592,16 @@ button.secondary {
 .breadcrumbs button.crumb.drop-target,
 .sidebar-trash.drop-target,
 .nav button.drop-target,
-.category-item.drop-target {
+.category-item.drop-target,
+.pinned-section.drop-target {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
   background: var(--accent-soft);
+}
+.pinned-section.drop-target .sidebar-section-toggle,
+.pinned-section.drop-target .pinned-item,
+.pinned-section.drop-target .pinned-empty {
+  color: var(--accent);
 }
 .sidebar-trash.drop-target {
   color: #b91c1c;
@@ -3787,6 +3793,10 @@ function canAssignCategory(entry, categoryId) {
   return !entryCategoryIds(entry).includes(categoryId);
 }
 
+function canPinEntry(entry) {
+  return !!entry?.path && !isPinnedEntry(entry);
+}
+
 function bindFolderDropTarget(element, getDestinationPath) {
   element.addEventListener("dragover", (event) => {
     if (!isInternalDrag(event) || state.view !== "drive") return;
@@ -3880,11 +3890,22 @@ function bindCategoryDropTarget(button) {
   });
 }
 
+function bindPinDropTarget(pinnedSection) {
+  bindActionDropTarget(pinnedSection, {
+    canDrop: canPinEntry,
+    onDrop: async (entry) => {
+      await setPinned(entry, false);
+    },
+  });
+}
+
 function bindSidebarDropTargets() {
   const trashNav = document.getElementById("nav-trash");
   if (trashNav) bindTrashDropTarget(trashNav);
   const importantNav = document.getElementById("nav-important");
   if (importantNav) bindImportantDropTarget(importantNav);
+  const pinnedSection = document.querySelector(".pinned-section");
+  if (pinnedSection) bindPinDropTarget(pinnedSection);
 }
 
 function bindCard(card) {
