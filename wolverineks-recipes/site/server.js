@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.18";
+const APP_VERSION = "1.0.19";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1294,9 +1294,11 @@ button.danger-btn {
   cursor: pointer;
   transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
-.card:hover {
-  box-shadow: 0 10px 24px rgba(var(--shadow-color), 0.08);
-  transform: translateY(-1px);
+.card:hover:not(.open):not(.selected) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 14px 32px rgba(var(--shadow-color), 0.16), 0 0 0 2px var(--accent-soft);
+  transform: translateY(-2px);
 }
 .card.open {
   border-color: var(--accent);
@@ -1484,7 +1486,7 @@ button.danger-btn {
   border-radius: 0.65rem;
   flex-direction: unset;
 }
-.grid.list-view .card:hover { transform: none; }
+.grid.list-view .card:hover:not(.open):not(.selected) { transform: none; }
 .grid.list-view .grid-only { display: none !important; }
 .grid.list-view .list-only { display: block; }
 .grid.list-view .cell-thumb {
@@ -2492,10 +2494,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       const times = formatTimes(recipe);
       const categoryText = categoryLabelText(recipe);
       const totalText = recipe.total_time || "—";
-      const detailActions = inTrash
-        ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Restore</button>' +
-          '<button class="danger-btn delete-forever-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Delete forever</button>'
-        : '<button class="danger-btn trash-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Move to trash</button>';
       card.innerHTML = \`
         \${thumbMarkup}
         \${imageMarkup}
@@ -2531,7 +2529,6 @@ const HTML_PAGE = `<!DOCTYPE html>
             </div>
           </div>
           \${recipe.notes ? '<p><strong>Notes:</strong> ' + escapeHtml(recipe.notes) + '</p>' : ''}
-          <div class="card-actions">\${detailActions}</div>
         </div>
       \`;
       card.addEventListener("click", (event) => {
@@ -2549,19 +2546,11 @@ const HTML_PAGE = `<!DOCTYPE html>
           window.open("/recipes/" + encodeURIComponent(id) + "/print?auto=1", "_blank", "noopener");
         });
       });
-      card.querySelector(".trash-btn")?.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        await moveRecipeToTrashById(recipe);
-      });
       card.querySelectorAll(".restore-btn").forEach((button) => {
         button.addEventListener("click", async (event) => {
           event.stopPropagation();
           await restoreRecipeById(recipe);
         });
-      });
-      card.querySelector(".delete-forever-btn")?.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        await deleteForeverById(recipe);
       });
       card.addEventListener("contextmenu", (event) => {
         event.preventDefault();
