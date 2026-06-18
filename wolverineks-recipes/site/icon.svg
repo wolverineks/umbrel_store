@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
   <defs>
     <linearGradient id="recipes-bg" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2563EB"/>
-      <stop offset="1" stop-color="#7C3AED"/>
+      <stop stop-color="#E67E22"/>
+      <stop offset="1" stop-color="#D35400"/>
     </linearGradient>
   </defs>
   <rect width="256" height="256" rx="48" fill="url(#recipes-bg)"/>

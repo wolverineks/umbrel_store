@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.15";
+const APP_VERSION = "1.0.16";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -619,7 +619,7 @@ function renderPrintPage(recipe, autoPrint) {
     .recipe-header {
       text-align: center;
       margin-bottom: 24px;
-      border-bottom: 2px solid #2563eb;
+      border-bottom: 2px solid #e67e22;
       padding-bottom: 16px;
     }
     .recipe-header h1 {
@@ -653,7 +653,7 @@ function renderPrintPage(recipe, autoPrint) {
       font-size: 18px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
-      color: #2563eb;
+      color: #e67e22;
     }
     .column ul, .column ol {
       margin: 0;
@@ -671,7 +671,7 @@ function renderPrintPage(recipe, autoPrint) {
     .notes h2 {
       margin: 0 0 8px;
       font-size: 16px;
-      color: #2563eb;
+      color: #e67e22;
     }
     .notes p {
       margin: 0;
@@ -730,16 +730,16 @@ function renderPrintPage(recipe, autoPrint) {
 const RECIPES_PAGE_STYLES = `
 :root {
   color-scheme: light;
-  --bg: #f8fafc;
+  --bg: #faf7f2;
   --panel: #ffffff;
-  --border: #e2e8f0;
-  --text: #0f172a;
-  --muted: #64748b;
-  --accent: #2563eb;
-  --accent-soft: #dbeafe;
-  --sidebar: #f1f5f9;
-  --shadow-color: 15, 23, 42;
-  --overlay: rgba(15, 23, 42, 0.45);
+  --border: #e8dfd4;
+  --text: #111827;
+  --muted: #6b7280;
+  --accent: #e67e22;
+  --accent-soft: #fdebd0;
+  --sidebar: #f5f0e8;
+  --shadow-color: 17, 24, 39;
+  --overlay: rgba(17, 24, 39, 0.45);
   --danger: #b91c1c;
   --danger-text: #991b1b;
   --danger-bg: #fef2f2;
@@ -747,14 +747,14 @@ const RECIPES_PAGE_STYLES = `
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0f172a;
-  --panel: #1e293b;
-  --border: #334155;
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --accent: #60a5fa;
-  --accent-soft: #1e3a5f;
-  --sidebar: #111827;
+  --bg: #1a1410;
+  --panel: #2a2118;
+  --border: #3d3228;
+  --text: #f5f0e8;
+  --muted: #a89888;
+  --accent: #f39c12;
+  --accent-soft: #3d2814;
+  --sidebar: #14100c;
   --shadow-color: 0, 0, 0;
   --overlay: rgba(0, 0, 0, 0.62);
   --danger: #f87171;
@@ -799,7 +799,7 @@ aside {
   border-radius: 0.65rem;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  background: linear-gradient(135deg, #e67e22, #d35400);
   color: white;
   font-size: 0.95rem;
 }
@@ -1510,7 +1510,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#2563eb" />
+  <meta name="theme-color" content="#e67e22" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <title>Recipes</title>
   <style>${RECIPES_PAGE_STYLES}</style>
@@ -2480,7 +2480,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         button.title = next === "dark" ? "Light mode" : "Dark mode";
       }
       const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute("content", next === "dark" ? "#0f172a" : "#2563eb");
+      if (meta) meta.setAttribute("content", next === "dark" ? "#1a1410" : "#e67e22");
     }
 
     function toggleTheme() {
