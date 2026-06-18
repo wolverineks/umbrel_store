@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.8";
+const APP_VERSION = "1.0.9";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1019,6 +1019,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     </div>
     <nav class="nav">
       <button id="nav-library" class="active" type="button">Library</button>
+      <button id="nav-refresh" type="button">Refresh</button>
       <button id="nav-device" type="button">Add device</button>
     </nav>
     <div class="sidebar-footer">
@@ -1039,12 +1040,6 @@ const HTML_PAGE = `<!DOCTYPE html>
         />
       </label>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Dark mode">☾</button>
-    </div>
-    <div class="topbar">
-      <div class="toolbar">
-        <button id="refresh-btn" class="secondary" type="button">Refresh</button>
-        <button id="add-device-btn" class="primary" type="button">Add new device</button>
-      </div>
     </div>
     <div class="content">
       <section id="device-panel" class="panel hidden">
@@ -1318,8 +1313,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     searchInput.addEventListener("input", applySearch);
-    document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
-    document.getElementById("add-device-btn").addEventListener("click", openDevicePanel);
+    document.getElementById("nav-refresh").addEventListener("click", async () => {
+      closeSidebar();
+      await loadRecipes();
+    });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
     document.getElementById("nav-library").addEventListener("click", closeDevicePanel);
     document.getElementById("close-device-btn").addEventListener("click", closeDevicePanel);
