@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.19";
+const APP_VERSION = "1.0.20";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -2800,6 +2800,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       navDevice.classList.toggle("active", view === "device");
       document.body.classList.toggle("view-trash", view === "trash");
       searchInput.placeholder = view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
+      if (view !== "trash") trashEmptyEl.classList.add("hidden");
     }
 
     function showLibrary() {

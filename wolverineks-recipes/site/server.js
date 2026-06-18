@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.19";
+const APP_VERSION = "1.0.20";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -2689,6 +2689,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       navDevice.classList.toggle("active", view === "device");
       document.body.classList.toggle("view-trash", view === "trash");
       searchInput.placeholder = view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
+      if (view !== "trash") trashEmptyEl.classList.add("hidden");
     }
 
     function showLibrary() {
