@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.24";
+const APP_VERSION = "1.0.25";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -425,6 +425,33 @@ async function upsertRecipe(payload: Record<string, unknown>): Promise<Recipe> {
     },
   ]);
   return recipe;
+}
+
+async function updateRecipeNotes(id: string, notes: string | null): Promise<Recipe> {
+  const recipe = await loadRecipe(id);
+  if (!recipe) throw new NotFoundError("recipe not found");
+  const now = new Date().toISOString();
+  const updated: Recipe = {
+    ...recipe,
+    notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
+    updated_at: now,
+  };
+  await writeJsonAtomic(recipePath(id), updated);
+  const index = await loadIndex();
+  await saveIndex(
+    index.map((entry) =>
+      entry.id === id
+        ? {
+            id: updated.id,
+            title: updated.title,
+            source_url: updated.source_url,
+            created_at: updated.created_at,
+            updated_at: updated.updated_at,
+          }
+        : entry
+    )
+  );
+  return updated;
 }
 
 async function loadTrashIndex(): Promise<TrashIndexEntry[]> {
@@ -1673,6 +1700,45 @@ button.danger-btn {
   letter-spacing: 0.04em;
 }
 .detail ul, .detail ol { margin: 0; padding-left: 1.2rem; }
+.recipe-notes {
+  margin-top: 1rem;
+}
+.recipe-notes h3 {
+  margin: 0 0 0.5rem;
+}
+.recipe-notes-input {
+  width: 100%;
+  min-height: 5rem;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.75rem 0.85rem;
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  line-height: 1.5;
+}
+.recipe-notes-input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.recipe-notes-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.recipe-notes-status {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.recipe-notes-status.saved {
+  color: var(--accent);
+}
+.recipe-notes-readonly {
+  margin: 0;
+  white-space: pre-wrap;
+}
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2069,6 +2135,19 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     async function deleteDraggedRecipe(recipe) {
       await moveRecipeToTrashById(recipe, false);
+    }
+
+    async function saveRecipeNotes(recipeId, notes) {
+      const response = await fetch("/api/recipes/" + encodeURIComponent(recipeId) + "/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save notes");
+      const index = allRecipes.findIndex((item) => item.id === recipeId);
+      if (index >= 0) allRecipes[index] = { ...allRecipes[index], ...data.recipe };
+      return data.recipe;
     }
 
     async function unassignCategory(recipeId, categoryId) {
@@ -2623,6 +2702,20 @@ const HTML_PAGE = `<!DOCTYPE html>
       const recipeMeta = formatRecipeMeta(recipe);
       const categoryText = categoryLabelText(recipe);
       const totalText = recipe.total_time || "—";
+      const notesSection = inTrash
+        ? (recipe.notes
+          ? '<section class="recipe-notes"><h3>Notes</h3><p class="recipe-notes-readonly">' + escapeHtml(recipe.notes) + '</p></section>'
+          : "")
+        : \`
+          <section class="recipe-notes">
+            <h3>Notes</h3>
+            <textarea class="recipe-notes-input" rows="4" placeholder="Add your own notes…">\${escapeHtml(recipe.notes || "")}</textarea>
+            <div class="recipe-notes-actions">
+              <button class="secondary save-notes-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Save notes</button>
+              <span class="recipe-notes-status" aria-live="polite"></span>
+            </div>
+          </section>
+        \`;
       card.innerHTML = \`
         \${thumbMarkup}
         \${imageMarkup}
@@ -2659,7 +2752,7 @@ const HTML_PAGE = `<!DOCTYPE html>
               <ol>\${(recipe.instructions || []).map((item) => '<li>' + escapeHtml(item) + '</li>').join("")}</ol>
             </div>
           </div>
-          \${recipe.notes ? '<p><strong>Notes:</strong> ' + escapeHtml(recipe.notes) + '</p>' : ''}
+          \${notesSection}
         </div>
       \`;
       card.addEventListener("click", (event) => {
@@ -2667,7 +2760,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           menuState.longPress = false;
           return;
         }
-        if (event.target.closest("a, button")) return;
+        if (event.target.closest("a, button, textarea")) return;
         toggleRecipeCard(card);
       });
       card.querySelectorAll(".print-btn").forEach((button) => {
@@ -2681,6 +2774,41 @@ const HTML_PAGE = `<!DOCTYPE html>
         button.addEventListener("click", async (event) => {
           event.stopPropagation();
           await restoreRecipeById(recipe);
+        });
+      });
+      const notesInput = card.querySelector(".recipe-notes-input");
+      if (notesInput) {
+        notesInput.addEventListener("click", (event) => event.stopPropagation());
+        notesInput.addEventListener("keydown", (event) => event.stopPropagation());
+      }
+      card.querySelectorAll(".save-notes-btn").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const textarea = card.querySelector(".recipe-notes-input");
+          const status = card.querySelector(".recipe-notes-status");
+          if (!textarea) return;
+          const notes = textarea.value;
+          button.disabled = true;
+          if (status) {
+            status.textContent = "Saving…";
+            status.classList.remove("saved");
+          }
+          try {
+            await saveRecipeNotes(recipe.id, notes);
+            if (status) {
+              status.textContent = "Saved";
+              status.classList.add("saved");
+              window.setTimeout(() => {
+                if (status.textContent === "Saved") status.textContent = "";
+                status.classList.remove("saved");
+              }, 2000);
+            }
+          } catch (error) {
+            if (status) status.textContent = "";
+            alert(error.message || "Could not save notes.");
+          } finally {
+            button.disabled = false;
+          }
         });
       });
       card.addEventListener("contextmenu", (event) => {
@@ -2707,6 +2835,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       return [
         recipe.title,
         ...(recipe.ingredients || []),
+        recipe.notes,
         recipe.servings,
         recipe.prep_time,
         recipe.cook_time,
@@ -3035,6 +3164,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (route === "/api/recipes" && req.method === "GET") {
     const index = await loadIndex();
     sendJson(res, 200, { recipes: index });
+    return;
+  }
+
+  const notesMatch = route.match(/^\/api\/recipes\/([^/]+)\/notes$/);
+  if (notesMatch && req.method === "POST") {
+    try {
+      const id = decodeURIComponent(notesMatch[1]);
+      const body = JSON.parse(await readBody(req)) as { notes?: unknown };
+      const notes = typeof body.notes === "string" ? body.notes : null;
+      const recipe = await updateRecipeNotes(id, notes);
+      sendJson(res, 200, { ok: true, recipe: await enrichRecipe(recipe) });
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        sendJson(res, 404, { error: error.message });
+      } else {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+      }
+    }
     return;
   }
 
