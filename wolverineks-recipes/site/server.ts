@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.9";
+const APP_VERSION = "1.0.10";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -27,6 +27,7 @@ const IMAGE_CONTENT_TYPES: Record<string, (typeof IMAGE_EXTENSIONS)[number]> = {
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
+const SEED_IMAGES_DIR = path.join(__dirname, "seed-images");
 
 type Recipe = {
   id: string;
@@ -273,9 +274,14 @@ async function deleteRecipe(id: string): Promise<boolean> {
   return true;
 }
 
-const DEFAULT_RECIPES: Array<Omit<Recipe, "created_at" | "updated_at">> = [
+type DefaultRecipeSeed = Omit<Recipe, "created_at" | "updated_at"> & {
+  image_file: string;
+};
+
+const DEFAULT_RECIPES: DefaultRecipeSeed[] = [
   {
     id: "00000000-0000-4000-8000-000000000001",
+    image_file: "chocolate-chip-cookies.jpg",
     title: "Chocolate Chip Cookies",
     description: "Classic chewy bakery-style cookies with crisp edges and soft centers.",
     servings: "24 cookies",
@@ -308,6 +314,7 @@ const DEFAULT_RECIPES: Array<Omit<Recipe, "created_at" | "updated_at">> = [
   },
   {
     id: "00000000-0000-4000-8000-000000000002",
+    image_file: "spaghetti-aglio-e-olio.jpg",
     title: "Spaghetti Aglio e Olio",
     description: "A fast pantry pasta with garlic, olive oil, chili flakes, and parsley.",
     servings: "4 servings",
@@ -337,6 +344,7 @@ const DEFAULT_RECIPES: Array<Omit<Recipe, "created_at" | "updated_at">> = [
   },
   {
     id: "00000000-0000-4000-8000-000000000003",
+    image_file: "sheet-pan-roast-chicken.jpg",
     title: "Sheet Pan Roast Chicken and Vegetables",
     description: "One-pan dinner with juicy chicken thighs and roasted seasonal vegetables.",
     servings: "4 servings",
@@ -368,6 +376,7 @@ const DEFAULT_RECIPES: Array<Omit<Recipe, "created_at" | "updated_at">> = [
   },
   {
     id: "00000000-0000-4000-8000-000000000004",
+    image_file: "buttermilk-pancakes.jpg",
     title: "Fluffy Buttermilk Pancakes",
     description: "Light, tender pancakes perfect for weekend breakfasts.",
     servings: "8 pancakes",
@@ -400,6 +409,20 @@ const DEFAULT_RECIPES: Array<Omit<Recipe, "created_at" | "updated_at">> = [
   },
 ];
 
+async function copySeedImage(recipeId: string, filename: string): Promise<boolean> {
+  const source = path.join(SEED_IMAGES_DIR, filename);
+  if (!existsSync(source)) {
+    console.warn(`Seed image not found: ${filename}`);
+    return false;
+  }
+  const ext = path.extname(filename).toLowerCase();
+  if (!IMAGE_EXTENSIONS.includes(ext as (typeof IMAGE_EXTENSIONS)[number])) return false;
+  await mkdir(IMAGES_DIR, { recursive: true });
+  await deleteRecipeImage(recipeId);
+  await writeFile(imageFilePath(recipeId, ext), await readFile(source));
+  return true;
+}
+
 async function seedDefaultRecipes(): Promise<void> {
   const index = await loadIndex();
   if (index.length > 0) return;
@@ -408,12 +431,14 @@ async function seedDefaultRecipes(): Promise<void> {
   const entries: RecipeIndexEntry[] = [];
 
   for (const seed of DEFAULT_RECIPES) {
+    const { image_file: imageFile, ...recipeFields } = seed;
     const recipe: Recipe = {
-      ...seed,
+      ...recipeFields,
       created_at: now,
       updated_at: now,
     };
     await writeJsonAtomic(recipePath(recipe.id), recipe);
+    await copySeedImage(recipe.id, imageFile);
     entries.push({
       id: recipe.id,
       title: recipe.title,
@@ -425,6 +450,17 @@ async function seedDefaultRecipes(): Promise<void> {
 
   await saveIndex(entries);
   console.log(`Seeded ${entries.length} sample recipes`);
+}
+
+async function seedDefaultRecipeImages(): Promise<void> {
+  let copied = 0;
+  for (const seed of DEFAULT_RECIPES) {
+    if (recipeHasImage(seed.id)) continue;
+    const recipe = await loadRecipe(seed.id);
+    if (!recipe) continue;
+    if (await copySeedImage(seed.id, seed.image_file)) copied += 1;
+  }
+  if (copied > 0) console.log(`Added images to ${copied} sample recipes`);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -1529,6 +1565,7 @@ async function main(): Promise<void> {
   await ensureDataDirs();
   await loadSettings();
   await seedDefaultRecipes();
+  await seedDefaultRecipeImages();
   const server = createServer((req, res) => {
     handleRequest(req, res).catch((error) => {
       console.error(error);
