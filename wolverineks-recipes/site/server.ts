@@ -1051,13 +1051,6 @@ aside {
   background: var(--accent-soft);
   color: var(--accent);
 }
-.sidebar-note {
-  margin: 0;
-  padding: 0.25rem 0.75rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-  line-height: 1.45;
-}
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
