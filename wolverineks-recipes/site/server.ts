@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.13";
+const APP_VERSION = "1.0.14";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1231,6 +1231,98 @@ button.danger-btn {
 .card.dragging {
   opacity: 0.45;
 }
+.card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 11rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.14);
+  padding: 0.35rem;
+  display: none;
+}
+.context-menu.open {
+  display: grid;
+}
+.context-menu button {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.context-menu button:hover,
+.context-menu button:focus {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+}
+.context-menu button.danger {
+  color: var(--danger);
+}
+.context-menu button.danger:hover,
+.context-menu button.danger:focus {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+.context-menu .menu-label {
+  padding: 0.45rem 0.75rem 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-submenu {
+  position: relative;
+}
+.menu-submenu-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.menu-submenu-chevron {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.menu-submenu-panel {
+  display: none;
+  position: absolute;
+  left: calc(100% + 0.2rem);
+  top: 0;
+  z-index: 1;
+  min-width: 11rem;
+  max-width: 16rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 16px 40px rgba(var(--shadow-color), 0.14);
+  padding: 0.35rem;
+}
+.menu-submenu.open .menu-submenu-panel,
+.menu-submenu:hover .menu-submenu-panel,
+.menu-submenu:focus-within .menu-submenu-panel {
+  display: grid;
+}
+.menu-submenu-panel.flip-left {
+  left: auto;
+  right: calc(100% + 0.2rem);
+}
 .card-categories {
   color: var(--muted);
   font-size: 0.75rem;
@@ -1613,6 +1705,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </div>
   </div>
+  <div id="context-menu" class="context-menu" role="menu" aria-hidden="true"></div>
   <div class="app-version" aria-hidden="true">v${APP_VERSION}</div>
   <script>
     const listEl = document.getElementById("list");
@@ -1635,6 +1728,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     let layoutView = "grid";
     let sortBy = "saved";
     let sortDir = "desc";
+    let longPressTimer = null;
+    const menuState = { recipe: null, card: null, longPress: false };
 
     function escapeHtml(value) {
       return String(value)
@@ -1701,7 +1796,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     }
 
-    async function deleteDraggedRecipe(recipe) {
+    async function deleteRecipeById(recipe) {
       if (!recipe?.id) return;
       if (!confirm('Delete "' + recipe.title + '"?')) return;
       const response = await fetch("/api/recipes/" + encodeURIComponent(recipe.id), { method: "DELETE" });
@@ -1710,6 +1805,179 @@ const HTML_PAGE = `<!DOCTYPE html>
         return;
       }
       await loadRecipes();
+    }
+
+    async function deleteDraggedRecipe(recipe) {
+      await deleteRecipeById(recipe);
+    }
+
+    async function unassignCategory(recipeId, categoryId) {
+      const response = await fetch("/api/categories/unassign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipe_id: recipeId, categoryId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not remove from category");
+      await loadRecipes();
+    }
+
+    function clearContextSelection() {
+      document.querySelectorAll(".card.selected").forEach((node) => {
+        node.classList.remove("selected");
+      });
+    }
+
+    function closeContextMenu() {
+      const menu = document.getElementById("context-menu");
+      menu.classList.remove("open");
+      menu.setAttribute("aria-hidden", "true");
+      menuState.recipe = null;
+      menuState.card = null;
+      clearContextSelection();
+    }
+
+    function categoryAssignmentActions(recipe) {
+      const assigned = new Set(recipe.category_ids || []);
+      const actions = [];
+      for (const category of categories) {
+        if (assigned.has(category.id)) {
+          actions.push({
+            id: "unassign-category:" + category.id,
+            label: "Remove from " + category.name,
+          });
+        } else {
+          actions.push({
+            id: "assign-category:" + category.id,
+            label: "Add to " + category.name,
+          });
+        }
+      }
+      return actions;
+    }
+
+    function recipeContextMenuActions(recipe) {
+      const actions = [
+        { id: "open", label: "Open" },
+        { id: "print", label: "Print" },
+      ];
+      if (recipe.source_url) {
+        actions.push({ id: "open-source", label: "Open source" });
+      }
+      const categoryActions = categoryAssignmentActions(recipe);
+      if (categoryActions.length) {
+        actions.push({ id: "categories-submenu", label: "Categories", submenu: categoryActions });
+      }
+      if (activeCategoryId) {
+        const categoryName = categories.find((category) => category.id === activeCategoryId)?.name || "category";
+        actions.push({ id: "unassign-current", label: "Remove from " + categoryName });
+      }
+      actions.push({ id: "delete", label: "Delete", danger: true });
+      return actions;
+    }
+
+    function renderMenuAction(action) {
+      if (action.submenu) {
+        const items = (action.submenu || []).filter((item) => !item.hidden);
+        if (!items.length) return "";
+        const panel = items
+          .map((item) =>
+            '<button type="button" data-action="' + item.id + '" class="' + (item.danger ? "danger" : "") + '">' + escapeHtml(item.label) + "</button>"
+          )
+          .join("");
+        return (
+          '<div class="menu-submenu">' +
+          '<button type="button" class="menu-submenu-trigger" aria-haspopup="true" aria-expanded="false">' +
+          "<span>" + escapeHtml(action.label) + "</span>" +
+          '<span class="menu-submenu-chevron" aria-hidden="true">›</span>' +
+          "</button>" +
+          '<div class="menu-submenu-panel" role="menu">' + panel + "</div>" +
+          "</div>"
+        );
+      }
+      return (
+        '<button type="button" data-action="' + action.id + '" class="' + (action.danger ? "danger" : "") + '">' +
+        escapeHtml(action.label) +
+        "</button>"
+      );
+    }
+
+    function positionContextSubmenus() {
+      document.querySelectorAll("#context-menu .menu-submenu-panel").forEach((panel) => {
+        panel.classList.remove("flip-left");
+        const submenu = panel.closest(".menu-submenu");
+        if (!submenu) return;
+        submenu.classList.add("open");
+        const rect = panel.getBoundingClientRect();
+        submenu.classList.remove("open");
+        if (rect.right > window.innerWidth - 8) {
+          panel.classList.add("flip-left");
+        }
+      });
+    }
+
+    function openRecipeContextMenu(recipe, x, y, card) {
+      const menu = document.getElementById("context-menu");
+      menuState.recipe = recipe;
+      menuState.card = card;
+      clearContextSelection();
+      if (card) card.classList.add("selected");
+
+      const actions = recipeContextMenuActions(recipe).filter((action) => !action.hidden);
+      if (!actions.length) return;
+
+      menu.innerHTML =
+        '<div class="menu-label">' + escapeHtml(recipe.title) + "</div>" +
+        actions.map((action) => renderMenuAction(action)).join("");
+      menu.classList.add("open");
+      menu.setAttribute("aria-hidden", "false");
+      const rect = menu.getBoundingClientRect();
+      const left = Math.min(x, window.innerWidth - rect.width - 8);
+      const top = Math.min(y, window.innerHeight - rect.height - 8);
+      menu.style.left = Math.max(8, left) + "px";
+      menu.style.top = Math.max(8, top) + "px";
+      positionContextSubmenus();
+
+      menu.querySelectorAll(".menu-submenu-trigger").forEach((trigger) => {
+        trigger.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const submenu = trigger.closest(".menu-submenu");
+          if (!submenu) return;
+          const open = submenu.classList.contains("open");
+          menu.querySelectorAll(".menu-submenu.open").forEach((node) => node.classList.remove("open"));
+          if (!open) submenu.classList.add("open");
+        });
+      });
+    }
+
+    async function runRecipeMenuAction(action, recipe, card) {
+      if (action === "open") {
+        if (card) card.classList.add("open");
+        return;
+      }
+      if (action === "print") {
+        window.open("/recipes/" + encodeURIComponent(recipe.id) + "/print?auto=1", "_blank", "noopener");
+        return;
+      }
+      if (action === "open-source") {
+        if (recipe.source_url) window.open(recipe.source_url, "_blank", "noopener");
+        return;
+      }
+      if (action.startsWith("assign-category:")) {
+        await assignCategory(recipe.id, action.slice("assign-category:".length));
+        return;
+      }
+      if (action.startsWith("unassign-category:")) {
+        await unassignCategory(recipe.id, action.slice("unassign-category:".length));
+        return;
+      }
+      if (action === "unassign-current") {
+        if (activeCategoryId) await unassignCategory(recipe.id, activeCategoryId);
+        return;
+      }
+      if (action === "delete") {
+        await deleteRecipeById(recipe);
+      }
     }
 
     function bindTrashDropTarget(element) {
@@ -2077,6 +2345,10 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
       \`;
       card.addEventListener("click", (event) => {
+        if (menuState.longPress) {
+          menuState.longPress = false;
+          return;
+        }
         if (event.target.closest("a, button")) return;
         card.classList.toggle("open");
       });
@@ -2089,15 +2361,24 @@ const HTML_PAGE = `<!DOCTYPE html>
       });
       card.querySelector(".delete-btn")?.addEventListener("click", async (event) => {
         event.stopPropagation();
-        if (!confirm("Delete this recipe?")) return;
-        const id = event.currentTarget.getAttribute("data-id");
-        const response = await fetch("/api/recipes/" + encodeURIComponent(id), { method: "DELETE" });
-        if (!response.ok) {
-          alert("Failed to delete recipe.");
-          return;
-        }
-        await loadRecipes();
+        await deleteRecipeById(recipe);
       });
+      card.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openRecipeContextMenu(recipe, event.clientX, event.clientY, card);
+      });
+      card.addEventListener("touchstart", (event) => {
+        if (event.touches.length !== 1) return;
+        const touch = event.touches[0];
+        clearTimeout(longPressTimer);
+        longPressTimer = window.setTimeout(() => {
+          menuState.longPress = true;
+          openRecipeContextMenu(recipe, touch.clientX, touch.clientY, card);
+        }, 500);
+      }, { passive: true });
+      card.addEventListener("touchend", () => clearTimeout(longPressTimer));
+      card.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+      card.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
       bindRecipeCardDrag(card, recipe);
       return card;
     }
@@ -2265,6 +2546,30 @@ const HTML_PAGE = `<!DOCTYPE html>
       try { localStorage.setItem("recipes-theme", next); } catch {}
       applyTheme(next);
     }
+
+    document.getElementById("context-menu").addEventListener("click", async (event) => {
+      if (event.target.closest(".menu-submenu-trigger")) return;
+      const button = event.target.closest("button[data-action]");
+      if (!button || !menuState.recipe) return;
+      const action = button.dataset.action;
+      const recipe = menuState.recipe;
+      const card = menuState.card;
+      closeContextMenu();
+      try {
+        await runRecipeMenuAction(action, recipe, card);
+      } catch (error) {
+        alert(error.message || "Could not complete action.");
+      }
+    });
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest("#context-menu")) closeContextMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeCategoryDialog();
+        closeContextMenu();
+      }
+    });
 
     searchInput.addEventListener("input", applySearch);
     document.getElementById("nav-refresh").addEventListener("click", async () => {
