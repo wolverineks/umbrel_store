@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.25";
+const APP_VERSION = "1.0.26";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1361,7 +1361,7 @@ button.danger-btn {
   display: grid;
 }
 .listing-table.list-active {
-  --list-cols: 2.75rem minmax(12rem, 1fr) 8.5rem 5.5rem 5.5rem minmax(6rem, 9rem) 4.5rem;
+  --list-cols: 2.75rem minmax(12rem, 1fr) 5.5rem 5.5rem 4.5rem;
   display: grid;
   grid-template-columns: var(--list-cols);
   column-gap: 0.75rem;
@@ -1398,8 +1398,6 @@ button.danger-btn {
 }
 .list-header-cell.sortable:hover,
 .list-header-cell.sortable.active { color: var(--accent); }
-.list-header-cell.cell-saved,
-.grid.list-view .cell-saved { text-align: right; }
 .list-header-cell.cell-actions,
 .grid.list-view .cell-actions { text-align: right; }
 .grid {
@@ -1648,10 +1646,8 @@ button.danger-btn {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.grid.list-view .cell-saved,
 .grid.list-view .cell-servings,
-.grid.list-view .cell-total,
-.grid.list-view .cell-categories {
+.grid.list-view .cell-total {
   color: var(--muted);
   font-size: 0.85rem;
   min-width: 0;
@@ -1997,7 +1993,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     let categoryDialogMode = "create";
     let categoryDialogTargetId = null;
     let layoutView = "grid";
-    let sortBy = "saved";
+    let sortBy = "name";
     let sortDir = "desc";
     let longPressTimer = null;
     const menuState = { recipe: null, card: null, longPress: false };
@@ -2536,7 +2532,8 @@ const HTML_PAGE = `<!DOCTYPE html>
         const savedSort = localStorage.getItem("recipes-sort");
         if (savedSort) {
           const parsed = JSON.parse(savedSort);
-          if (parsed.by) sortBy = parsed.by;
+          const validSort = new Set(["name", "servings", "total"]);
+          if (parsed.by && validSort.has(parsed.by)) sortBy = parsed.by;
           if (parsed.dir === "asc" || parsed.dir === "desc") sortDir = parsed.dir;
         }
       } catch {}
@@ -2562,15 +2559,8 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function sortValue(recipe, column) {
       if (column === "name") return (recipe.title || "").toLowerCase();
-      if (column === "saved") {
-        const value = activeView === "trash"
-          ? recipe.deleted_at
-          : (recipe.updated_at || recipe.created_at);
-        return new Date(value).getTime() || 0;
-      }
       if (column === "servings") return formatServings(recipe).toLowerCase();
       if (column === "total") return (recipe.total_time || "").toLowerCase();
-      if (column === "categories") return categoryLabelText(recipe).toLowerCase();
       return "";
     }
 
@@ -2587,10 +2577,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     function listHeaderColumns() {
       return [
         { id: "name", label: "Name", sortable: true, className: "cell-name" },
-        { id: "saved", label: activeView === "trash" ? "Deleted" : "Saved", sortable: true, className: "cell-saved" },
         { id: "servings", label: "Servings", sortable: true, className: "cell-servings" },
         { id: "total", label: "Total", sortable: true, className: "cell-total" },
-        { id: "categories", label: "Categories", sortable: true, className: "cell-categories" },
         { id: "", label: "", sortable: false, className: "cell-actions" },
       ];
     }
@@ -2723,10 +2711,8 @@ const HTML_PAGE = `<!DOCTYPE html>
         <div class="meta grid-only">\${escapeHtml(dateLabel)} \${escapeHtml(dateValue)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
         \${categoryText ? '<div class="card-categories grid-only">' + escapeHtml(categoryText) + '</div>' : ''}
         \${recipeMeta ? '<div class="times grid-only">' + escapeHtml(recipeMeta) + '</div>' : ''}
-        <div class="cell-saved list-only">\${escapeHtml(dateValue)}</div>
         <div class="cell-servings list-only">\${escapeHtml(servingsText)}</div>
         <div class="cell-total list-only">\${escapeHtml(totalText)}</div>
-        <div class="cell-categories list-only">\${escapeHtml(categoryText || "—")}</div>
         <div class="card-actions grid-only">
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
           \${inTrash
