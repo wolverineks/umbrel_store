@@ -8,7 +8,8 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.6";
+const APP_VERSION = "1.0.7";
+const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
 const IMAGES_DIR = node_path_1.default.join(DATA_ROOT, "images");
@@ -226,6 +227,156 @@ async function deleteRecipe(id) {
     await (0, promises_1.rm)(recipePath(id), { force: true });
     await deleteRecipeImage(id);
     return true;
+}
+const DEFAULT_RECIPES = [
+    {
+        id: "00000000-0000-4000-8000-000000000001",
+        title: "Chocolate Chip Cookies",
+        description: "Classic chewy bakery-style cookies with crisp edges and soft centers.",
+        servings: "24 cookies",
+        prep_time: "15 min",
+        cook_time: "12 min",
+        total_time: "27 min",
+        ingredients: [
+            "2 1/4 cups all-purpose flour",
+            "1 tsp baking soda",
+            "1 tsp fine salt",
+            "1 cup unsalted butter, softened",
+            "3/4 cup granulated sugar",
+            "3/4 cup packed brown sugar",
+            "2 large eggs",
+            "2 tsp vanilla extract",
+            "2 cups semisweet chocolate chips",
+        ],
+        instructions: [
+            "Heat oven to 375°F (190°C). Line baking sheets with parchment.",
+            "Whisk flour, baking soda, and salt in a bowl.",
+            "Beat butter and both sugars until light and fluffy, about 3 minutes.",
+            "Beat in eggs one at a time, then vanilla.",
+            "Mix in dry ingredients until just combined. Fold in chocolate chips.",
+            "Scoop rounded tablespoons of dough 2 inches apart onto sheets.",
+            "Bake 9–12 minutes until edges are golden and centers look slightly underdone.",
+            "Cool on the sheet 5 minutes, then transfer to a rack.",
+        ],
+        notes: "For thicker cookies, chill the dough 30 minutes before baking.",
+        source_url: `${SAMPLE_SOURCE_PREFIX}chocolate-chip-cookies`,
+    },
+    {
+        id: "00000000-0000-4000-8000-000000000002",
+        title: "Spaghetti Aglio e Olio",
+        description: "A fast pantry pasta with garlic, olive oil, chili flakes, and parsley.",
+        servings: "4 servings",
+        prep_time: "10 min",
+        cook_time: "15 min",
+        total_time: "25 min",
+        ingredients: [
+            "12 oz spaghetti",
+            "1/2 cup extra-virgin olive oil",
+            "6 garlic cloves, thinly sliced",
+            "1/2 tsp red pepper flakes",
+            "1/2 cup chopped fresh parsley",
+            "1 tsp fine salt",
+            "Freshly ground black pepper",
+            "Parmesan cheese, for serving",
+        ],
+        instructions: [
+            "Cook spaghetti in well-salted boiling water until al dente. Reserve 1 cup pasta water, then drain.",
+            "Warm olive oil in a large skillet over medium-low heat.",
+            "Add garlic and cook gently until fragrant and pale gold, not brown, about 2 minutes.",
+            "Stir in red pepper flakes, then add pasta with a splash of pasta water.",
+            "Toss vigorously until glossy, adding more pasta water as needed.",
+            "Remove from heat, add parsley, salt, and pepper. Serve with Parmesan.",
+        ],
+        notes: null,
+        source_url: `${SAMPLE_SOURCE_PREFIX}spaghetti-aglio-e-olio`,
+    },
+    {
+        id: "00000000-0000-4000-8000-000000000003",
+        title: "Sheet Pan Roast Chicken and Vegetables",
+        description: "One-pan dinner with juicy chicken thighs and roasted seasonal vegetables.",
+        servings: "4 servings",
+        prep_time: "15 min",
+        cook_time: "40 min",
+        total_time: "55 min",
+        ingredients: [
+            "8 bone-in, skin-on chicken thighs",
+            "2 tbsp olive oil",
+            "1 lb baby potatoes, halved",
+            "2 carrots, cut into chunks",
+            "1 red onion, cut into wedges",
+            "4 garlic cloves, smashed",
+            "1 tsp dried thyme",
+            "1 tsp paprika",
+            "1 tsp fine salt",
+            "1/2 tsp black pepper",
+            "1 lemon, cut into wedges",
+        ],
+        instructions: [
+            "Heat oven to 425°F (220°C).",
+            "Toss potatoes, carrots, onion, and garlic with 1 tbsp oil, thyme, paprika, salt, and pepper on a large sheet pan.",
+            "Nestle chicken thighs among vegetables. Rub with remaining oil and season lightly.",
+            "Roast 35–40 minutes until chicken reaches 165°F (74°C) and skin is crisp.",
+            "Rest 5 minutes. Squeeze lemon over the pan before serving.",
+        ],
+        notes: "Swap in broccoli, Brussels sprouts, or sweet potato based on what you have.",
+        source_url: `${SAMPLE_SOURCE_PREFIX}sheet-pan-roast-chicken`,
+    },
+    {
+        id: "00000000-0000-4000-8000-000000000004",
+        title: "Fluffy Buttermilk Pancakes",
+        description: "Light, tender pancakes perfect for weekend breakfasts.",
+        servings: "8 pancakes",
+        prep_time: "10 min",
+        cook_time: "15 min",
+        total_time: "25 min",
+        ingredients: [
+            "1 1/2 cups all-purpose flour",
+            "2 tbsp granulated sugar",
+            "2 tsp baking powder",
+            "1/2 tsp baking soda",
+            "1/2 tsp fine salt",
+            "1 1/4 cups buttermilk",
+            "1 large egg",
+            "3 tbsp melted butter, plus more for the pan",
+            "1 tsp vanilla extract",
+            "Maple syrup and butter, for serving",
+        ],
+        instructions: [
+            "Whisk flour, sugar, baking powder, baking soda, and salt in a bowl.",
+            "Whisk buttermilk, egg, melted butter, and vanilla in another bowl.",
+            "Pour wet ingredients into dry and stir until just combined; a few lumps are fine.",
+            "Heat a lightly buttered skillet or griddle over medium heat.",
+            "Pour 1/4 cup batter per pancake. Cook until bubbles form and edges look set, about 2 minutes.",
+            "Flip and cook until golden on the second side, about 1 minute.",
+            "Serve warm with butter and maple syrup.",
+        ],
+        notes: "Keep cooked pancakes warm in a 200°F oven while you finish the batch.",
+        source_url: `${SAMPLE_SOURCE_PREFIX}buttermilk-pancakes`,
+    },
+];
+async function seedDefaultRecipes() {
+    const index = await loadIndex();
+    if (index.length > 0)
+        return;
+    const now = new Date().toISOString();
+    const entries = [];
+    for (const seed of DEFAULT_RECIPES) {
+        const recipe = {
+            ...seed,
+            created_at: now,
+            updated_at: now,
+        };
+        await writeJsonAtomic(recipePath(recipe.id), recipe);
+        entries.push({
+            id: recipe.id,
+            title: recipe.title,
+            source_url: recipe.source_url,
+            created_at: now,
+            updated_at: now,
+        });
+    }
+    await saveIndex(entries);
+    console.log(`Seeded ${entries.length} sample recipes`);
 }
 function sendJson(res, status, body) {
     const payload = JSON.stringify(body);
@@ -962,6 +1113,7 @@ async function handleRequest(req, res) {
 async function main() {
     await ensureDataDirs();
     await loadSettings();
+    await seedDefaultRecipes();
     const server = (0, node_http_1.createServer)((req, res) => {
         handleRequest(req, res).catch((error) => {
             console.error(error);
