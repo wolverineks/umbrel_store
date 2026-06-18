@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.27";
+const APP_VERSION = "1.0.28";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1405,10 +1405,17 @@ button.danger-btn {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 0.85rem;
-  align-items: start;
+  align-items: stretch;
 }
 .grid:not(.list-view) .card.open {
   grid-column: 1 / -1;
+  height: auto;
+}
+.grid:not(.list-view) .card {
+  height: 100%;
+}
+.grid:not(.list-view) .card:not(.open) .card-actions {
+  margin-top: auto;
 }
 .card {
   position: relative;
@@ -1533,9 +1540,12 @@ button.danger-btn {
   color: var(--muted);
   font-size: 0.85rem;
 }
-.card-categories {
+.card-categories,
+.card .times {
   color: var(--muted);
   font-size: 0.75rem;
+  line-height: 1.35;
+  min-height: 1.35em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1579,13 +1589,25 @@ button.danger-btn {
   justify-content: flex-end;
   flex-wrap: wrap;
 }
-.recipe-image {
+.recipe-image,
+.recipe-image-placeholder {
   width: 100%;
   aspect-ratio: 16 / 10;
-  object-fit: cover;
   border-radius: 0.65rem;
   display: block;
   margin: -0.15rem 0 0.15rem;
+  flex-shrink: 0;
+}
+.recipe-image {
+  object-fit: cover;
+}
+.recipe-image-placeholder {
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 1.5rem;
 }
 .grid:not(.list-view) .card.open .recipe-image {
   max-height: 220px;
@@ -1986,6 +2008,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     let activeView = "library";
     const tokenValue = document.getElementById("token-value");
     const baseUrlEl = document.getElementById("base-url");
+    let ingestToken = "";
     const DRAG_MIME = "application/x-recipes-entry";
     let allRecipes = [];
     let categories = [];
@@ -2815,7 +2838,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         : formatDate(recipe.updated_at || recipe.created_at);
       const imageMarkup = imageUrl
         ? '<img class="recipe-image grid-only" src="' + imageUrl + '" alt="" loading="lazy" />'
-        : "";
+        : '<div class="recipe-image-placeholder grid-only" aria-hidden="true">🍽</div>';
       const thumbMarkup = imageUrl
         ? '<div class="cell-thumb list-only"><img src="' + imageUrl + '" alt="" loading="lazy" /></div>'
         : '<div class="cell-thumb list-only" aria-hidden="true">🍽</div>';
@@ -2843,8 +2866,8 @@ const HTML_PAGE = `<!DOCTYPE html>
         \${imageMarkup}
         <h2 class="name">\${escapeHtml(recipe.title)}</h2>
         <div class="meta grid-only">\${escapeHtml(dateLabel)} \${escapeHtml(dateValue)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
-        \${categoryText ? '<div class="card-categories grid-only">' + escapeHtml(categoryText) + '</div>' : ''}
-        \${recipeMeta ? '<div class="times grid-only">' + escapeHtml(recipeMeta) + '</div>' : ''}
+        <div class="card-categories grid-only">\${escapeHtml(categoryText || "—")}</div>
+        <div class="times grid-only">\${escapeHtml(recipeMeta || "—")}</div>
         <div class="cell-servings list-only">\${escapeHtml(servingsText)}</div>
         <div class="cell-total list-only">\${escapeHtml(totalText)}</div>
         <div class="card-actions grid-only">
@@ -3047,7 +3070,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     async function loadDeviceSetup() {
       const response = await fetch("/api/settings/token");
       const payload = await response.json();
-      tokenValue.textContent = payload.ingest_token || "";
+      ingestToken = payload.ingest_token || "";
+      tokenValue.textContent = ingestToken;
       baseUrlEl.textContent = extensionUrl();
     }
 
@@ -3059,8 +3083,47 @@ const HTML_PAGE = `<!DOCTYPE html>
         baseUrlEl.textContent || "",
         "",
         "Ingest token:",
-        tokenValue.textContent || "",
+        ingestToken || tokenValue.textContent || "",
       ].join("\\n");
+    }
+
+    async function copyTextToClipboard(text) {
+      const value = String(text || "");
+      if (!value) throw new Error("Nothing to copy");
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(value);
+          return;
+        } catch {
+          // Fall back for HTTP or denied permission.
+        }
+      }
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, value.length);
+      let copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } finally {
+        textarea.remove();
+      }
+      if (!copied) throw new Error("Could not copy to clipboard");
+    }
+
+    function showCopyFeedback(button, message = "Copied!") {
+      if (!button) return;
+      const original = button.textContent;
+      button.textContent = message;
+      button.disabled = true;
+      window.setTimeout(() => {
+        button.textContent = original;
+        button.disabled = false;
+      }, 1500);
     }
 
     function setActiveNav(view) {
@@ -3213,20 +3276,39 @@ const HTML_PAGE = `<!DOCTYPE html>
     applyLayoutView();
     document.getElementById("view-grid").addEventListener("click", () => setLayoutView("grid"));
     document.getElementById("view-list").addEventListener("click", () => setLayoutView("list"));
-    document.getElementById("copy-url-btn").addEventListener("click", async () => {
-      await navigator.clipboard.writeText(baseUrlEl.textContent || "");
+    document.getElementById("copy-url-btn").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      try {
+        await copyTextToClipboard(baseUrlEl.textContent || "");
+        showCopyFeedback(button);
+      } catch (error) {
+        alert(error.message || "Could not copy URL.");
+      }
     });
-    document.getElementById("copy-token-btn").addEventListener("click", async () => {
-      await navigator.clipboard.writeText(tokenValue.textContent || "");
+    document.getElementById("copy-token-btn").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      try {
+        await copyTextToClipboard(ingestToken || tokenValue.textContent || "");
+        showCopyFeedback(button);
+      } catch (error) {
+        alert(error.message || "Could not copy token.");
+      }
     });
-    document.getElementById("copy-setup-btn").addEventListener("click", async () => {
-      await navigator.clipboard.writeText(setupClipboardText());
+    document.getElementById("copy-setup-btn").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      try {
+        await copyTextToClipboard(setupClipboardText());
+        showCopyFeedback(button, "Copied all!");
+      } catch (error) {
+        alert(error.message || "Could not copy setup details.");
+      }
     });
     document.getElementById("regenerate-token-btn").addEventListener("click", async () => {
       if (!confirm("Regenerate token? You will need to update every device using the extension.")) return;
       const response = await fetch("/api/settings/regenerate-token", { method: "POST" });
       const payload = await response.json();
-      tokenValue.textContent = payload.ingest_token || "";
+      ingestToken = payload.ingest_token || "";
+      tokenValue.textContent = ingestToken;
     });
 
     setActiveNav("library");
