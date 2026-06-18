@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.14";
+const APP_VERSION = "1.0.15";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1129,6 +1129,10 @@ button.danger-btn {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 0.85rem;
+  align-items: start;
+}
+.grid:not(.list-view) .card.open {
+  grid-column: 1 / -1;
 }
 .card {
   position: relative;
@@ -1874,7 +1878,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     async function runRecipeMenuAction(action, recipe, card) {
       if (action === "open") {
-        if (card) card.classList.add("open");
+        if (card) openRecipeCard(card);
         return;
       }
       if (action === "print") {
@@ -2218,6 +2222,23 @@ const HTML_PAGE = `<!DOCTYPE html>
       renderRecipes();
     }
 
+    function closeOpenCards(except) {
+      listEl.querySelectorAll(".card.open").forEach((node) => {
+        if (node !== except) node.classList.remove("open");
+      });
+    }
+
+    function toggleRecipeCard(card) {
+      const willOpen = !card.classList.contains("open");
+      closeOpenCards(card);
+      card.classList.toggle("open", willOpen);
+    }
+
+    function openRecipeCard(card) {
+      closeOpenCards(card);
+      card.classList.add("open");
+    }
+
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
@@ -2272,7 +2293,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           return;
         }
         if (event.target.closest("a, button")) return;
-        card.classList.toggle("open");
+        toggleRecipeCard(card);
       });
       card.querySelectorAll(".print-btn").forEach((button) => {
         button.addEventListener("click", (event) => {
