@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.20";
+const APP_VERSION = "1.0.21";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1157,10 +1157,10 @@ aside {
   background: var(--danger-bg);
   color: var(--danger);
 }
-.toolbar-trash {
+.topbar.toolbar-trash {
   display: none;
 }
-body.view-trash .toolbar-trash {
+body.view-trash .topbar.toolbar-trash {
   display: flex;
 }
 .sidebar-trash.drop-target {
@@ -2948,6 +2948,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       tokenValue.textContent = payload.ingest_token || "";
     });
 
+    setActiveNav("library");
     loadRecipes();
   </script>
 </body>

@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.20";
+const APP_VERSION = "1.0.21";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1047,10 +1047,10 @@ aside {
   background: var(--danger-bg);
   color: var(--danger);
 }
-.toolbar-trash {
+.topbar.toolbar-trash {
   display: none;
 }
-body.view-trash .toolbar-trash {
+body.view-trash .topbar.toolbar-trash {
   display: flex;
 }
 .sidebar-trash.drop-target {
@@ -2837,6 +2837,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       tokenValue.textContent = payload.ingest_token || "";
     });
 
+    setActiveNav("library");
     loadRecipes();
   </script>
 </body>
