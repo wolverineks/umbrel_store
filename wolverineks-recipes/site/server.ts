@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.21";
+const APP_VERSION = "1.0.22";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1509,6 +1509,11 @@ button.danger-btn {
   left: auto;
   right: calc(100% + 0.2rem);
 }
+.menu-submenu-empty {
+  padding: 0.65rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
 .card-categories {
   color: var(--muted);
   font-size: 0.75rem;
@@ -2099,47 +2104,48 @@ const HTML_PAGE = `<!DOCTYPE html>
       return actions;
     }
 
+    function withCategorySubmenu(actions, recipe) {
+      const categoryActions = categoryAssignmentActions(recipe);
+      const insertBefore = actions.findIndex((action) => action.id === "trash");
+      const insertAt = insertBefore === -1 ? actions.length : insertBefore;
+      const submenu = { id: "categories-submenu", label: "Categories", submenu: categoryActions };
+      return [...actions.slice(0, insertAt), submenu, ...actions.slice(insertAt)];
+    }
+
     function recipeContextMenuActions(recipe) {
       if (activeView === "trash") {
         const actions = [
-          { id: "open", label: "Open" },
           { id: "print", label: "Print" },
           { id: "restore", label: "Restore" },
           { id: "delete-forever", label: "Delete forever", danger: true },
         ];
         if (recipe.source_url) {
-          actions.splice(2, 0, { id: "open-source", label: "Open source" });
+          actions.splice(1, 0, { id: "open-source", label: "Open source" });
         }
         return actions;
       }
-      const actions = [
-        { id: "open", label: "Open" },
-        { id: "print", label: "Print" },
-      ];
+      const actions = [{ id: "print", label: "Print" }];
       if (recipe.source_url) {
         actions.push({ id: "open-source", label: "Open source" });
-      }
-      const categoryActions = categoryAssignmentActions(recipe);
-      if (categoryActions.length) {
-        actions.push({ id: "categories-submenu", label: "Categories", submenu: categoryActions });
       }
       if (activeCategoryId) {
         const categoryName = categories.find((category) => category.id === activeCategoryId)?.name || "category";
         actions.push({ id: "unassign-current", label: "Remove from " + categoryName });
       }
       actions.push({ id: "trash", label: "Move to trash", danger: true });
-      return actions;
+      return withCategorySubmenu(actions, recipe);
     }
 
     function renderMenuAction(action) {
       if (action.submenu) {
         const items = (action.submenu || []).filter((item) => !item.hidden);
-        if (!items.length) return "";
-        const panel = items
-          .map((item) =>
-            '<button type="button" data-action="' + item.id + '" class="' + (item.danger ? "danger" : "") + '">' + escapeHtml(item.label) + "</button>"
-          )
-          .join("");
+        const panel = items.length
+          ? items
+            .map((item) =>
+              '<button type="button" data-action="' + item.id + '" class="' + (item.danger ? "danger" : "") + '">' + escapeHtml(item.label) + "</button>"
+            )
+            .join("")
+          : '<div class="menu-submenu-empty">No categories yet</div>';
         return (
           '<div class="menu-submenu">' +
           '<button type="button" class="menu-submenu-trigger" aria-haspopup="true" aria-expanded="false">' +
@@ -2206,10 +2212,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     async function runRecipeMenuAction(action, recipe, card) {
-      if (action === "open") {
-        if (card) openRecipeCard(card);
-        return;
-      }
       if (action === "print") {
         window.open("/recipes/" + encodeURIComponent(recipe.id) + "/print?auto=1", "_blank", "noopener");
         return;
