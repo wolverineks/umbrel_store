@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.16";
+const APP_VERSION = "1.0.17";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1100,7 +1100,25 @@ button.danger-btn {
 }
 .list-header.visible {
   display: grid;
-  grid-template-columns: 2.75rem minmax(11rem, 1.4fr) 8.5rem 5.5rem minmax(6rem, 0.9fr) 4.5rem;
+}
+.listing-table.list-active {
+  --list-cols: 2.75rem minmax(12rem, 1fr) 8.5rem 5.5rem 9rem 4.5rem;
+  display: grid;
+  grid-template-columns: var(--list-cols);
+  column-gap: 0.75rem;
+  row-gap: 0.35rem;
+  align-items: center;
+}
+.listing-table.list-active .list-header.visible {
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+.listing-table.list-active #list.list-view {
+  display: contents;
+}
+.listing-table.list-active #list.list-view .card {
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
 }
 .list-header-spacer { min-width: 0; }
 .list-header-cell {
@@ -1304,6 +1322,10 @@ button.danger-btn {
   display: block;
   margin: -0.15rem 0 0.15rem;
 }
+.grid:not(.list-view) .card.open .recipe-image {
+  max-height: 220px;
+  aspect-ratio: auto;
+}
 .card .name {
   margin: 0;
   font-weight: 600;
@@ -1324,15 +1346,8 @@ button.danger-btn {
   flex-wrap: wrap;
 }
 .list-only { display: none; }
-.grid.list-view {
-  --list-cols: 2.75rem minmax(11rem, 1.4fr) 8.5rem 5.5rem minmax(6rem, 0.9fr) 4.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
 .grid.list-view .card {
   display: grid;
-  grid-template-columns: var(--list-cols);
   align-items: center;
   min-height: auto;
   padding: 0.6rem 0.85rem;
@@ -1504,6 +1519,12 @@ a { color: var(--accent); }
 @media (max-width: 720px) {
   .columns { grid-template-columns: 1fr; }
 }
+@supports not (grid-template-columns: subgrid) {
+  .listing-table.list-active .list-header.visible,
+  .listing-table.list-active #list.list-view .card {
+    grid-template-columns: var(--list-cols);
+  }
+}
 `;
 const HTML_PAGE = `<!DOCTYPE html>
 <html lang="en">
@@ -1615,8 +1636,10 @@ const HTML_PAGE = `<!DOCTYPE html>
           <button id="view-list" class="view-toggle-btn" type="button" title="List view" aria-label="List view" aria-pressed="false">≡</button>
         </div>
       </div>
-      <div id="list-header" class="list-header" role="row" hidden></div>
-      <div id="list" class="grid"></div>
+      <div id="listing-table" class="listing-table">
+        <div id="list-header" class="list-header" role="row" hidden></div>
+        <div id="list" class="grid"></div>
+      </div>
       <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
       <div id="no-results" class="empty hidden">No recipes match your search.</div>
     </div>
@@ -2204,6 +2227,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function applyLayoutView() {
       listEl.classList.toggle("list-view", layoutView === "list");
+      document.getElementById("listing-table")?.classList.toggle("list-active", layoutView === "list");
       const gridButton = document.getElementById("view-grid");
       const listButton = document.getElementById("view-list");
       gridButton?.classList.toggle("active", layoutView === "grid");
