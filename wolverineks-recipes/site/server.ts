@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.23";
+const APP_VERSION = "1.0.24";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1334,7 +1334,7 @@ button.danger-btn {
   display: grid;
 }
 .listing-table.list-active {
-  --list-cols: 2.75rem minmax(12rem, 1fr) 8.5rem 5.5rem 9rem 4.5rem;
+  --list-cols: 2.75rem minmax(12rem, 1fr) 8.5rem 5.5rem 5.5rem minmax(6rem, 9rem) 4.5rem;
   display: grid;
   grid-template-columns: var(--list-cols);
   column-gap: 0.75rem;
@@ -1622,6 +1622,7 @@ button.danger-btn {
   text-overflow: ellipsis;
 }
 .grid.list-view .cell-saved,
+.grid.list-view .cell-servings,
 .grid.list-view .cell-total,
 .grid.list-view .cell-categories {
   color: var(--muted);
@@ -1657,6 +1658,12 @@ button.danger-btn {
   grid-template-columns: 1fr 1.2fr;
   gap: 1rem;
   margin-top: 0.75rem;
+}
+.detail .recipe-meta {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 .detail h3 {
   margin: 0 0 0.5rem;
@@ -1823,7 +1830,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         <input
           id="search-input"
           type="search"
-          placeholder="Search by name, ingredients, prep time, cook time, or total time…"
+          placeholder="Search by name, ingredients, servings, prep time, cook time, or total time…"
           autocomplete="off"
           spellcheck="false"
         />
@@ -1947,6 +1954,19 @@ const HTML_PAGE = `<!DOCTYPE html>
         recipe.cook_time ? "Cook " + recipe.cook_time : "",
         recipe.total_time ? "Total " + recipe.total_time : "",
       ].filter(Boolean).join(" · ");
+    }
+
+    function formatServings(recipe) {
+      return (recipe.servings || "").trim();
+    }
+
+    function formatRecipeMeta(recipe) {
+      const parts = [];
+      const servings = formatServings(recipe);
+      if (servings) parts.push("Servings: " + servings);
+      const times = formatTimes(recipe);
+      if (times) parts.push(times);
+      return parts.join(" · ");
     }
 
     function categoryLabelText(recipe) {
@@ -2452,7 +2472,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function defaultSortDir(column) {
-      if (column === "name") return "asc";
+      if (column === "name" || column === "servings") return "asc";
       return "desc";
     }
 
@@ -2469,6 +2489,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           : (recipe.updated_at || recipe.created_at);
         return new Date(value).getTime() || 0;
       }
+      if (column === "servings") return formatServings(recipe).toLowerCase();
       if (column === "total") return (recipe.total_time || "").toLowerCase();
       if (column === "categories") return categoryLabelText(recipe).toLowerCase();
       return "";
@@ -2488,6 +2509,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       return [
         { id: "name", label: "Name", sortable: true, className: "cell-name" },
         { id: "saved", label: activeView === "trash" ? "Deleted" : "Saved", sortable: true, className: "cell-saved" },
+        { id: "servings", label: "Servings", sortable: true, className: "cell-servings" },
         { id: "total", label: "Total", sortable: true, className: "cell-total" },
         { id: "categories", label: "Categories", sortable: true, className: "cell-categories" },
         { id: "", label: "", sortable: false, className: "cell-actions" },
@@ -2597,6 +2619,8 @@ const HTML_PAGE = `<!DOCTYPE html>
         ? '<div class="cell-thumb list-only"><img src="' + imageUrl + '" alt="" loading="lazy" /></div>'
         : '<div class="cell-thumb list-only" aria-hidden="true">🍽</div>';
       const times = formatTimes(recipe);
+      const servingsText = formatServings(recipe) || "—";
+      const recipeMeta = formatRecipeMeta(recipe);
       const categoryText = categoryLabelText(recipe);
       const totalText = recipe.total_time || "—";
       card.innerHTML = \`
@@ -2605,8 +2629,9 @@ const HTML_PAGE = `<!DOCTYPE html>
         <h2 class="name">\${escapeHtml(recipe.title)}</h2>
         <div class="meta grid-only">\${escapeHtml(dateLabel)} \${escapeHtml(dateValue)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
         \${categoryText ? '<div class="card-categories grid-only">' + escapeHtml(categoryText) + '</div>' : ''}
-        \${times ? '<div class="times grid-only">' + escapeHtml(times) + '</div>' : ''}
+        \${recipeMeta ? '<div class="times grid-only">' + escapeHtml(recipeMeta) + '</div>' : ''}
         <div class="cell-saved list-only">\${escapeHtml(dateValue)}</div>
+        <div class="cell-servings list-only">\${escapeHtml(servingsText)}</div>
         <div class="cell-total list-only">\${escapeHtml(totalText)}</div>
         <div class="cell-categories list-only">\${escapeHtml(categoryText || "—")}</div>
         <div class="card-actions grid-only">
@@ -2623,6 +2648,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
         <div class="detail">
           \${recipe.description ? '<p>' + escapeHtml(recipe.description) + '</p>' : ''}
+          \${recipeMeta ? '<p class="recipe-meta">' + escapeHtml(recipeMeta) + '</p>' : ''}
           <div class="columns">
             <div>
               <h3>Ingredients</h3>
@@ -2681,6 +2707,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       return [
         recipe.title,
         ...(recipe.ingredients || []),
+        recipe.servings,
         recipe.prep_time,
         recipe.cook_time,
         recipe.total_time,
