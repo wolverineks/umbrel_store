@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.12";
+const APP_VERSION = "1.0.13";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -906,6 +906,34 @@ aside {
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
+.sidebar-trash {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0.7rem 0.75rem;
+  border-radius: 0.65rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.sidebar-trash:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.sidebar-trash.drop-target {
+  color: var(--danger);
+  background: var(--danger-bg);
+  box-shadow: 0 0 0 2px var(--danger-border);
+}
+.sidebar-trash-icon {
+  flex-shrink: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+}
 main {
   display: flex;
   flex-direction: column;
@@ -1424,6 +1452,10 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </div>
     <div class="sidebar-footer">
+      <button id="nav-trash" class="sidebar-trash" type="button" title="Drag recipes here to delete">
+        <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
+        <span>Trash</span>
+      </button>
       <p class="sidebar-note">Saved from the Recipe Printer Chrome extension.</p>
     </div>
   </aside>
@@ -1589,6 +1621,51 @@ const HTML_PAGE = `<!DOCTYPE html>
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not add to category");
       await loadRecipes();
+    }
+
+    async function deleteDraggedRecipe(recipe) {
+      if (!recipe?.id) return;
+      if (!confirm('Delete "' + recipe.title + '"?')) return;
+      const response = await fetch("/api/recipes/" + encodeURIComponent(recipe.id), { method: "DELETE" });
+      if (!response.ok) {
+        alert("Failed to delete recipe.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    function bindTrashDropTarget(element) {
+      if (element.dataset.dropBound === "true") return;
+      element.dataset.dropBound = "true";
+
+      element.addEventListener("dragover", (event) => {
+        if (!isInternalDrag(event)) return;
+        const recipe = dragRecipe;
+        if (!recipe?.id) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        element.classList.add("drop-target");
+      });
+
+      element.addEventListener("dragleave", (event) => {
+        if (!element.contains(event.relatedTarget)) {
+          element.classList.remove("drop-target");
+        }
+      });
+
+      element.addEventListener("drop", async (event) => {
+        if (!isInternalDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearDropTargets();
+        const recipe = readDragRecipe(event.dataTransfer) || dragRecipe;
+        if (!recipe?.id) return;
+        try {
+          await deleteDraggedRecipe(recipe);
+        } catch (error) {
+          alert(error.message || "Could not delete recipe.");
+        }
+      });
     }
 
     function bindCategoryDropTarget(button) {
@@ -2138,6 +2215,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     applyTheme(resolveTheme());
     loadLayoutAndSort();
     bindListHeader();
+    bindTrashDropTarget(document.getElementById("nav-trash"));
     applyLayoutView();
     document.getElementById("view-grid").addEventListener("click", () => setLayoutView("grid"));
     document.getElementById("view-list").addEventListener("click", () => setLayoutView("list"));
