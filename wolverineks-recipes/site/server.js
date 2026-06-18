@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.17";
+const APP_VERSION = "1.0.18";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -32,6 +32,10 @@ const INDEX_PATH = node_path_1.default.join(DATA_ROOT, "index.json");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const CATEGORIES_PATH = node_path_1.default.join(DATA_ROOT, "categories.json");
 const CATEGORY_ITEMS_PATH = node_path_1.default.join(DATA_ROOT, "category-items.json");
+const TRASH_DIR = node_path_1.default.join(DATA_ROOT, ".trash");
+const TRASH_RECIPES_DIR = node_path_1.default.join(TRASH_DIR, "recipes");
+const TRASH_IMAGES_DIR = node_path_1.default.join(TRASH_DIR, "images");
+const TRASH_INDEX_PATH = node_path_1.default.join(TRASH_DIR, "index.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const SEED_IMAGES_DIR = node_path_1.default.join(__dirname, "seed-images");
 class NotFoundError extends Error {
@@ -43,6 +47,27 @@ class NotFoundError extends Error {
 async function ensureDataDirs() {
     await (0, promises_1.mkdir)(RECIPES_DIR, { recursive: true });
     await (0, promises_1.mkdir)(IMAGES_DIR, { recursive: true });
+}
+async function ensureTrashDirs() {
+    await (0, promises_1.mkdir)(TRASH_RECIPES_DIR, { recursive: true });
+    await (0, promises_1.mkdir)(TRASH_IMAGES_DIR, { recursive: true });
+}
+function trashRecipePath(id) {
+    return node_path_1.default.join(TRASH_RECIPES_DIR, `${id}.json`);
+}
+function findTrashImagePath(id) {
+    for (const ext of IMAGE_EXTENSIONS) {
+        const filePath = node_path_1.default.join(TRASH_IMAGES_DIR, `${id}${ext}`);
+        if ((0, node_fs_1.existsSync)(filePath))
+            return filePath;
+    }
+    return null;
+}
+function recipeHasTrashImage(id) {
+    return findTrashImagePath(id) !== null;
+}
+async function deleteTrashImage(id) {
+    await Promise.all(IMAGE_EXTENSIONS.map((ext) => (0, promises_1.rm)(node_path_1.default.join(TRASH_IMAGES_DIR, `${id}${ext}`), { force: true })));
 }
 function imageFilePath(id, ext) {
     return node_path_1.default.join(IMAGES_DIR, `${id}${ext}`);
@@ -321,16 +346,113 @@ async function upsertRecipe(payload) {
     ]);
     return recipe;
 }
-async function deleteRecipe(id) {
-    const index = await loadIndex();
-    const next = index.filter((entry) => entry.id !== id);
-    if (next.length === index.length)
+async function loadTrashIndex() {
+    const entries = await readJsonFile(TRASH_INDEX_PATH, []);
+    return [...entries].sort((a, b) => new Date(b.deleted_at).getTime() - new Date(a.deleted_at).getTime());
+}
+async function saveTrashIndex(entries) {
+    await ensureTrashDirs();
+    await writeJsonAtomic(TRASH_INDEX_PATH, entries);
+}
+async function loadTrashRecipe(id) {
+    const file = trashRecipePath(id);
+    if (!(0, node_fs_1.existsSync)(file))
+        return null;
+    return readJsonFile(file, null);
+}
+async function enrichTrashRecipe(recipe, entry) {
+    return {
+        ...recipe,
+        has_image: recipeHasTrashImage(recipe.id),
+        category_ids: entry.category_ids,
+        deleted_at: entry.deleted_at,
+        in_trash: true,
+    };
+}
+async function moveRecipeToTrash(id) {
+    const recipe = await loadRecipe(id);
+    if (!recipe)
         return false;
-    await saveIndex(next);
-    await (0, promises_1.rm)(recipePath(id), { force: true });
-    await deleteRecipeImage(id);
+    await ensureTrashDirs();
+    const categoryItems = await loadCategoryItems();
+    const category_ids = categoryIdsForRecipe(categoryItems, id);
+    await (0, promises_1.rename)(recipePath(id), trashRecipePath(id));
+    const imagePath = findRecipeImagePath(id);
+    if (imagePath) {
+        const ext = node_path_1.default.extname(imagePath);
+        await (0, promises_1.rename)(imagePath, node_path_1.default.join(TRASH_IMAGES_DIR, `${id}${ext}`));
+    }
+    const index = await loadIndex();
+    await saveIndex(index.filter((entry) => entry.id !== id));
     await removeRecipeCategoryItems(id);
+    const trashEntry = {
+        id: recipe.id,
+        title: recipe.title,
+        source_url: recipe.source_url,
+        created_at: recipe.created_at,
+        updated_at: recipe.updated_at,
+        deleted_at: new Date().toISOString(),
+        category_ids,
+    };
+    const trashIndex = await loadTrashIndex();
+    await saveTrashIndex([trashEntry, ...trashIndex.filter((entry) => entry.id !== id)]);
     return true;
+}
+async function restoreRecipeFromTrash(id) {
+    const trashIndex = await loadTrashIndex();
+    const entry = trashIndex.find((item) => item.id === id);
+    if (!entry)
+        throw new NotFoundError("recipe not found in trash");
+    const recipe = await loadTrashRecipe(id);
+    if (!recipe)
+        throw new NotFoundError("recipe not found in trash");
+    if (await loadRecipe(id))
+        throw new Error("recipe already exists in library");
+    await (0, promises_1.rename)(trashRecipePath(id), recipePath(id));
+    const trashImagePath = findTrashImagePath(id);
+    if (trashImagePath) {
+        const ext = node_path_1.default.extname(trashImagePath);
+        await (0, promises_1.rename)(trashImagePath, imageFilePath(id, ext));
+    }
+    const index = await loadIndex();
+    await saveIndex([
+        ...index,
+        {
+            id: recipe.id,
+            title: recipe.title,
+            source_url: recipe.source_url,
+            created_at: recipe.created_at,
+            updated_at: recipe.updated_at,
+        },
+    ]);
+    for (const categoryId of entry.category_ids) {
+        try {
+            await assignCategoryRecipe(id, categoryId);
+        }
+        catch {
+            // category may have been deleted since the recipe was trashed
+        }
+    }
+    await saveTrashIndex(trashIndex.filter((item) => item.id !== id));
+    return recipe;
+}
+async function permanentlyDeleteTrashRecipe(id) {
+    const trashIndex = await loadTrashIndex();
+    if (!trashIndex.some((entry) => entry.id === id))
+        return false;
+    await (0, promises_1.rm)(trashRecipePath(id), { force: true });
+    await deleteTrashImage(id);
+    await saveTrashIndex(trashIndex.filter((entry) => entry.id !== id));
+    return true;
+}
+async function emptyTrash() {
+    const trashIndex = await loadTrashIndex();
+    for (const entry of trashIndex) {
+        await (0, promises_1.rm)(trashRecipePath(entry.id), { force: true });
+        await deleteTrashImage(entry.id);
+    }
+    await saveTrashIndex([]);
+    return trashIndex.length;
 }
 const DEFAULT_RECIPES = [
     {
@@ -920,9 +1042,16 @@ aside {
   cursor: pointer;
   text-align: left;
 }
-.sidebar-trash:hover {
+.sidebar-trash:hover,
+.sidebar-trash.active {
   background: var(--danger-bg);
   color: var(--danger);
+}
+.toolbar-trash {
+  display: none;
+}
+body.view-trash .toolbar-trash {
+  display: flex;
 }
 .sidebar-trash.drop-target {
   color: var(--danger);
@@ -1569,7 +1698,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </div>
     <div class="sidebar-footer">
-      <button id="nav-trash" class="sidebar-trash" type="button" title="Drag recipes here to delete">
+      <button id="nav-trash" class="sidebar-trash" type="button" title="View trash — drag recipes here to delete">
         <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
         <span>Trash</span>
       </button>
@@ -1592,6 +1721,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Dark mode">☾</button>
     </div>
     <div class="content">
+      <div class="topbar toolbar-trash">
+        <div class="toolbar">
+          <button id="empty-trash" class="danger-btn" type="button">Empty trash</button>
+        </div>
+      </div>
       <section id="device-panel" class="panel hidden">
     <h2>Add new device</h2>
     <p>Set up the Recipe Printer Chrome extension on a new computer or browser profile.</p>
@@ -1641,6 +1775,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         <div id="list" class="grid"></div>
       </div>
       <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
+      <div id="trash-empty" class="empty hidden">Trash is empty.</div>
       <div id="no-results" class="empty hidden">No recipes match your search.</div>
     </div>
   </main>
@@ -1659,12 +1794,16 @@ const HTML_PAGE = `<!DOCTYPE html>
   <script>
     const listEl = document.getElementById("list");
     const emptyEl = document.getElementById("empty");
+    const trashEmptyEl = document.getElementById("trash-empty");
     const noResultsEl = document.getElementById("no-results");
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
     const recipeStatus = document.getElementById("recipe-status");
     const navLibrary = document.getElementById("nav-library");
+    const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
+    const LIBRARY_SEARCH_PLACEHOLDER = "Search by name, ingredients, prep time, cook time, or total time…";
+    let activeView = "library";
     const tokenValue = document.getElementById("token-value");
     const baseUrlEl = document.getElementById("base-url");
     const DRAG_MIME = "application/x-recipes-entry";
@@ -1745,19 +1884,61 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     }
 
-    async function deleteRecipeById(recipe) {
+    async function moveRecipeToTrashById(recipe, confirmMove = true) {
       if (!recipe?.id) return;
-      if (!confirm('Delete "' + recipe.title + '"?')) return;
+      if (confirmMove && !confirm('Move "' + recipe.title + '" to trash?')) return;
       const response = await fetch("/api/recipes/" + encodeURIComponent(recipe.id), { method: "DELETE" });
       if (!response.ok) {
-        alert("Failed to delete recipe.");
+        alert("Failed to move recipe to trash.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    async function restoreRecipeById(recipe) {
+      if (!recipe?.id) return;
+      const response = await fetch("/api/trash/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: recipe.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to restore recipe.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    async function deleteForeverById(recipe) {
+      if (!recipe?.id) return;
+      if (!confirm('Permanently delete "' + recipe.title + '"?')) return;
+      const response = await fetch("/api/trash/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: recipe.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to delete recipe.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    async function emptyTrashBin() {
+      if (!confirm("Empty trash? This permanently deletes all trashed recipes.")) return;
+      const response = await fetch("/api/trash/empty", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to empty trash.");
         return;
       }
       await loadRecipes();
     }
 
     async function deleteDraggedRecipe(recipe) {
-      await deleteRecipeById(recipe);
+      await moveRecipeToTrashById(recipe, false);
     }
 
     async function unassignCategory(recipeId, categoryId) {
@@ -1806,6 +1987,18 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function recipeContextMenuActions(recipe) {
+      if (activeView === "trash") {
+        const actions = [
+          { id: "open", label: "Open" },
+          { id: "print", label: "Print" },
+          { id: "restore", label: "Restore" },
+          { id: "delete-forever", label: "Delete forever", danger: true },
+        ];
+        if (recipe.source_url) {
+          actions.splice(2, 0, { id: "open-source", label: "Open source" });
+        }
+        return actions;
+      }
       const actions = [
         { id: "open", label: "Open" },
         { id: "print", label: "Print" },
@@ -1821,7 +2014,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         const categoryName = categories.find((category) => category.id === activeCategoryId)?.name || "category";
         actions.push({ id: "unassign-current", label: "Remove from " + categoryName });
       }
-      actions.push({ id: "delete", label: "Delete", danger: true });
+      actions.push({ id: "trash", label: "Move to trash", danger: true });
       return actions;
     }
 
@@ -1924,8 +2117,16 @@ const HTML_PAGE = `<!DOCTYPE html>
         if (activeCategoryId) await unassignCategory(recipe.id, activeCategoryId);
         return;
       }
-      if (action === "delete") {
-        await deleteRecipeById(recipe);
+      if (action === "trash") {
+        await moveRecipeToTrashById(recipe);
+        return;
+      }
+      if (action === "restore") {
+        await restoreRecipeById(recipe);
+        return;
+      }
+      if (action === "delete-forever") {
+        await deleteForeverById(recipe);
       }
     }
 
@@ -1934,7 +2135,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       element.dataset.dropBound = "true";
 
       element.addEventListener("dragover", (event) => {
-        if (!isInternalDrag(event)) return;
+        if (activeView !== "library" || !isInternalDrag(event)) return;
         const recipe = dragRecipe;
         if (!recipe?.id) return;
         event.preventDefault();
@@ -1949,7 +2150,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       });
 
       element.addEventListener("drop", async (event) => {
-        if (!isInternalDrag(event)) return;
+        if (activeView !== "library" || !isInternalDrag(event)) return;
         event.preventDefault();
         event.stopPropagation();
         clearDropTargets();
@@ -1958,7 +2159,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         try {
           await deleteDraggedRecipe(recipe);
         } catch (error) {
-          alert(error.message || "Could not delete recipe.");
+          alert(error.message || "Could not move recipe to trash.");
         }
       });
     }
@@ -1969,7 +2170,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       const categoryId = button.dataset.id;
 
       button.addEventListener("dragover", (event) => {
-        if (!isInternalDrag(event)) return;
+        if (activeView !== "library" || !isInternalDrag(event)) return;
         const recipe = dragRecipe;
         if (!recipe || !canAssignCategory(recipe, categoryId)) return;
         event.preventDefault();
@@ -1984,7 +2185,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       });
 
       button.addEventListener("drop", async (event) => {
-        if (!isInternalDrag(event)) return;
+        if (activeView !== "library" || !isInternalDrag(event)) return;
         event.preventDefault();
         event.stopPropagation();
         clearDropTargets();
@@ -1999,6 +2200,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function bindRecipeCardDrag(card, recipe) {
+      if (activeView === "trash") return;
       card.setAttribute("draggable", "true");
       card.addEventListener("dragstart", (event) => {
         dragRecipe = recipe;
@@ -2037,10 +2239,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       root.querySelectorAll(".category-item").forEach((button) => {
         button.addEventListener("click", () => {
           activeCategoryId = button.dataset.id;
+          activeView = "library";
           devicePanel.classList.add("hidden");
           setActiveNav("library");
           renderCategoriesSidebar();
-          renderRecipes(allRecipes);
+          renderRecipes();
           closeSidebar();
         });
         button.addEventListener("dblclick", (event) => {
@@ -2153,7 +2356,12 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function sortValue(recipe, column) {
       if (column === "name") return (recipe.title || "").toLowerCase();
-      if (column === "saved") return new Date(recipe.updated_at || recipe.created_at).getTime() || 0;
+      if (column === "saved") {
+        const value = activeView === "trash"
+          ? recipe.deleted_at
+          : (recipe.updated_at || recipe.created_at);
+        return new Date(value).getTime() || 0;
+      }
       if (column === "total") return (recipe.total_time || "").toLowerCase();
       if (column === "categories") return categoryLabelText(recipe).toLowerCase();
       return "";
@@ -2172,7 +2380,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     function listHeaderColumns() {
       return [
         { id: "name", label: "Name", sortable: true, className: "cell-name" },
-        { id: "saved", label: "Saved", sortable: true, className: "cell-saved" },
+        { id: "saved", label: activeView === "trash" ? "Deleted" : "Saved", sortable: true, className: "cell-saved" },
         { id: "total", label: "Total", sortable: true, className: "cell-total" },
         { id: "categories", label: "Categories", sortable: true, className: "cell-categories" },
         { id: "", label: "", sortable: false, className: "cell-actions" },
@@ -2266,9 +2474,15 @@ const HTML_PAGE = `<!DOCTYPE html>
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
+      const imageApiBase = activeView === "trash" ? "/api/trash/" : "/api/recipes/";
       const imageUrl = recipe.has_image
-        ? "/api/recipes/" + encodeURIComponent(recipe.id) + "/image"
+        ? imageApiBase + encodeURIComponent(recipe.id) + "/image"
         : "";
+      const inTrash = activeView === "trash";
+      const dateLabel = inTrash ? "Deleted" : "Saved";
+      const dateValue = inTrash
+        ? formatDate(recipe.deleted_at)
+        : formatDate(recipe.updated_at || recipe.created_at);
       const imageMarkup = imageUrl
         ? '<img class="recipe-image grid-only" src="' + imageUrl + '" alt="" loading="lazy" />'
         : "";
@@ -2277,23 +2491,32 @@ const HTML_PAGE = `<!DOCTYPE html>
         : '<div class="cell-thumb list-only" aria-hidden="true">🍽</div>';
       const times = formatTimes(recipe);
       const categoryText = categoryLabelText(recipe);
-      const savedText = formatDate(recipe.updated_at || recipe.created_at);
       const totalText = recipe.total_time || "—";
+      const detailActions = inTrash
+        ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Restore</button>' +
+          '<button class="danger-btn delete-forever-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Delete forever</button>'
+        : '<button class="danger-btn trash-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Move to trash</button>';
       card.innerHTML = \`
         \${thumbMarkup}
         \${imageMarkup}
         <h2 class="name">\${escapeHtml(recipe.title)}</h2>
-        <div class="meta grid-only">Saved \${escapeHtml(savedText)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
+        <div class="meta grid-only">\${escapeHtml(dateLabel)} \${escapeHtml(dateValue)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
         \${categoryText ? '<div class="card-categories grid-only">' + escapeHtml(categoryText) + '</div>' : ''}
         \${times ? '<div class="times grid-only">' + escapeHtml(times) + '</div>' : ''}
-        <div class="cell-saved list-only">\${escapeHtml(savedText)}</div>
+        <div class="cell-saved list-only">\${escapeHtml(dateValue)}</div>
         <div class="cell-total list-only">\${escapeHtml(totalText)}</div>
         <div class="cell-categories list-only">\${escapeHtml(categoryText || "—")}</div>
         <div class="card-actions grid-only">
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
+          \${inTrash
+            ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Restore</button>'
+            : ""}
         </div>
         <div class="cell-actions list-only">
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
+          \${inTrash
+            ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Restore</button>'
+            : ""}
         </div>
         <div class="detail">
           \${recipe.description ? '<p>' + escapeHtml(recipe.description) + '</p>' : ''}
@@ -2308,7 +2531,7 @@ const HTML_PAGE = `<!DOCTYPE html>
             </div>
           </div>
           \${recipe.notes ? '<p><strong>Notes:</strong> ' + escapeHtml(recipe.notes) + '</p>' : ''}
-          <button class="danger-btn delete-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Delete</button>
+          <div class="card-actions">\${detailActions}</div>
         </div>
       \`;
       card.addEventListener("click", (event) => {
@@ -2326,9 +2549,19 @@ const HTML_PAGE = `<!DOCTYPE html>
           window.open("/recipes/" + encodeURIComponent(id) + "/print?auto=1", "_blank", "noopener");
         });
       });
-      card.querySelector(".delete-btn")?.addEventListener("click", async (event) => {
+      card.querySelector(".trash-btn")?.addEventListener("click", async (event) => {
         event.stopPropagation();
-        await deleteRecipeById(recipe);
+        await moveRecipeToTrashById(recipe);
+      });
+      card.querySelectorAll(".restore-btn").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          await restoreRecipeById(recipe);
+        });
+      });
+      card.querySelector(".delete-forever-btn")?.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        await deleteForeverById(recipe);
       });
       card.addEventListener("contextmenu", (event) => {
         event.preventDefault();
@@ -2371,7 +2604,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function recipesForView() {
       let recipes = allRecipes;
-      if (activeCategoryId) {
+      if (activeView === "library" && activeCategoryId) {
         recipes = recipes.filter((recipe) => (recipe.category_ids || []).includes(activeCategoryId));
       }
       const query = searchInput.value || "";
@@ -2379,17 +2612,26 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function renderRecipes() {
-      const scoped = activeCategoryId
+      const scoped = activeView === "library" && activeCategoryId
         ? allRecipes.filter((recipe) => (recipe.category_ids || []).includes(activeCategoryId))
         : allRecipes;
       const filtered = recipesForView();
       listEl.replaceChildren();
-      emptyEl.classList.toggle("hidden", allRecipes.length > 0);
+      const inTrash = activeView === "trash";
+      emptyEl.classList.toggle("hidden", inTrash || allRecipes.length > 0);
+      trashEmptyEl.classList.toggle("hidden", !inTrash || allRecipes.length > 0);
       noResultsEl.classList.toggle("hidden", filtered.length > 0 || allRecipes.length === 0);
       listEl.classList.toggle("hidden", filtered.length === 0);
 
       if (allRecipes.length === 0) {
         recipeStatus.textContent = "";
+      } else if (inTrash) {
+        const query = (searchInput.value || "").trim();
+        if (query) {
+          recipeStatus.textContent = filtered.length + " of " + allRecipes.length + " recipes in trash";
+        } else {
+          recipeStatus.textContent = allRecipes.length + (allRecipes.length === 1 ? " recipe" : " recipes") + " in trash";
+        }
       } else {
         const categoryName = categories.find((category) => category.id === activeCategoryId)?.name;
         const scopeLabel = categoryName ? ' in "' + categoryName + '"' : "";
@@ -2412,13 +2654,15 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     async function loadRecipes() {
-      await refreshCategories();
-      const response = await fetch("/api/recipes");
+      if (activeView === "library") await refreshCategories();
+      const listEndpoint = activeView === "trash" ? "/api/trash" : "/api/recipes";
+      const detailPrefix = activeView === "trash" ? "/api/trash/" : "/api/recipes/";
+      const response = await fetch(listEndpoint);
       const payload = await response.json();
       const summaries = payload.recipes || [];
       allRecipes = [];
       for (const summary of summaries) {
-        const detailResponse = await fetch("/api/recipes/" + encodeURIComponent(summary.id));
+        const detailResponse = await fetch(detailPrefix + encodeURIComponent(summary.id));
         const recipe = await detailResponse.json();
         allRecipes.push(recipe);
       }
@@ -2452,15 +2696,31 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function setActiveNav(view) {
       navLibrary.classList.toggle("active", view === "library");
+      navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
+      document.body.classList.toggle("view-trash", view === "trash");
+      searchInput.placeholder = view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
     }
 
     function showLibrary() {
       devicePanel.classList.add("hidden");
       activeCategoryId = null;
+      activeView = "library";
       setActiveNav("library");
+      closeContextMenu();
+      closeSidebar();
       renderCategoriesSidebar();
-      renderRecipes();
+      loadRecipes();
+    }
+
+    function showTrash() {
+      devicePanel.classList.add("hidden");
+      activeCategoryId = null;
+      activeView = "trash";
+      setActiveNav("trash");
+      closeContextMenu();
+      closeSidebar();
+      loadRecipes();
     }
 
     function closeSidebar() {
@@ -2475,7 +2735,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function closeDevicePanel() {
       devicePanel.classList.add("hidden");
-      if (!activeCategoryId) setActiveNav("library");
+      if (!activeCategoryId && activeView !== "trash") setActiveNav("library");
     }
 
     function openDevicePanel() {
@@ -2545,6 +2805,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
+    navTrash.addEventListener("click", showTrash);
+    document.getElementById("empty-trash").addEventListener("click", emptyTrashBin);
     document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
     document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
     document.getElementById("category-submit").addEventListener("click", submitCategoryDialog);
@@ -2606,7 +2868,7 @@ async function handleRequest(req, res) {
     const printMatch = route.match(/^\/recipes\/([^/]+)\/print$/);
     if (printMatch && req.method === "GET") {
         const id = decodeURIComponent(printMatch[1]);
-        const recipe = await loadRecipe(id);
+        const recipe = (await loadRecipe(id)) ?? (await loadTrashRecipe(id));
         if (!recipe) {
             sendText(res, 404, "Recipe not found", "text/plain; charset=utf-8");
             return;
@@ -2677,12 +2939,98 @@ async function handleRequest(req, res) {
     }
     if (route.startsWith("/api/recipes/") && req.method === "DELETE") {
         const id = decodeURIComponent(route.slice("/api/recipes/".length));
-        const deleted = await deleteRecipe(id);
-        if (!deleted) {
+        const moved = await moveRecipeToTrash(id);
+        if (!moved) {
             sendJson(res, 404, { error: "Recipe not found" });
             return;
         }
         sendJson(res, 200, { ok: true });
+        return;
+    }
+    if (route === "/api/trash" && req.method === "GET") {
+        sendJson(res, 200, { recipes: await loadTrashIndex() });
+        return;
+    }
+    const trashImageMatch = route.match(/^\/api\/trash\/([^/]+)\/image$/);
+    if (trashImageMatch && req.method === "GET") {
+        const id = decodeURIComponent(trashImageMatch[1]);
+        const imagePath = findTrashImagePath(id);
+        if (!imagePath) {
+            sendJson(res, 404, { error: "Image not found" });
+            return;
+        }
+        const ext = node_path_1.default.extname(imagePath).toLowerCase();
+        const contentType = IMAGE_MIME_TYPES[ext] || "application/octet-stream";
+        const image = await (0, promises_1.readFile)(imagePath);
+        res.writeHead(200, {
+            "Content-Type": contentType,
+            "Content-Length": image.length,
+            "Cache-Control": "public, max-age=86400",
+        });
+        res.end(image);
+        return;
+    }
+    const trashRecipeMatch = route.match(/^\/api\/trash\/([^/]+)$/);
+    if (trashRecipeMatch && req.method === "GET") {
+        const id = decodeURIComponent(trashRecipeMatch[1]);
+        const trashIndex = await loadTrashIndex();
+        const entry = trashIndex.find((item) => item.id === id);
+        if (!entry) {
+            sendJson(res, 404, { error: "Recipe not found in trash" });
+            return;
+        }
+        const recipe = await loadTrashRecipe(id);
+        if (!recipe) {
+            sendJson(res, 404, { error: "Recipe not found in trash" });
+            return;
+        }
+        sendJson(res, 200, await enrichTrashRecipe(recipe, entry));
+        return;
+    }
+    if (route === "/api/trash/restore" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const id = (body.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            const recipe = await restoreRecipeFromTrash(id);
+            sendJson(res, 200, { ok: true, recipe });
+        }
+        catch (error) {
+            if (error instanceof NotFoundError) {
+                sendJson(res, 404, { error: error.message });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
+        return;
+    }
+    if (route === "/api/trash/delete" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const id = (body.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            const deleted = await permanentlyDeleteTrashRecipe(id);
+            if (!deleted) {
+                sendJson(res, 404, { error: "Recipe not found in trash" });
+                return;
+            }
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+        }
+        return;
+    }
+    if (route === "/api/trash/empty" && req.method === "POST") {
+        const count = await emptyTrash();
+        sendJson(res, 200, { ok: true, count });
         return;
     }
     if (route === "/api/settings/token" && req.method === "GET") {
