@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.10";
+const APP_VERSION = "1.0.11";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -30,8 +30,16 @@ const IMAGE_CONTENT_TYPES = {
 };
 const INDEX_PATH = node_path_1.default.join(DATA_ROOT, "index.json");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
+const CATEGORIES_PATH = node_path_1.default.join(DATA_ROOT, "categories.json");
+const CATEGORY_ITEMS_PATH = node_path_1.default.join(DATA_ROOT, "category-items.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const SEED_IMAGES_DIR = node_path_1.default.join(__dirname, "seed-images");
+class NotFoundError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "NotFoundError";
+    }
+}
 async function ensureDataDirs() {
     await (0, promises_1.mkdir)(RECIPES_DIR, { recursive: true });
     await (0, promises_1.mkdir)(IMAGES_DIR, { recursive: true });
@@ -106,6 +114,100 @@ function recipeHasImage(id) {
 }
 function withImageFlag(recipe) {
     return { ...recipe, has_image: recipeHasImage(recipe.id) };
+}
+async function loadCategories() {
+    const data = await readJsonFile(CATEGORIES_PATH, { categories: [] });
+    const categories = data.categories || [];
+    return categories.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+async function saveCategories(categories) {
+    const sorted = [...categories].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    await writeJsonAtomic(CATEGORIES_PATH, { categories: sorted });
+}
+async function loadCategoryItems() {
+    const data = await readJsonFile(CATEGORY_ITEMS_PATH, { items: [] });
+    return data.items || [];
+}
+async function saveCategoryItems(items) {
+    await writeJsonAtomic(CATEGORY_ITEMS_PATH, { items });
+}
+function categoryIdsForRecipe(items, recipeId) {
+    return items.filter((item) => item.recipe_id === recipeId).map((item) => item.category_id);
+}
+function categoryNameTaken(categories, name, exceptId) {
+    const lower = name.trim().toLowerCase();
+    return categories.some((category) => category.id !== exceptId && category.name.toLowerCase() === lower);
+}
+async function createCategory(name) {
+    const trimmedName = name.trim();
+    if (!trimmedName)
+        throw new Error("invalid name");
+    const categories = await loadCategories();
+    if (categoryNameTaken(categories, trimmedName))
+        throw new Error("category already exists");
+    const category = { id: (0, node_crypto_1.randomUUID)(), name: trimmedName };
+    await saveCategories([...categories, category]);
+    return category;
+}
+async function renameCategory(categoryId, name) {
+    const trimmedName = name.trim();
+    if (!trimmedName)
+        throw new Error("invalid name");
+    const categories = await loadCategories();
+    const index = categories.findIndex((category) => category.id === categoryId);
+    if (index < 0)
+        throw new NotFoundError("category not found");
+    if (categoryNameTaken(categories, trimmedName, categoryId))
+        throw new Error("category already exists");
+    const category = { ...categories[index], name: trimmedName };
+    categories[index] = category;
+    await saveCategories(categories);
+    return category;
+}
+async function deleteCategory(categoryId) {
+    const categories = await loadCategories();
+    const nextCategories = categories.filter((category) => category.id !== categoryId);
+    if (nextCategories.length === categories.length)
+        throw new NotFoundError("category not found");
+    await saveCategories(nextCategories);
+    const items = await loadCategoryItems();
+    await saveCategoryItems(items.filter((item) => item.category_id !== categoryId));
+}
+async function assignCategoryRecipe(recipeId, categoryId) {
+    const recipe = await loadRecipe(recipeId);
+    if (!recipe)
+        throw new NotFoundError("recipe not found");
+    const categories = await loadCategories();
+    if (!categories.some((category) => category.id === categoryId)) {
+        throw new NotFoundError("category not found");
+    }
+    const items = await loadCategoryItems();
+    const existing = items.find((item) => item.recipe_id === recipeId && item.category_id === categoryId);
+    if (existing)
+        return existing;
+    const item = { recipe_id: recipeId, category_id: categoryId };
+    await saveCategoryItems([...items, item]);
+    return item;
+}
+async function unassignCategoryRecipe(recipeId, categoryId) {
+    const items = await loadCategoryItems();
+    const next = items.filter((item) => !(item.recipe_id === recipeId && item.category_id === categoryId));
+    if (next.length === items.length)
+        throw new NotFoundError("category assignment not found");
+    await saveCategoryItems(next);
+}
+async function removeRecipeCategoryItems(recipeId) {
+    const items = await loadCategoryItems();
+    const next = items.filter((item) => item.recipe_id !== recipeId);
+    if (next.length !== items.length)
+        await saveCategoryItems(next);
+}
+async function enrichRecipe(recipe) {
+    const items = await loadCategoryItems();
+    return {
+        ...withImageFlag(recipe),
+        category_ids: categoryIdsForRecipe(items, recipe.id),
+    };
 }
 async function readJsonFile(filePath, fallback) {
     if (!(0, node_fs_1.existsSync)(filePath))
@@ -227,6 +329,7 @@ async function deleteRecipe(id) {
     await saveIndex(next);
     await (0, promises_1.rm)(recipePath(id), { force: true });
     await deleteRecipeImage(id);
+    await removeRecipeCategoryItems(id);
     return true;
 }
 const DEFAULT_RECIPES = [
@@ -680,6 +783,7 @@ aside {
   flex-direction: column;
   gap: 1rem;
   min-height: 0;
+  overflow: hidden;
 }
 .brand {
   display: flex;
@@ -722,10 +826,85 @@ aside {
   color: var(--muted);
   line-height: 1.45;
 }
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.sidebar-section {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-right: 0.75rem;
+}
+.sidebar-section-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 0 0.75rem 0.5rem;
+}
+.categories-add {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.4rem;
+}
+.categories-add:hover { background: var(--accent-soft); }
+.categories-list { display: grid; gap: 0.2rem; }
+.categories-empty {
+  padding: 0.35rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  background: transparent;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.65rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+}
+.category-item:hover,
+.category-item.active,
+.category-item.drop-target {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.category-icon { flex-shrink: 0; font-size: 0.95rem; line-height: 1; }
+.category-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sidebar-footer {
   margin-top: auto;
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 main {
   display: flex;
@@ -880,6 +1059,55 @@ button.danger-btn {
 .card.open {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.card.dragging {
+  opacity: 0.45;
+}
+.card-categories {
+  color: var(--muted);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: none;
+  place-items: center;
+  padding: 1rem;
+  z-index: 1100;
+}
+.dialog-backdrop.open { display: grid; }
+.dialog {
+  width: min(100%, 24rem);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  box-shadow: 0 24px 48px rgba(var(--shadow-color), 0.18);
+}
+.dialog h2 { margin: 0 0 0.35rem; font-size: 1.1rem; }
+.dialog input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.75rem 0.85rem;
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  margin: 0.75rem 0 1rem;
+}
+.dialog input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.dialog-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 .recipe-image {
   width: 100%;
@@ -1057,6 +1285,15 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="nav-refresh" type="button">Refresh</button>
       <button id="nav-device" type="button">Add device</button>
     </nav>
+    <div class="sidebar-scroll">
+      <div class="sidebar-section categories-section">
+        <div class="sidebar-section-header">
+          <div class="sidebar-section-label">Categories</div>
+          <button id="add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
+        </div>
+        <div id="categories-list" class="categories-list"></div>
+      </div>
+    </div>
     <div class="sidebar-footer">
       <p class="sidebar-note">Saved from the Recipe Printer Chrome extension.</p>
     </div>
@@ -1122,6 +1359,16 @@ const HTML_PAGE = `<!DOCTYPE html>
       <div id="no-results" class="empty hidden">No recipes match your search.</div>
     </div>
   </main>
+  <div id="category-dialog" class="dialog-backdrop" aria-hidden="true">
+    <div class="dialog" role="dialog" aria-labelledby="category-dialog-title">
+      <h2 id="category-dialog-title">New category</h2>
+      <input id="category-name-input" type="text" placeholder="Category name" autocomplete="off" maxlength="80" />
+      <div class="dialog-actions">
+        <button id="category-cancel" class="secondary" type="button">Cancel</button>
+        <button id="category-submit" class="primary" type="button">Save</button>
+      </div>
+    </div>
+  </div>
   <div class="app-version" aria-hidden="true">v${APP_VERSION}</div>
   <script>
     const listEl = document.getElementById("list");
@@ -1134,7 +1381,13 @@ const HTML_PAGE = `<!DOCTYPE html>
     const navDevice = document.getElementById("nav-device");
     const tokenValue = document.getElementById("token-value");
     const baseUrlEl = document.getElementById("base-url");
+    const DRAG_MIME = "application/x-recipes-entry";
     let allRecipes = [];
+    let categories = [];
+    let activeCategoryId = null;
+    let dragRecipe = null;
+    let categoryDialogMode = "create";
+    let categoryDialogTargetId = null;
 
     function escapeHtml(value) {
       return String(value)
@@ -1156,6 +1409,208 @@ const HTML_PAGE = `<!DOCTYPE html>
       ].filter(Boolean).join(" · ");
     }
 
+    function categoryLabelText(recipe) {
+      const ids = new Set(recipe.category_ids || []);
+      return categories
+        .filter((category) => ids.has(category.id))
+        .map((category) => category.name)
+        .join(", ");
+    }
+
+    function isInternalDrag(event) {
+      return Array.from(event.dataTransfer?.types || []).includes(DRAG_MIME);
+    }
+
+    function clearDropTargets() {
+      document.querySelectorAll(".drop-target").forEach((node) => {
+        node.classList.remove("drop-target");
+      });
+    }
+
+    function readDragRecipe(dataTransfer) {
+      try {
+        return JSON.parse(dataTransfer.getData(DRAG_MIME));
+      } catch {
+        return null;
+      }
+    }
+
+    function dragRecipePayload(recipe) {
+      return JSON.stringify({ id: recipe.id, title: recipe.title });
+    }
+
+    function canAssignCategory(recipe, categoryId) {
+      return recipe?.id && categoryId && !(recipe.category_ids || []).includes(categoryId);
+    }
+
+    async function assignCategory(recipeId, categoryId) {
+      const response = await fetch("/api/categories/assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipe_id: recipeId, categoryId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not add to category");
+      await loadRecipes();
+    }
+
+    function bindCategoryDropTarget(button) {
+      if (button.dataset.dropBound === "true") return;
+      button.dataset.dropBound = "true";
+      const categoryId = button.dataset.id;
+
+      button.addEventListener("dragover", (event) => {
+        if (!isInternalDrag(event)) return;
+        const recipe = dragRecipe;
+        if (!recipe || !canAssignCategory(recipe, categoryId)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        button.classList.add("drop-target");
+      });
+
+      button.addEventListener("dragleave", (event) => {
+        if (!button.contains(event.relatedTarget)) {
+          button.classList.remove("drop-target");
+        }
+      });
+
+      button.addEventListener("drop", async (event) => {
+        if (!isInternalDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearDropTargets();
+        const recipe = readDragRecipe(event.dataTransfer) || dragRecipe;
+        if (!recipe || !canAssignCategory(recipe, categoryId)) return;
+        try {
+          await assignCategory(recipe.id, categoryId);
+        } catch (error) {
+          alert(error.message || "Could not add to category.");
+        }
+      });
+    }
+
+    function bindRecipeCardDrag(card, recipe) {
+      card.setAttribute("draggable", "true");
+      card.addEventListener("dragstart", (event) => {
+        dragRecipe = recipe;
+        event.dataTransfer.setData(DRAG_MIME, dragRecipePayload(recipe));
+        event.dataTransfer.effectAllowed = "move";
+        card.classList.add("dragging");
+      });
+      card.addEventListener("dragend", () => {
+        card.classList.remove("dragging");
+        dragRecipe = null;
+        clearDropTargets();
+      });
+    }
+
+    function renderCategoriesSidebar() {
+      const root = document.getElementById("categories-list");
+      if (!root) return;
+      if (!categories.length) {
+        root.innerHTML = '<div class="categories-empty">Create categories, then drag recipes onto them</div>';
+        return;
+      }
+      root.innerHTML = categories.map((category) => {
+        const active = activeCategoryId === category.id;
+        return \`
+          <button
+            type="button"
+            class="category-item\${active ? " active" : ""}"
+            data-id="\${escapeHtml(category.id)}"
+            data-name="\${escapeHtml(category.name)}"
+          >
+            <span class="category-icon" aria-hidden="true">🏷</span>
+            <span class="category-name">\${escapeHtml(category.name)}</span>
+          </button>\`;
+      }).join("");
+
+      root.querySelectorAll(".category-item").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeCategoryId = button.dataset.id;
+          devicePanel.classList.add("hidden");
+          setActiveNav("library");
+          renderCategoriesSidebar();
+          renderRecipes(allRecipes);
+          closeSidebar();
+        });
+        button.addEventListener("dblclick", (event) => {
+          event.preventDefault();
+          openCategoryDialog("rename", {
+            id: button.dataset.id,
+            name: button.dataset.name,
+          });
+        });
+        button.addEventListener("contextmenu", async (event) => {
+          event.preventDefault();
+          const name = button.dataset.name || "category";
+          if (!confirm('Delete category "' + name + '"? Recipes stay in your library.')) return;
+          const response = await fetch("/api/categories/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: button.dataset.id }),
+          });
+          if (!response.ok) {
+            alert("Failed to delete category.");
+            return;
+          }
+          if (activeCategoryId === button.dataset.id) activeCategoryId = null;
+          await loadRecipes();
+        });
+        bindCategoryDropTarget(button);
+      });
+    }
+
+    async function refreshCategories() {
+      const response = await fetch("/api/categories");
+      const data = await response.json();
+      categories = data.categories || [];
+      renderCategoriesSidebar();
+    }
+
+    function openCategoryDialog(mode, category) {
+      categoryDialogMode = mode;
+      categoryDialogTargetId = category?.id || null;
+      const dialog = document.getElementById("category-dialog");
+      const title = document.getElementById("category-dialog-title");
+      const input = document.getElementById("category-name-input");
+      title.textContent = mode === "rename" ? "Rename category" : "New category";
+      input.value = category?.name || "";
+      dialog.classList.add("open");
+      dialog.setAttribute("aria-hidden", "false");
+      input.focus();
+      input.select();
+    }
+
+    function closeCategoryDialog() {
+      const dialog = document.getElementById("category-dialog");
+      dialog.classList.remove("open");
+      dialog.setAttribute("aria-hidden", "true");
+      categoryDialogTargetId = null;
+    }
+
+    async function submitCategoryDialog() {
+      const input = document.getElementById("category-name-input");
+      const name = (input.value || "").trim();
+      if (!name) return;
+      const endpoint = categoryDialogMode === "rename" ? "/api/categories/rename" : "/api/categories/create";
+      const body = categoryDialogMode === "rename"
+        ? { id: categoryDialogTargetId, name }
+        : { name };
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Could not save category.");
+        return;
+      }
+      closeCategoryDialog();
+      await loadRecipes();
+    }
+
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
@@ -1163,10 +1618,12 @@ const HTML_PAGE = `<!DOCTYPE html>
         ? '<img class="recipe-image" src="/api/recipes/' + encodeURIComponent(recipe.id) + '/image" alt="" loading="lazy" />'
         : "";
       const times = formatTimes(recipe);
+      const categoryText = categoryLabelText(recipe);
       card.innerHTML = \`
         \${imageMarkup}
         <h2 class="name">\${escapeHtml(recipe.title)}</h2>
         <div class="meta">Saved \${formatDate(recipe.updated_at || recipe.created_at)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
+        \${categoryText ? '<div class="card-categories">' + escapeHtml(categoryText) + '</div>' : ''}
         \${times ? '<div class="times">' + escapeHtml(times) + '</div>' : ''}
         <div class="card-actions">
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
@@ -1207,6 +1664,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         }
         await loadRecipes();
       });
+      bindRecipeCardDrag(card, recipe);
       return card;
     }
 
@@ -1229,30 +1687,49 @@ const HTML_PAGE = `<!DOCTYPE html>
       return recipeSearchText(recipe).includes(needle);
     }
 
-    function renderRecipes(recipes) {
-      const query = searchInput.value || "";
-      const filtered = recipes.filter((recipe) => matchesSearch(recipe, query));
-      listEl.replaceChildren();
-      emptyEl.classList.toggle("hidden", recipes.length > 0);
-      noResultsEl.classList.toggle("hidden", filtered.length > 0 || recipes.length === 0);
-      listEl.classList.toggle("hidden", filtered.length === 0);
-      if (recipes.length === 0) {
-        recipeStatus.textContent = "";
-      } else if (query.trim()) {
-        recipeStatus.textContent = filtered.length + " of " + recipes.length + " recipes";
-      } else {
-        recipeStatus.textContent = recipes.length + (recipes.length === 1 ? " recipe" : " recipes");
+    function recipesForView() {
+      let recipes = allRecipes;
+      if (activeCategoryId) {
+        recipes = recipes.filter((recipe) => (recipe.category_ids || []).includes(activeCategoryId));
       }
+      const query = searchInput.value || "";
+      return recipes.filter((recipe) => matchesSearch(recipe, query));
+    }
+
+    function renderRecipes() {
+      const scoped = activeCategoryId
+        ? allRecipes.filter((recipe) => (recipe.category_ids || []).includes(activeCategoryId))
+        : allRecipes;
+      const filtered = recipesForView();
+      listEl.replaceChildren();
+      emptyEl.classList.toggle("hidden", allRecipes.length > 0);
+      noResultsEl.classList.toggle("hidden", filtered.length > 0 || allRecipes.length === 0);
+      listEl.classList.toggle("hidden", filtered.length === 0);
+
+      if (allRecipes.length === 0) {
+        recipeStatus.textContent = "";
+      } else {
+        const categoryName = categories.find((category) => category.id === activeCategoryId)?.name;
+        const scopeLabel = categoryName ? ' in "' + categoryName + '"' : "";
+        const query = (searchInput.value || "").trim();
+        if (query) {
+          recipeStatus.textContent = filtered.length + " of " + scoped.length + " recipes" + scopeLabel;
+        } else {
+          recipeStatus.textContent = scoped.length + (scoped.length === 1 ? " recipe" : " recipes") + scopeLabel;
+        }
+      }
+
       for (const recipe of filtered) {
         listEl.appendChild(renderRecipeCard(recipe));
       }
     }
 
     function applySearch() {
-      renderRecipes(allRecipes);
+      renderRecipes();
     }
 
     async function loadRecipes() {
+      await refreshCategories();
       const response = await fetch("/api/recipes");
       const payload = await response.json();
       const summaries = payload.recipes || [];
@@ -1262,7 +1739,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         const recipe = await detailResponse.json();
         allRecipes.push(recipe);
       }
-      renderRecipes(allRecipes);
+      renderRecipes();
     }
 
     function extensionUrl() {
@@ -1291,9 +1768,16 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function setActiveNav(view) {
-      const libraryActive = view === "library";
-      navLibrary.classList.toggle("active", libraryActive);
-      navDevice.classList.toggle("active", !libraryActive);
+      navLibrary.classList.toggle("active", view === "library");
+      navDevice.classList.toggle("active", view === "device");
+    }
+
+    function showLibrary() {
+      devicePanel.classList.add("hidden");
+      activeCategoryId = null;
+      setActiveNav("library");
+      renderCategoriesSidebar();
+      renderRecipes();
     }
 
     function closeSidebar() {
@@ -1308,7 +1792,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function closeDevicePanel() {
       devicePanel.classList.add("hidden");
-      setActiveNav("library");
+      if (!activeCategoryId) setActiveNav("library");
     }
 
     function openDevicePanel() {
@@ -1353,7 +1837,17 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
-    document.getElementById("nav-library").addEventListener("click", closeDevicePanel);
+    document.getElementById("nav-library").addEventListener("click", showLibrary);
+    document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
+    document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
+    document.getElementById("category-submit").addEventListener("click", submitCategoryDialog);
+    document.getElementById("category-name-input").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitCategoryDialog();
+      if (event.key === "Escape") closeCategoryDialog();
+    });
+    document.getElementById("category-dialog").addEventListener("click", (event) => {
+      if (event.target.id === "category-dialog") closeCategoryDialog();
+    });
     document.getElementById("close-device-btn").addEventListener("click", closeDevicePanel);
     document.getElementById("sidebar-toggle").addEventListener("click", () => {
       if (document.body.classList.contains("sidebar-open")) closeSidebar();
@@ -1465,7 +1959,7 @@ async function handleRequest(req, res) {
             sendJson(res, 404, { error: "Recipe not found" });
             return;
         }
-        sendJson(res, 200, withImageFlag(recipe));
+        sendJson(res, 200, await enrichRecipe(recipe));
         return;
     }
     if (route.startsWith("/api/recipes/") && req.method === "DELETE") {
@@ -1486,6 +1980,139 @@ async function handleRequest(req, res) {
         const next = { ingest_token: (0, node_crypto_1.randomBytes)(32).toString("hex") };
         await writeJsonAtomic(SETTINGS_PATH, next);
         sendJson(res, 200, next);
+        return;
+    }
+    if (route === "/api/categories" && req.method === "GET") {
+        sendJson(res, 200, { categories: await loadCategories() });
+        return;
+    }
+    if (route === "/api/categories/create" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const name = (body.name ?? "").trim();
+            if (!name) {
+                sendJson(res, 400, { error: "name is required" });
+                return;
+            }
+            const category = await createCategory(name);
+            sendJson(res, 201, { category });
+        }
+        catch (error) {
+            if (error instanceof Error && error.message === "category already exists") {
+                sendJson(res, 409, { error: error.message });
+            }
+            else if (error instanceof Error && error.message === "invalid name") {
+                sendJson(res, 400, { error: error.message });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
+        return;
+    }
+    if (route === "/api/categories/rename" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const id = (body.id ?? "").trim();
+            const name = (body.name ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            if (!name) {
+                sendJson(res, 400, { error: "name is required" });
+                return;
+            }
+            const category = await renameCategory(id, name);
+            sendJson(res, 200, { category });
+        }
+        catch (error) {
+            if (error instanceof NotFoundError) {
+                sendJson(res, 404, { error: "category not found" });
+            }
+            else if (error instanceof Error && error.message === "category already exists") {
+                sendJson(res, 409, { error: error.message });
+            }
+            else if (error instanceof Error && error.message === "invalid name") {
+                sendJson(res, 400, { error: error.message });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
+        return;
+    }
+    if (route === "/api/categories/delete" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const id = (body.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            await deleteCategory(id);
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            if (error instanceof NotFoundError) {
+                sendJson(res, 404, { error: "category not found" });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
+        return;
+    }
+    if (route === "/api/categories/assign" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const recipeId = (body.recipe_id ?? "").trim();
+            const categoryId = (body.categoryId ?? "").trim();
+            if (!recipeId) {
+                sendJson(res, 400, { error: "recipe_id is required" });
+                return;
+            }
+            if (!categoryId) {
+                sendJson(res, 400, { error: "categoryId is required" });
+                return;
+            }
+            const item = await assignCategoryRecipe(recipeId, categoryId);
+            sendJson(res, 200, { item });
+        }
+        catch (error) {
+            if (error instanceof NotFoundError) {
+                sendJson(res, 404, { error: error.message });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
+        return;
+    }
+    if (route === "/api/categories/unassign" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const recipeId = (body.recipe_id ?? "").trim();
+            const categoryId = (body.categoryId ?? "").trim();
+            if (!recipeId) {
+                sendJson(res, 400, { error: "recipe_id is required" });
+                return;
+            }
+            if (!categoryId) {
+                sendJson(res, 400, { error: "categoryId is required" });
+                return;
+            }
+            await unassignCategoryRecipe(recipeId, categoryId);
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            if (error instanceof NotFoundError) {
+                sendJson(res, 404, { error: error.message });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
         return;
     }
     sendJson(res, 404, { error: "Not found" });
