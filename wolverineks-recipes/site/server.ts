@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.11";
+const APP_VERSION = "1.0.12";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1111,6 +1111,69 @@ button.danger-btn {
   margin-bottom: 1rem;
 }
 .status { color: var(--muted); font-size: 0.95rem; }
+.view-toggle {
+  display: flex;
+  gap: 0.2rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.2rem;
+  flex-shrink: 0;
+}
+.view-toggle-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.45rem;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.view-toggle-btn:hover { color: var(--text); background: var(--panel); }
+.view-toggle-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.list-header {
+  display: none;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.35rem 0.85rem;
+  margin-bottom: 0.15rem;
+  border-bottom: 1px solid var(--border);
+}
+.list-header.visible {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(11rem, 1.4fr) 8.5rem 5.5rem minmax(6rem, 0.9fr) 4.5rem;
+}
+.list-header-spacer { min-width: 0; }
+.list-header-cell {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-align: left;
+  min-width: 0;
+}
+.list-header-cell.sortable {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.list-header-cell.sortable:hover,
+.list-header-cell.sortable.active { color: var(--accent); }
+.list-header-cell.cell-saved,
+.grid.list-view .cell-saved { text-align: right; }
+.list-header-cell.cell-actions,
+.grid.list-view .cell-actions { text-align: right; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -1213,6 +1276,72 @@ button.danger-btn {
   gap: 0.5rem;
   flex-wrap: wrap;
 }
+.list-only { display: none; }
+.grid.list-view {
+  --list-cols: 2.75rem minmax(11rem, 1.4fr) 8.5rem 5.5rem minmax(6rem, 0.9fr) 4.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.grid.list-view .card {
+  display: grid;
+  grid-template-columns: var(--list-cols);
+  align-items: center;
+  min-height: auto;
+  padding: 0.6rem 0.85rem;
+  gap: 0.75rem;
+  border-radius: 0.65rem;
+  flex-direction: unset;
+}
+.grid.list-view .card:hover { transform: none; }
+.grid.list-view .grid-only { display: none !important; }
+.grid.list-view .list-only { display: block; }
+.grid.list-view .cell-thumb {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.45rem;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.grid.list-view .cell-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.grid.list-view .card .name {
+  min-width: 0;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.grid.list-view .cell-saved,
+.grid.list-view .cell-total,
+.grid.list-view .cell-categories {
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid.list-view .cell-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.grid.list-view .cell-actions .print-btn {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+}
+.grid.list-view .card .detail {
+  grid-column: 1 / -1;
+}
+.grid.list-view .card-actions.grid-only { display: none; }
 .detail {
   display: none;
   margin-top: 0.35rem;
@@ -1431,7 +1560,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       </section>
       <div class="listing-header">
         <div id="recipe-status" class="status"></div>
+        <div class="view-toggle" role="group" aria-label="Layout view">
+          <button id="view-grid" class="view-toggle-btn active" type="button" title="Grid view" aria-label="Grid view" aria-pressed="true">▦</button>
+          <button id="view-list" class="view-toggle-btn" type="button" title="List view" aria-label="List view" aria-pressed="false">≡</button>
+        </div>
       </div>
+      <div id="list-header" class="list-header" role="row" hidden></div>
       <div id="list" class="grid"></div>
       <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
       <div id="no-results" class="empty hidden">No recipes match your search.</div>
@@ -1466,6 +1600,9 @@ const HTML_PAGE = `<!DOCTYPE html>
     let dragRecipe = null;
     let categoryDialogMode = "create";
     let categoryDialogTargetId = null;
+    let layoutView = "grid";
+    let sortBy = "saved";
+    let sortDir = "desc";
 
     function escapeHtml(value) {
       return String(value)
@@ -1689,21 +1826,161 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     }
 
+    function loadLayoutAndSort() {
+      try {
+        const savedView = localStorage.getItem("recipes-layout-view");
+        if (savedView === "grid" || savedView === "list") layoutView = savedView;
+        const savedSort = localStorage.getItem("recipes-sort");
+        if (savedSort) {
+          const parsed = JSON.parse(savedSort);
+          if (parsed.by) sortBy = parsed.by;
+          if (parsed.dir === "asc" || parsed.dir === "desc") sortDir = parsed.dir;
+        }
+      } catch {}
+    }
+
+    function saveLayoutView() {
+      try { localStorage.setItem("recipes-layout-view", layoutView); } catch {}
+    }
+
+    function saveSort() {
+      try { localStorage.setItem("recipes-sort", JSON.stringify({ by: sortBy, dir: sortDir })); } catch {}
+    }
+
+    function defaultSortDir(column) {
+      if (column === "name") return "asc";
+      return "desc";
+    }
+
+    function sortHeaderIndicator(column) {
+      if (sortBy !== column) return "";
+      return sortDir === "asc" ? " ↑" : " ↓";
+    }
+
+    function sortValue(recipe, column) {
+      if (column === "name") return (recipe.title || "").toLowerCase();
+      if (column === "saved") return new Date(recipe.updated_at || recipe.created_at).getTime() || 0;
+      if (column === "total") return (recipe.total_time || "").toLowerCase();
+      if (column === "categories") return categoryLabelText(recipe).toLowerCase();
+      return "";
+    }
+
+    function sortRecipes(recipes) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      return [...recipes].sort((a, b) => {
+        const av = sortValue(a, sortBy);
+        const bv = sortValue(b, sortBy);
+        if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+        return String(av).localeCompare(String(bv)) * dir;
+      });
+    }
+
+    function listHeaderColumns() {
+      return [
+        { id: "name", label: "Name", sortable: true, className: "cell-name" },
+        { id: "saved", label: "Saved", sortable: true, className: "cell-saved" },
+        { id: "total", label: "Total", sortable: true, className: "cell-total" },
+        { id: "categories", label: "Categories", sortable: true, className: "cell-categories" },
+        { id: "", label: "", sortable: false, className: "cell-actions" },
+      ];
+    }
+
+    function renderListHeader() {
+      const header = document.getElementById("list-header");
+      if (!header) return;
+      if (layoutView !== "list") {
+        header.hidden = true;
+        header.classList.remove("visible");
+        header.innerHTML = "";
+        return;
+      }
+      header.hidden = false;
+      header.classList.add("visible");
+      header.innerHTML =
+        '<div class="list-header-spacer" aria-hidden="true"></div>' +
+        listHeaderColumns()
+          .map((column) => {
+            if (!column.sortable) {
+              return '<div class="list-header-cell ' + column.className + '"></div>';
+            }
+            const active = sortBy === column.id ? " active" : "";
+            const indicator = sortHeaderIndicator(column.id);
+            return '<button type="button" class="list-header-cell sortable ' + column.className + active + '" data-list-sort="' + column.id + '">' + escapeHtml(column.label) + indicator + '</button>';
+          })
+          .join("");
+    }
+
+    function bindListHeader() {
+      const header = document.getElementById("list-header");
+      if (!header || header.dataset.bound === "true") return;
+      header.dataset.bound = "true";
+      header.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-list-sort]");
+        if (!button) return;
+        const next = button.getAttribute("data-list-sort");
+        if (!next) return;
+        if (sortBy === next) {
+          sortDir = sortDir === "asc" ? "desc" : "asc";
+        } else {
+          sortBy = next;
+          sortDir = defaultSortDir(next);
+        }
+        saveSort();
+        renderListHeader();
+        renderRecipes();
+      });
+    }
+
+    function applyLayoutView() {
+      listEl.classList.toggle("list-view", layoutView === "list");
+      const gridButton = document.getElementById("view-grid");
+      const listButton = document.getElementById("view-list");
+      gridButton?.classList.toggle("active", layoutView === "grid");
+      listButton?.classList.toggle("active", layoutView === "list");
+      gridButton?.setAttribute("aria-pressed", layoutView === "grid" ? "true" : "false");
+      listButton?.setAttribute("aria-pressed", layoutView === "list" ? "true" : "false");
+      renderListHeader();
+    }
+
+    function setLayoutView(next) {
+      if (next !== "grid" && next !== "list") return;
+      if (layoutView === next) return;
+      layoutView = next;
+      saveLayoutView();
+      applyLayoutView();
+      renderRecipes();
+    }
+
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
-      const imageMarkup = recipe.has_image
-        ? '<img class="recipe-image" src="/api/recipes/' + encodeURIComponent(recipe.id) + '/image" alt="" loading="lazy" />'
+      const imageUrl = recipe.has_image
+        ? "/api/recipes/" + encodeURIComponent(recipe.id) + "/image"
         : "";
+      const imageMarkup = imageUrl
+        ? '<img class="recipe-image grid-only" src="' + imageUrl + '" alt="" loading="lazy" />'
+        : "";
+      const thumbMarkup = imageUrl
+        ? '<div class="cell-thumb list-only"><img src="' + imageUrl + '" alt="" loading="lazy" /></div>'
+        : '<div class="cell-thumb list-only" aria-hidden="true">🍽</div>';
       const times = formatTimes(recipe);
       const categoryText = categoryLabelText(recipe);
+      const savedText = formatDate(recipe.updated_at || recipe.created_at);
+      const totalText = recipe.total_time || "—";
       card.innerHTML = \`
+        \${thumbMarkup}
         \${imageMarkup}
         <h2 class="name">\${escapeHtml(recipe.title)}</h2>
-        <div class="meta">Saved \${formatDate(recipe.updated_at || recipe.created_at)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
-        \${categoryText ? '<div class="card-categories">' + escapeHtml(categoryText) + '</div>' : ''}
-        \${times ? '<div class="times">' + escapeHtml(times) + '</div>' : ''}
-        <div class="card-actions">
+        <div class="meta grid-only">Saved \${escapeHtml(savedText)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
+        \${categoryText ? '<div class="card-categories grid-only">' + escapeHtml(categoryText) + '</div>' : ''}
+        \${times ? '<div class="times grid-only">' + escapeHtml(times) + '</div>' : ''}
+        <div class="cell-saved list-only">\${escapeHtml(savedText)}</div>
+        <div class="cell-total list-only">\${escapeHtml(totalText)}</div>
+        <div class="cell-categories list-only">\${escapeHtml(categoryText || "—")}</div>
+        <div class="card-actions grid-only">
+          <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
+        </div>
+        <div class="cell-actions list-only">
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
         </div>
         <div class="detail">
@@ -1726,10 +2003,12 @@ const HTML_PAGE = `<!DOCTYPE html>
         if (event.target.closest("a, button")) return;
         card.classList.toggle("open");
       });
-      card.querySelector(".print-btn")?.addEventListener("click", (event) => {
-        event.stopPropagation();
-        const id = event.currentTarget.getAttribute("data-id");
-        window.open("/recipes/" + encodeURIComponent(id) + "/print?auto=1", "_blank", "noopener");
+      card.querySelectorAll(".print-btn").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const id = event.currentTarget.getAttribute("data-id");
+          window.open("/recipes/" + encodeURIComponent(id) + "/print?auto=1", "_blank", "noopener");
+        });
       });
       card.querySelector(".delete-btn")?.addEventListener("click", async (event) => {
         event.stopPropagation();
@@ -1797,9 +2076,10 @@ const HTML_PAGE = `<!DOCTYPE html>
         }
       }
 
-      for (const recipe of filtered) {
+      for (const recipe of sortRecipes(filtered)) {
         listEl.appendChild(renderRecipeCard(recipe));
       }
+      renderListHeader();
     }
 
     function applySearch() {
@@ -1934,6 +2214,11 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById("sidebar-backdrop").addEventListener("click", closeSidebar);
     document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
     applyTheme(resolveTheme());
+    loadLayoutAndSort();
+    bindListHeader();
+    applyLayoutView();
+    document.getElementById("view-grid").addEventListener("click", () => setLayoutView("grid"));
+    document.getElementById("view-list").addEventListener("click", () => setLayoutView("list"));
     document.getElementById("copy-url-btn").addEventListener("click", async () => {
       await navigator.clipboard.writeText(baseUrlEl.textContent || "");
     });
