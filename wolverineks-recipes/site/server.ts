@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.5";
+const APP_VERSION = "1.0.6";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
 const IMAGES_DIR = path.join(DATA_ROOT, "images");
@@ -515,11 +515,28 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
     h1 { margin: 0 0 6px; font-size: 32px; }
     .sub { margin: 0; color: #6b7280; font-family: system-ui, sans-serif; font-size: 14px; }
+    .search-wrap {
+      margin-top: 16px;
+    }
+    #search-input {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: system-ui, sans-serif;
+      font-size: 14px;
+      background: #fff;
+    }
+    #search-input:focus {
+      outline: 2px solid #e67e22;
+      outline-offset: 1px;
+      border-color: #e67e22;
+    }
     .toolbar {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
-      margin-top: 16px;
+      margin-top: 12px;
     }
     button, .btn {
       border: 1px solid #d1d5db;
@@ -652,6 +669,15 @@ const HTML_PAGE = `<!DOCTYPE html>
   <header>
     <h1>Recipes</h1>
     <p class="sub">Saved from the Recipe Printer Chrome extension.</p>
+    <div class="search-wrap">
+      <input
+        id="search-input"
+        type="search"
+        placeholder="Search by name, ingredients, prep time, cook time, or total time…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
     <div class="toolbar">
       <button id="refresh-btn" type="button">Refresh</button>
       <button id="add-device-btn" type="button" class="primary">Add new device</button>
@@ -660,6 +686,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   <main>
     <div id="list" class="grid"></div>
     <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
+    <div id="no-results" class="empty hidden">No recipes match your search.</div>
   </main>
   <section id="device-panel" class="panel hidden">
     <h2>Add new device</h2>
@@ -701,9 +728,12 @@ const HTML_PAGE = `<!DOCTYPE html>
   <script>
     const listEl = document.getElementById("list");
     const emptyEl = document.getElementById("empty");
+    const noResultsEl = document.getElementById("no-results");
+    const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
     const tokenValue = document.getElementById("token-value");
     const baseUrlEl = document.getElementById("base-url");
+    let allRecipes = [];
 
     function escapeHtml(value) {
       return String(value)
@@ -769,17 +799,51 @@ const HTML_PAGE = `<!DOCTYPE html>
       return card;
     }
 
+    function recipeSearchText(recipe) {
+      return [
+        recipe.title,
+        ...(recipe.ingredients || []),
+        recipe.prep_time,
+        recipe.cook_time,
+        recipe.total_time,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+    }
+
+    function matchesSearch(recipe, query) {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return true;
+      return recipeSearchText(recipe).includes(needle);
+    }
+
+    function renderRecipes(recipes) {
+      const query = searchInput.value || "";
+      const filtered = recipes.filter((recipe) => matchesSearch(recipe, query));
+      listEl.replaceChildren();
+      emptyEl.classList.toggle("hidden", recipes.length > 0);
+      noResultsEl.classList.toggle("hidden", filtered.length > 0 || recipes.length === 0);
+      for (const recipe of filtered) {
+        listEl.appendChild(renderRecipeCard(recipe));
+      }
+    }
+
+    function applySearch() {
+      renderRecipes(allRecipes);
+    }
+
     async function loadRecipes() {
       const response = await fetch("/api/recipes");
       const payload = await response.json();
-      listEl.replaceChildren();
-      const recipes = payload.recipes || [];
-      emptyEl.classList.toggle("hidden", recipes.length > 0);
-      for (const summary of recipes) {
+      const summaries = payload.recipes || [];
+      allRecipes = [];
+      for (const summary of summaries) {
         const detailResponse = await fetch("/api/recipes/" + encodeURIComponent(summary.id));
         const recipe = await detailResponse.json();
-        listEl.appendChild(renderRecipeCard(recipe));
+        allRecipes.push(recipe);
       }
+      renderRecipes(allRecipes);
     }
 
     function extensionUrl() {
@@ -813,6 +877,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       devicePanel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
+    searchInput.addEventListener("input", applySearch);
     document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
     document.getElementById("add-device-btn").addEventListener("click", openDevicePanel);
     document.getElementById("close-device-btn").addEventListener("click", () => {
