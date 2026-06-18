@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.22";
+const APP_VERSION = "1.0.23";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
@@ -1820,7 +1820,6 @@ const HTML_PAGE = `<!DOCTYPE html>
         <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
         <span>Trash</span>
       </button>
-      <p class="sidebar-note">Saved from the Recipe Printer Chrome extension.</p>
     </div>
   </aside>
   <main>

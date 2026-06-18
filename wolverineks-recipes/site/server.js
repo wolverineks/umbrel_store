@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.22";
+const APP_VERSION = "1.0.23";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1709,7 +1709,6 @@ const HTML_PAGE = `<!DOCTYPE html>
         <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
         <span>Trash</span>
       </button>
-      <p class="sidebar-note">Saved from the Recipe Printer Chrome extension.</p>
     </div>
   </aside>
   <main>
