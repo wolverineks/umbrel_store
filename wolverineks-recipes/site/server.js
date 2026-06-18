@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.26";
+const APP_VERSION = "1.0.27";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -1026,6 +1026,7 @@ aside {
 }
 .category-item:hover,
 .category-item.active,
+.category-item.context-selected,
 .category-item.drop-target {
   background: var(--accent-soft);
   color: var(--accent);
@@ -1873,7 +1874,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     const DRAG_MIME = "application/x-recipes-entry";
     let allRecipes = [];
     let categories = [];
-    let activeCategoryId = null;
+    let activeCategoryIds = new Set();
     let dragRecipe = null;
     let categoryDialogMode = "create";
     let categoryDialogTargetId = null;
@@ -1881,7 +1882,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     let sortBy = "name";
     let sortDir = "desc";
     let longPressTimer = null;
-    const menuState = { recipe: null, card: null, longPress: false };
+    const menuState = { recipe: null, card: null, category: null, categoryButton: null, longPress: false };
 
     function escapeHtml(value) {
       return String(value)
@@ -1922,6 +1923,56 @@ const HTML_PAGE = `<!DOCTYPE html>
         .filter((category) => ids.has(category.id))
         .map((category) => category.name)
         .join(", ");
+    }
+
+    function loadCategorySelection() {
+      try {
+        const saved = localStorage.getItem("recipes-category-filter");
+        if (!saved) return;
+        const ids = JSON.parse(saved);
+        if (Array.isArray(ids)) activeCategoryIds = new Set(ids.filter(Boolean));
+      } catch {}
+    }
+
+    function saveCategorySelection() {
+      try {
+        localStorage.setItem("recipes-category-filter", JSON.stringify([...activeCategoryIds]));
+      } catch {}
+    }
+
+    function toggleCategorySelection(categoryId) {
+      if (activeCategoryIds.has(categoryId)) {
+        activeCategoryIds.delete(categoryId);
+      } else {
+        activeCategoryIds.add(categoryId);
+      }
+      saveCategorySelection();
+    }
+
+    function clearCategorySelection() {
+      activeCategoryIds.clear();
+      saveCategorySelection();
+    }
+
+    function recipesMatchingCategories(recipes) {
+      if (!activeCategoryIds.size) return recipes;
+      return recipes.filter((recipe) => {
+        const ids = recipe.category_ids || [];
+        for (const categoryId of activeCategoryIds) {
+          if (ids.includes(categoryId)) return true;
+        }
+        return false;
+      });
+    }
+
+    function categoryScopeLabel() {
+      if (!activeCategoryIds.size) return "";
+      const names = categories
+        .filter((category) => activeCategoryIds.has(category.id))
+        .map((category) => category.name);
+      if (names.length === 1) return ' in "' + names[0] + '"';
+      if (names.length === 2) return ' in "' + names[0] + '", "' + names[1] + '"';
+      return " in " + names.length + " categories";
     }
 
     function isInternalDrag(event) {
@@ -2048,13 +2099,22 @@ const HTML_PAGE = `<!DOCTYPE html>
       });
     }
 
+    function clearCategoryContextSelection() {
+      document.querySelectorAll(".category-item.context-selected").forEach((node) => {
+        node.classList.remove("context-selected");
+      });
+    }
+
     function closeContextMenu() {
       const menu = document.getElementById("context-menu");
       menu.classList.remove("open");
       menu.setAttribute("aria-hidden", "true");
       menuState.recipe = null;
       menuState.card = null;
+      menuState.category = null;
+      menuState.categoryButton = null;
       clearContextSelection();
+      clearCategoryContextSelection();
     }
 
     function categoryAssignmentActions(recipe) {
@@ -2100,9 +2160,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (recipe.source_url) {
         actions.push({ id: "open-source", label: "Open source" });
       }
-      if (activeCategoryId) {
-        const categoryName = categories.find((category) => category.id === activeCategoryId)?.name || "category";
-        actions.push({ id: "unassign-current", label: "Remove from " + categoryName });
+      for (const categoryId of activeCategoryIds) {
+        const categoryName = categories.find((category) => category.id === categoryId)?.name || "category";
+        actions.push({ id: "unassign-current:" + categoryId, label: "Remove from " + categoryName });
       }
       actions.push({ id: "trash", label: "Move to trash", danger: true });
       return withCategorySubmenu(actions, recipe);
@@ -2149,19 +2209,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       });
     }
 
-    function openRecipeContextMenu(recipe, x, y, card) {
+    function openContextMenu(actions, label, x, y, options = {}) {
       const menu = document.getElementById("context-menu");
-      menuState.recipe = recipe;
-      menuState.card = card;
-      clearContextSelection();
-      if (card) card.classList.add("selected");
-
-      const actions = recipeContextMenuActions(recipe).filter((action) => !action.hidden);
-      if (!actions.length) return;
+      const visibleActions = actions.filter((action) => !action.hidden);
+      if (!visibleActions.length) return;
 
       menu.innerHTML =
-        '<div class="menu-label">' + escapeHtml(recipe.title) + "</div>" +
-        actions.map((action) => renderMenuAction(action)).join("");
+        '<div class="menu-label">' + escapeHtml(label) + "</div>" +
+        visibleActions.map((action) => renderMenuAction(action)).join("");
       menu.classList.add("open");
       menu.setAttribute("aria-hidden", "false");
       const rect = menu.getBoundingClientRect();
@@ -2181,6 +2236,66 @@ const HTML_PAGE = `<!DOCTYPE html>
           if (!open) submenu.classList.add("open");
         });
       });
+
+      if (options.onOpen) options.onOpen();
+    }
+
+    function categoryContextMenuActions(category) {
+      return [
+        { id: "rename-category", label: "Rename" },
+        { id: "delete-category", label: "Delete category", danger: true },
+      ];
+    }
+
+    function openCategoryContextMenu(category, x, y, button) {
+      closeContextMenu();
+      menuState.category = category;
+      menuState.categoryButton = button;
+      if (button) button.classList.add("context-selected");
+      openContextMenu(categoryContextMenuActions(category), category.name, x, y);
+    }
+
+    function openRecipeContextMenu(recipe, x, y, card) {
+      closeContextMenu();
+      menuState.recipe = recipe;
+      menuState.card = card;
+      clearContextSelection();
+      if (card) card.classList.add("selected");
+
+      const actions = recipeContextMenuActions(recipe);
+      openContextMenu(actions, recipe.title, x, y, {
+        onOpen() {
+          if (card) card.classList.add("selected");
+        },
+      });
+    }
+
+    async function deleteCategoryById(category) {
+      if (!category?.id) return;
+      const name = category.name || "category";
+      if (!confirm('Delete category "' + name + '"? Recipes stay in your library.')) return;
+      const response = await fetch("/api/categories/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: category.id }),
+      });
+      if (!response.ok) {
+        alert("Failed to delete category.");
+        return;
+      }
+      activeCategoryIds.delete(category.id);
+      saveCategorySelection();
+      await loadRecipes();
+    }
+
+    async function runCategoryMenuAction(action, category) {
+      if (action === "rename-category") {
+        openCategoryDialog("rename", category);
+        return;
+      }
+      if (action === "delete-category") {
+        await deleteCategoryById(category);
+      }
     }
 
     async function runRecipeMenuAction(action, recipe, card) {
@@ -2200,8 +2315,8 @@ const HTML_PAGE = `<!DOCTYPE html>
         await unassignCategory(recipe.id, action.slice("unassign-category:".length));
         return;
       }
-      if (action === "unassign-current") {
-        if (activeCategoryId) await unassignCategory(recipe.id, activeCategoryId);
+      if (action.startsWith("unassign-current:")) {
+        await unassignCategory(recipe.id, action.slice("unassign-current:".length));
         return;
       }
       if (action === "trash") {
@@ -2310,7 +2425,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         return;
       }
       root.innerHTML = categories.map((category) => {
-        const active = activeCategoryId === category.id;
+        const active = activeCategoryIds.has(category.id);
         return \`
           <button
             type="button"
@@ -2325,7 +2440,11 @@ const HTML_PAGE = `<!DOCTYPE html>
 
       root.querySelectorAll(".category-item").forEach((button) => {
         button.addEventListener("click", () => {
-          activeCategoryId = button.dataset.id;
+          if (menuState.longPress) {
+            menuState.longPress = false;
+            return;
+          }
+          toggleCategorySelection(button.dataset.id);
           activeView = "library";
           devicePanel.classList.add("hidden");
           setActiveNav("library");
@@ -2340,22 +2459,32 @@ const HTML_PAGE = `<!DOCTYPE html>
             name: button.dataset.name,
           });
         });
-        button.addEventListener("contextmenu", async (event) => {
+        button.addEventListener("contextmenu", (event) => {
           event.preventDefault();
-          const name = button.dataset.name || "category";
-          if (!confirm('Delete category "' + name + '"? Recipes stay in your library.')) return;
-          const response = await fetch("/api/categories/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: button.dataset.id }),
-          });
-          if (!response.ok) {
-            alert("Failed to delete category.");
-            return;
-          }
-          if (activeCategoryId === button.dataset.id) activeCategoryId = null;
-          await loadRecipes();
+          openCategoryContextMenu(
+            { id: button.dataset.id, name: button.dataset.name },
+            event.clientX,
+            event.clientY,
+            button
+          );
         });
+        button.addEventListener("touchstart", (event) => {
+          if (event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          clearTimeout(longPressTimer);
+          longPressTimer = window.setTimeout(() => {
+            menuState.longPress = true;
+            openCategoryContextMenu(
+              { id: button.dataset.id, name: button.dataset.name },
+              touch.clientX,
+              touch.clientY,
+              button
+            );
+          }, 500);
+        }, { passive: true });
+        button.addEventListener("touchend", () => clearTimeout(longPressTimer));
+        button.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+        button.addEventListener("touchcancel", () => clearTimeout(longPressTimer));
         bindCategoryDropTarget(button);
       });
     }
@@ -2364,6 +2493,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       const response = await fetch("/api/categories");
       const data = await response.json();
       categories = data.categories || [];
+      const validIds = new Set(categories.map((category) => category.id));
+      for (const id of [...activeCategoryIds]) {
+        if (!validIds.has(id)) activeCategoryIds.delete(id);
+      }
+      saveCategorySelection();
       renderCategoriesSidebar();
     }
 
@@ -2725,16 +2859,16 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function recipesForView() {
       let recipes = allRecipes;
-      if (activeView === "library" && activeCategoryId) {
-        recipes = recipes.filter((recipe) => (recipe.category_ids || []).includes(activeCategoryId));
+      if (activeView === "library" && activeCategoryIds.size) {
+        recipes = recipesMatchingCategories(recipes);
       }
       const query = searchInput.value || "";
       return recipes.filter((recipe) => matchesSearch(recipe, query));
     }
 
     function renderRecipes() {
-      const scoped = activeView === "library" && activeCategoryId
-        ? allRecipes.filter((recipe) => (recipe.category_ids || []).includes(activeCategoryId))
+      const scoped = activeView === "library" && activeCategoryIds.size
+        ? recipesMatchingCategories(allRecipes)
         : allRecipes;
       const filtered = recipesForView();
       listEl.replaceChildren();
@@ -2754,8 +2888,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           recipeStatus.textContent = allRecipes.length + (allRecipes.length === 1 ? " recipe" : " recipes") + " in trash";
         }
       } else {
-        const categoryName = categories.find((category) => category.id === activeCategoryId)?.name;
-        const scopeLabel = categoryName ? ' in "' + categoryName + '"' : "";
+        const scopeLabel = categoryScopeLabel();
         const query = (searchInput.value || "").trim();
         if (query) {
           recipeStatus.textContent = filtered.length + " of " + scoped.length + " recipes" + scopeLabel;
@@ -2826,7 +2959,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function showLibrary() {
       devicePanel.classList.add("hidden");
-      activeCategoryId = null;
+      clearCategorySelection();
       activeView = "library";
       setActiveNav("library");
       closeContextMenu();
@@ -2837,7 +2970,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function showTrash() {
       devicePanel.classList.add("hidden");
-      activeCategoryId = null;
+      clearCategorySelection();
       activeView = "trash";
       setActiveNav("trash");
       closeContextMenu();
@@ -2857,7 +2990,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function closeDevicePanel() {
       devicePanel.classList.add("hidden");
-      if (!activeCategoryId && activeView !== "trash") setActiveNav("library");
+      if (!activeCategoryIds.size && activeView !== "trash") setActiveNav("library");
     }
 
     function openDevicePanel() {
@@ -2899,8 +3032,19 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById("context-menu").addEventListener("click", async (event) => {
       if (event.target.closest(".menu-submenu-trigger")) return;
       const button = event.target.closest("button[data-action]");
-      if (!button || !menuState.recipe) return;
+      if (!button) return;
       const action = button.dataset.action;
+      if (menuState.category) {
+        const category = menuState.category;
+        closeContextMenu();
+        try {
+          await runCategoryMenuAction(action, category);
+        } catch (error) {
+          alert(error.message || "Could not complete action.");
+        }
+        return;
+      }
+      if (!menuState.recipe) return;
       const recipe = menuState.recipe;
       const card = menuState.card;
       closeContextMenu();
@@ -2948,6 +3092,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
     applyTheme(resolveTheme());
     loadLayoutAndSort();
+    loadCategorySelection();
     bindListHeader();
     bindTrashDropTarget(document.getElementById("nav-trash"));
     applyLayoutView();
