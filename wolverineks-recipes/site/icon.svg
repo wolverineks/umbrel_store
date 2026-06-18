@@ -1,6 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <rect width="128" height="128" rx="24" fill="#E67E22"/>
-  <path d="M40 88V44h48v44H40z" fill="#FFF8F0" opacity="0.25"/>
-  <path d="M48 52h32M48 64h24M48 76h28" stroke="#FFF8F0" stroke-width="6" stroke-linecap="round"/>
-  <circle cx="88" cy="40" r="10" fill="#FFF8F0"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="recipes-bg" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="url(#recipes-bg)"/>
+  <rect x="72" y="88" width="112" height="96" rx="12" fill="white" fill-opacity="0.18"/>
+  <path d="M92 112h72M92 136h56M92 160h64" stroke="white" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="176" cy="96" r="18" fill="white"/>
 </svg>

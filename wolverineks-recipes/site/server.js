@@ -8,7 +8,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.7";
+const APP_VERSION = "1.0.8";
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -481,7 +481,7 @@ function renderPrintPage(recipe, autoPrint) {
     .recipe-header {
       text-align: center;
       margin-bottom: 24px;
-      border-bottom: 2px solid #e67e22;
+      border-bottom: 2px solid #2563eb;
       padding-bottom: 16px;
     }
     .recipe-header h1 {
@@ -515,7 +515,7 @@ function renderPrintPage(recipe, autoPrint) {
       font-size: 18px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
-      color: #e67e22;
+      color: #2563eb;
     }
     .column ul, .column ol {
       margin: 0;
@@ -533,7 +533,7 @@ function renderPrintPage(recipe, autoPrint) {
     .notes h2 {
       margin: 0 0 8px;
       font-size: 16px;
-      color: #e67e22;
+      color: #2563eb;
     }
     .notes p {
       margin: 0;
@@ -589,205 +589,465 @@ function renderPrintPage(recipe, autoPrint) {
 </body>
 </html>`;
 }
+const RECIPES_PAGE_STYLES = `
+:root {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --sidebar: #f1f5f9;
+  --shadow-color: 15, 23, 42;
+  --overlay: rgba(15, 23, 42, 0.45);
+  --danger: #b91c1c;
+  --danger-text: #991b1b;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --border: #334155;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-soft: #1e3a5f;
+  --sidebar: #111827;
+  --shadow-color: 0, 0, 0;
+  --overlay: rgba(0, 0, 0, 0.62);
+  --danger: #f87171;
+  --danger-text: #fecaca;
+  --danger-bg: #450a0a;
+  --danger-border: #7f1d1d;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+body {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+aside {
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  padding: 1.25rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 0;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+  padding: 0.25rem 0.5rem;
+}
+.brand-badge {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.65rem;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: white;
+  font-size: 0.95rem;
+}
+.nav { display: grid; gap: 0.35rem; }
+.nav button {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 0.7rem 0.75rem;
+  border-radius: 0.65rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.nav button.active,
+.nav button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.sidebar-note {
+  margin: 0;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100vh;
+}
+.sidebar-backdrop { display: none; }
+.sidebar-toggle {
+  display: none;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  place-items: center;
+}
+.sidebar-toggle:hover,
+.theme-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.35rem 0.35rem 0.35rem 1rem;
+  color: var(--muted);
+}
+.search-icon { flex-shrink: 0; line-height: 1; }
+.search input {
+  border: 0;
+  background: transparent;
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  padding: 0.3rem 0;
+}
+.search input:focus { outline: none; }
+.theme-toggle {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.topbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+button.primary {
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  padding: 0.65rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.secondary {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0.65rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+button.danger-btn {
+  border: 1px solid var(--danger-border);
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 0.65rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+.content {
+  padding: 1.25rem;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.listing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.status { color: var(--muted); font-size: 0.95rem; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.85rem;
+}
+.card {
+  position: relative;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.card:hover {
+  box-shadow: 0 10px 24px rgba(var(--shadow-color), 0.08);
+  transform: translateY(-1px);
+}
+.card.open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.recipe-image {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 0.65rem;
+  display: block;
+  margin: -0.15rem 0 0.15rem;
+}
+.card .name {
+  margin: 0;
+  font-weight: 600;
+  font-size: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card .meta,
+.card .times {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.card-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.detail {
+  display: none;
+  margin-top: 0.35rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.card.open .detail { display: block; }
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+.detail h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.detail ul, .detail ol { margin: 0; padding-left: 1.2rem; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 10px 24px rgba(var(--shadow-color), 0.06);
+}
+.panel h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+.panel p { margin: 0; color: var(--muted); line-height: 1.5; }
+.token {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.65rem;
+}
+code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.65rem;
+  word-break: break-all;
+  font-size: 0.8rem;
+}
+.empty {
+  padding: 2rem;
+  border: 1px dashed var(--border);
+  border-radius: 1rem;
+  background: var(--panel);
+  color: var(--muted);
+  text-align: center;
+}
+.setup-steps {
+  margin: 1rem 0 0;
+  padding-left: 1.25rem;
+  line-height: 1.6;
+  font-size: 0.92rem;
+}
+.setup-steps li + li { margin-top: 0.65rem; }
+.setup-field { margin-top: 1rem; }
+.setup-field label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+.setup-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+a { color: var(--accent); }
+.hidden { display: none; }
+.app-version {
+  position: fixed;
+  right: 0.85rem;
+  bottom: 0.45rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+}
+@media (max-width: 800px) {
+  body { grid-template-columns: 1fr; }
+  body.sidebar-open { overflow: hidden; }
+  .sidebar-toggle { display: grid; }
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 1050;
+  }
+  body.sidebar-open .sidebar-backdrop { display: block; }
+  aside {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: min(280px, 85vw);
+    z-index: 1060;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+  body.sidebar-open aside { transform: translateX(0); }
+}
+@media (max-width: 720px) {
+  .columns { grid-template-columns: 1fr; }
+}
+`;
 const HTML_PAGE = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2563eb" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <title>Recipes</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
-      color: #111827;
-      background: #faf7f2;
-    }
-    header, main, .panel {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-    header {
-      border-bottom: 2px solid #e67e22;
-      background: #fff;
-    }
-    h1 { margin: 0 0 6px; font-size: 32px; }
-    .sub { margin: 0; color: #6b7280; font-family: system-ui, sans-serif; font-size: 14px; }
-    .search-wrap {
-      margin-top: 16px;
-    }
-    #search-input {
-      width: 100%;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      padding: 10px 12px;
-      font-family: system-ui, sans-serif;
-      font-size: 14px;
-      background: #fff;
-    }
-    #search-input:focus {
-      outline: 2px solid #e67e22;
-      outline-offset: 1px;
-      border-color: #e67e22;
-    }
-    .toolbar {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-    button, .btn {
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      background: #fff;
-      padding: 8px 12px;
-      cursor: pointer;
-      font-family: system-ui, sans-serif;
-      font-size: 13px;
-    }
-    .primary {
-      background: #e67e22;
-      border-color: #e67e22;
-      color: #fff;
-    }
-    .grid {
-      display: grid;
-      gap: 14px;
-      margin-top: 20px;
-    }
-    .card {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
-      padding: 16px;
-      cursor: pointer;
-    }
-    .recipe-image {
-      width: 100%;
-      max-height: 220px;
-      object-fit: cover;
-      border-radius: 8px;
-      margin-bottom: 12px;
-      display: block;
-    }
-    .card h2 {
-      margin: 0 0 6px;
-      font-size: 22px;
-    }
-    .meta {
-      font-family: system-ui, sans-serif;
-      font-size: 12px;
-      color: #6b7280;
-    }
-    .detail {
-      display: none;
-      margin-top: 14px;
-      padding-top: 14px;
-      border-top: 1px solid #e5e7eb;
-    }
-    .card.open .detail { display: block; }
-    .columns {
-      display: grid;
-      grid-template-columns: 1fr 1.2fr;
-      gap: 20px;
-      margin-top: 12px;
-    }
-    h3 {
-      margin: 0 0 8px;
-      font-size: 16px;
-      color: #e67e22;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    ul, ol { margin: 0; padding-left: 20px; line-height: 1.55; font-size: 14px; }
-    .panel {
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
-      margin-top: 20px;
-      font-family: system-ui, sans-serif;
-    }
-    .token {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-top: 10px;
-    }
-    code {
-      background: #f3f4f6;
-      padding: 8px 10px;
-      border-radius: 8px;
-      word-break: break-all;
-      font-size: 12px;
-    }
-    .empty {
-      color: #6b7280;
-      font-family: system-ui, sans-serif;
-      padding: 24px 0;
-    }
-    .danger { color: #b91c1c; border-color: #fecaca; }
-    .card-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-    .hidden { display: none; }
-    .setup-steps {
-      margin: 16px 0 0;
-      padding-left: 20px;
-      line-height: 1.6;
-      font-size: 14px;
-    }
-    .setup-steps li + li { margin-top: 10px; }
-    .setup-field {
-      margin-top: 14px;
-    }
-    .setup-field label {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      color: #374151;
-      margin-bottom: 6px;
-    }
-    .setup-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 16px;
-    }
-    a { color: #e67e22; }
-    @media (max-width: 720px) {
-      .columns { grid-template-columns: 1fr; }
-    }
-  </style>
+  <style>${RECIPES_PAGE_STYLES}</style>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("recipes-theme");
+        var theme = saved === "light" || saved === "dark"
+          ? saved
+          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
-  <header>
-    <h1>Recipes</h1>
-    <p class="sub">Saved from the Recipe Printer Chrome extension.</p>
-    <div class="search-wrap">
-      <input
-        id="search-input"
-        type="search"
-        placeholder="Search by name, ingredients, prep time, cook time, or total time…"
-        autocomplete="off"
-        spellcheck="false"
-      />
+  <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+  <aside id="app-sidebar">
+    <div class="brand">
+      <div class="brand-badge">R</div>
+      <span>Recipes</span>
     </div>
-    <div class="toolbar">
-      <button id="refresh-btn" type="button">Refresh</button>
-      <button id="add-device-btn" type="button" class="primary">Add new device</button>
+    <nav class="nav">
+      <button id="nav-library" class="active" type="button">Library</button>
+      <button id="nav-device" type="button">Add device</button>
+    </nav>
+    <div class="sidebar-footer">
+      <p class="sidebar-note">Saved from the Recipe Printer Chrome extension.</p>
     </div>
-  </header>
+  </aside>
   <main>
-    <div id="list" class="grid"></div>
-    <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
-    <div id="no-results" class="empty hidden">No recipes match your search.</div>
-  </main>
-  <section id="device-panel" class="panel hidden">
+    <div class="search-bar">
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Open menu">☰</button>
+      <label class="search">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input
+          id="search-input"
+          type="search"
+          placeholder="Search by name, ingredients, prep time, cook time, or total time…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Dark mode">☾</button>
+    </div>
+    <div class="topbar">
+      <div class="toolbar">
+        <button id="refresh-btn" class="secondary" type="button">Refresh</button>
+        <button id="add-device-btn" class="primary" type="button">Add new device</button>
+      </div>
+    </div>
+    <div class="content">
+      <section id="device-panel" class="panel hidden">
     <h2>Add new device</h2>
     <p>Set up the Recipe Printer Chrome extension on a new computer or browser profile.</p>
     <ol class="setup-steps">
@@ -808,28 +1068,40 @@ const HTML_PAGE = `<!DOCTYPE html>
       <label>Umbrel Recipes URL (include port :4020)</label>
       <div class="token">
         <code id="base-url">Loading…</code>
-        <button id="copy-url-btn" type="button">Copy URL</button>
+        <button id="copy-url-btn" class="secondary" type="button">Copy URL</button>
       </div>
     </div>
     <div class="setup-field">
       <label>Ingest token (same for all devices)</label>
       <div class="token">
         <code id="token-value">Loading…</code>
-        <button id="copy-token-btn" type="button">Copy token</button>
+        <button id="copy-token-btn" class="secondary" type="button">Copy token</button>
       </div>
     </div>
     <div class="setup-actions">
-      <button id="copy-setup-btn" type="button">Copy all for extension</button>
-      <button id="regenerate-token-btn" type="button" class="danger">Regenerate token</button>
-      <button id="close-device-btn" type="button">Close</button>
+      <button id="copy-setup-btn" class="secondary" type="button">Copy all for extension</button>
+      <button id="regenerate-token-btn" class="danger-btn" type="button">Regenerate token</button>
+      <button id="close-device-btn" class="secondary" type="button">Close</button>
     </div>
-  </section>
+      </section>
+      <div class="listing-header">
+        <div id="recipe-status" class="status"></div>
+      </div>
+      <div id="list" class="grid"></div>
+      <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
+      <div id="no-results" class="empty hidden">No recipes match your search.</div>
+    </div>
+  </main>
+  <div class="app-version" aria-hidden="true">v${APP_VERSION}</div>
   <script>
     const listEl = document.getElementById("list");
     const emptyEl = document.getElementById("empty");
     const noResultsEl = document.getElementById("no-results");
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
+    const recipeStatus = document.getElementById("recipe-status");
+    const navLibrary = document.getElementById("nav-library");
+    const navDevice = document.getElementById("nav-device");
     const tokenValue = document.getElementById("token-value");
     const baseUrlEl = document.getElementById("base-url");
     let allRecipes = [];
@@ -846,18 +1118,28 @@ const HTML_PAGE = `<!DOCTYPE html>
       try { return new Date(value).toLocaleString(); } catch { return value; }
     }
 
+    function formatTimes(recipe) {
+      return [
+        recipe.prep_time ? "Prep " + recipe.prep_time : "",
+        recipe.cook_time ? "Cook " + recipe.cook_time : "",
+        recipe.total_time ? "Total " + recipe.total_time : "",
+      ].filter(Boolean).join(" · ");
+    }
+
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
       const imageMarkup = recipe.has_image
         ? '<img class="recipe-image" src="/api/recipes/' + encodeURIComponent(recipe.id) + '/image" alt="" loading="lazy" />'
         : "";
+      const times = formatTimes(recipe);
       card.innerHTML = \`
         \${imageMarkup}
-        <h2>\${escapeHtml(recipe.title)}</h2>
+        <h2 class="name">\${escapeHtml(recipe.title)}</h2>
         <div class="meta">Saved \${formatDate(recipe.updated_at || recipe.created_at)} · <a href="\${escapeHtml(recipe.source_url)}" target="_blank" rel="noreferrer">Source</a></div>
+        \${times ? '<div class="times">' + escapeHtml(times) + '</div>' : ''}
         <div class="card-actions">
-          <button class="print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
+          <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
         </div>
         <div class="detail">
           \${recipe.description ? '<p>' + escapeHtml(recipe.description) + '</p>' : ''}
@@ -872,7 +1154,7 @@ const HTML_PAGE = `<!DOCTYPE html>
             </div>
           </div>
           \${recipe.notes ? '<p><strong>Notes:</strong> ' + escapeHtml(recipe.notes) + '</p>' : ''}
-          <button class="danger delete-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Delete</button>
+          <button class="danger-btn delete-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Delete</button>
         </div>
       \`;
       card.addEventListener("click", (event) => {
@@ -923,6 +1205,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       listEl.replaceChildren();
       emptyEl.classList.toggle("hidden", recipes.length > 0);
       noResultsEl.classList.toggle("hidden", filtered.length > 0 || recipes.length === 0);
+      listEl.classList.toggle("hidden", filtered.length === 0);
+      if (recipes.length === 0) {
+        recipeStatus.textContent = "";
+      } else if (query.trim()) {
+        recipeStatus.textContent = filtered.length + " of " + recipes.length + " recipes";
+      } else {
+        recipeStatus.textContent = recipes.length + (recipes.length === 1 ? " recipe" : " recipes");
+      }
       for (const recipe of filtered) {
         listEl.appendChild(renderRecipeCard(recipe));
       }
@@ -970,18 +1260,76 @@ const HTML_PAGE = `<!DOCTYPE html>
       ].join("\\n");
     }
 
+    function setActiveNav(view) {
+      const libraryActive = view === "library";
+      navLibrary.classList.toggle("active", libraryActive);
+      navDevice.classList.toggle("active", !libraryActive);
+    }
+
+    function closeSidebar() {
+      document.body.classList.remove("sidebar-open");
+      document.getElementById("sidebar-toggle")?.setAttribute("aria-expanded", "false");
+    }
+
+    function openSidebar() {
+      document.body.classList.add("sidebar-open");
+      document.getElementById("sidebar-toggle")?.setAttribute("aria-expanded", "true");
+    }
+
+    function closeDevicePanel() {
+      devicePanel.classList.add("hidden");
+      setActiveNav("library");
+    }
+
     function openDevicePanel() {
       devicePanel.classList.remove("hidden");
+      setActiveNav("device");
       loadDeviceSetup();
+      closeSidebar();
       devicePanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function resolveTheme() {
+      try {
+        const saved = localStorage.getItem("recipes-theme");
+        if (saved === "light" || saved === "dark") return saved;
+      } catch {}
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+
+    function applyTheme(theme) {
+      const next = theme === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      const button = document.getElementById("theme-toggle");
+      if (button) {
+        button.textContent = next === "dark" ? "☀" : "☾";
+        button.setAttribute("aria-label", next === "dark" ? "Switch to light mode" : "Switch to dark mode");
+        button.title = next === "dark" ? "Light mode" : "Dark mode";
+      }
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", next === "dark" ? "#0f172a" : "#2563eb");
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.dataset.theme || resolveTheme();
+      const next = current === "dark" ? "light" : "dark";
+      try { localStorage.setItem("recipes-theme", next); } catch {}
+      applyTheme(next);
     }
 
     searchInput.addEventListener("input", applySearch);
     document.getElementById("refresh-btn").addEventListener("click", loadRecipes);
     document.getElementById("add-device-btn").addEventListener("click", openDevicePanel);
-    document.getElementById("close-device-btn").addEventListener("click", () => {
-      devicePanel.classList.add("hidden");
+    document.getElementById("nav-device").addEventListener("click", openDevicePanel);
+    document.getElementById("nav-library").addEventListener("click", closeDevicePanel);
+    document.getElementById("close-device-btn").addEventListener("click", closeDevicePanel);
+    document.getElementById("sidebar-toggle").addEventListener("click", () => {
+      if (document.body.classList.contains("sidebar-open")) closeSidebar();
+      else openSidebar();
     });
+    document.getElementById("sidebar-backdrop").addEventListener("click", closeSidebar);
+    document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
+    applyTheme(resolveTheme());
     document.getElementById("copy-url-btn").addEventListener("click", async () => {
       await navigator.clipboard.writeText(baseUrlEl.textContent || "");
     });
