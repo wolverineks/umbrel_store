@@ -9,11 +9,12 @@ const node_child_process_1 = require("node:child_process");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.2";
+const APP_VERSION = "1.0.3";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = node_path_1.default.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
+const PRINT_JOB_TEST_PATH = node_path_1.default.join(__dirname, "print-job.test");
 const ESCL_NS = "http://schemas.hp.com/imaging/escl/2011/05/03";
 const PWG_NS = "http://www.pwg.org/schemas/2010/12/sm";
 const DEFAULT_SETTINGS = {
@@ -538,30 +539,51 @@ function runCommand(command, args) {
         });
     });
 }
-async function ensurePrinterQueue(host) {
-    const queueName = `brother_${host.replace(/[^a-zA-Z0-9]/g, "_")}`;
-    const uri = ippUri(host);
-    await runCommand("lpadmin", ["-p", queueName, "-E", "-v", uri, "-m", "everywhere", "-o", "printer-is-shared=false"]);
-    return queueName;
+function ippDocumentFormat(filePath) {
+    const ext = node_path_1.default.extname(filePath).toLowerCase();
+    if (ext === ".jpg" || ext === ".jpeg")
+        return "image/jpeg";
+    // Brother's IPP endpoint accepts octet-stream for PDF/PNG and handles conversion internally.
+    return "application/octet-stream";
+}
+function formatPrintError(result) {
+    const output = `${result.stderr}\n${result.stdout}`.trim();
+    if (output.includes("document-format-not-supported")) {
+        return "The printer does not support this file format. Try PDF, JPEG, or PNG.";
+    }
+    if (output.includes("client-error")) {
+        return output.split("\n").find((line) => line.includes("client-error")) ?? output;
+    }
+    return output || "Print command failed";
 }
 async function printFile(host, filePath, options) {
-    const queueName = await ensurePrinterQueue(host);
-    const args = [
-        "-d",
-        queueName,
-        "-n",
-        String(Math.max(1, Math.min(999, options.copies))),
-        "-o",
-        `sides=${options.sides}`,
-        "-o",
-        `print-color-mode=${options.color}`,
-        "-o",
-        `media=${options.media}`,
+    if (!(0, node_fs_1.existsSync)(PRINT_JOB_TEST_PATH)) {
+        throw new Error("Print job template is missing from the app bundle.");
+    }
+    const copies = String(Math.max(1, Math.min(999, options.copies)));
+    const result = await runCommand("ipptool", [
+        "-f",
         filePath,
-    ];
-    const result = await runCommand("lp", args);
+        "-d",
+        `uri=${ippUri(host)}`,
+        "-d",
+        "user=wolverineks",
+        "-d",
+        `filename=${filePath}`,
+        "-d",
+        `filetype=${ippDocumentFormat(filePath)}`,
+        "-d",
+        `copies=${copies}`,
+        "-d",
+        `color_mode=${options.color}`,
+        "-d",
+        `sides=${options.sides}`,
+        "-d",
+        `media=${options.media}`,
+        PRINT_JOB_TEST_PATH,
+    ]);
     if (result.code !== 0) {
-        throw new Error(result.stderr.trim() || result.stdout.trim() || "Print command failed");
+        throw new Error(formatPrintError(result));
     }
 }
 function parseMultipart(contentType, body) {

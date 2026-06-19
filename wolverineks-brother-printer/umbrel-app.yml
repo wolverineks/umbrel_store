@@ -4,7 +4,7 @@ name: Brother Print & Scan
 tagline: Web interface for your Brother MFC-J1360DW
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-brother-printer/icon.svg
 category: files
-version: "1.0.2"
+version: "1.0.3"
 port: 4030
 description: >-
   A custom web interface for your network-connected Brother MFC-J1360DW printer,
@@ -16,7 +16,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Show app version in the sidebar footer.
+  Fix PDF printing by sending jobs directly over IPP instead of relying on a local
+  CUPS queue that does not exist inside the container.
 dependencies: []
 path: ""
 defaultUsername: ""
