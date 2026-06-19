@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -239,6 +239,158 @@ type InkLevel = {
   low: boolean;
 };
 
+type DeviceStatusLevel = "ready" | "warning" | "busy" | "error" | "unknown";
+
+type StatusAlert = {
+  severity: "success" | "info" | "warning" | "error";
+  title: string;
+  message: string;
+};
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 10)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function parseMonitorStatus(html: string): { message: string; level: DeviceStatusLevel } {
+  const match = html.match(/<span class="moni\s+([^"]+)"[^>]*>([\s\S]*?)<\/span>/i);
+  if (!match) {
+    return { message: "Status unavailable", level: "unknown" };
+  }
+  const className = match[1];
+  const message = decodeHtmlEntities(match[2].replace(/<[^>]+>/g, "").trim()) || "Status unavailable";
+  let level: DeviceStatusLevel = "unknown";
+  if (className.includes("moniReady")) level = "ready";
+  else if (className.includes("moniWarning")) level = "warning";
+  else if (className.includes("moniBusy")) level = "busy";
+  else if (className.includes("moniError")) level = "error";
+  return { message, level };
+}
+
+function expandBrotherStatusMessage(message: string): string {
+  const normalized = message.trim();
+  const inkLowMatch = normalized.match(/^Ink Low \(([^)]+)\)$/i);
+  if (inkLowMatch) {
+    const colorMap: Record<string, string> = {
+      BK: "Black",
+      M: "Magenta",
+      C: "Cyan",
+      Y: "Yellow",
+    };
+    const code = inkLowMatch[1].trim().toUpperCase();
+    const color = colorMap[code] ?? code;
+    return `${color} ink is low. Replace or refill the ${color.toLowerCase()} ink cartridge.`;
+  }
+  const inkEmptyMatch = normalized.match(/^Ink Empty \(([^)]+)\)$/i);
+  if (inkEmptyMatch) {
+    const colorMap: Record<string, string> = {
+      BK: "Black",
+      M: "Magenta",
+      C: "Cyan",
+      Y: "Yellow",
+    };
+    const code = inkEmptyMatch[1].trim().toUpperCase();
+    const color = colorMap[code] ?? code;
+    return `${color} ink is empty. Replace the ${color.toLowerCase()} ink cartridge before printing.`;
+  }
+  if (/^paper empty$/i.test(normalized)) {
+    return "Paper tray is empty. Add paper before printing.";
+  }
+  if (/paper jam/i.test(normalized)) {
+    return "Paper jam detected. Open the printer and clear the jam.";
+  }
+  if (/cover open/i.test(normalized)) {
+    return "A printer cover is open. Close it to continue.";
+  }
+  return normalized;
+}
+
+function buildInkAlerts(ink: { cartridges: InkLevel[]; reservoir: InkLevel[] }): StatusAlert[] {
+  const alerts: StatusAlert[] = [];
+  for (const level of ink.cartridges) {
+    if (level.percent === 0) {
+      alerts.push({
+        severity: "error",
+        title: `${level.color} cartridge empty`,
+        message: `The ${level.color.toLowerCase()} ink cartridge appears empty.`,
+      });
+    } else if (level.low) {
+      alerts.push({
+        severity: "warning",
+        title: `${level.color} cartridge low`,
+        message: `The ${level.color.toLowerCase()} ink cartridge is running low (${level.percent}%).`,
+      });
+    }
+  }
+  for (const level of ink.reservoir) {
+    if (level.percent <= 5) {
+      alerts.push({
+        severity: "warning",
+        title: `${level.color} reservoir low`,
+        message: `The internal ${level.color.toLowerCase()} ink reservoir is very low (${level.percent}%).`,
+      });
+    }
+  }
+  return alerts;
+}
+
+function buildStatusAlerts(
+  monitor: { message: string; level: DeviceStatusLevel },
+  ink: { cartridges: InkLevel[]; reservoir: InkLevel[] },
+): StatusAlert[] {
+  const alerts: StatusAlert[] = [];
+  const expanded = expandBrotherStatusMessage(monitor.message);
+
+  if (monitor.level === "ready") {
+    alerts.push({
+      severity: "success",
+      title: "Ready to print",
+      message: monitor.message === "Ready" ? "The printer is idle and ready." : expanded,
+    });
+  } else if (monitor.level === "busy") {
+    alerts.push({
+      severity: "info",
+      title: "Printer busy",
+      message: expanded,
+    });
+  } else if (monitor.level === "warning") {
+    alerts.push({
+      severity: "warning",
+      title: "Printer needs attention",
+      message: expanded,
+    });
+  } else if (monitor.level === "error") {
+    alerts.push({
+      severity: "error",
+      title: "Printer error",
+      message: expanded,
+    });
+  } else if (monitor.message !== "Status unavailable") {
+    alerts.push({
+      severity: "info",
+      title: "Printer status",
+      message: expanded,
+    });
+  }
+
+  for (const inkAlert of buildInkAlerts(ink)) {
+    const duplicate = alerts.some(
+      (alert) =>
+        alert.title.toLowerCase().includes(inkAlert.title.split(" ")[0].toLowerCase()) ||
+        alert.message.toLowerCase().includes(inkAlert.title.split(" ")[0].toLowerCase()),
+    );
+    if (!duplicate) alerts.push(inkAlert);
+  }
+
+  return alerts;
+}
+
 function parseInkLevels(html: string): { cartridges: InkLevel[]; reservoir: InkLevel[] } {
   const cartridgeSection = html.match(/<table id="inkLevel"[\s\S]*?<\/table>/i)?.[0] ?? "";
   const reservoirSection = html.match(/<table id="internalInkLevel"[\s\S]*?<\/table>/i)?.[0] ?? "";
@@ -261,19 +413,19 @@ function parseInkLevels(html: string): { cartridges: InkLevel[]; reservoir: InkL
 }
 
 async function getPrinterStatus(host: string) {
-  const html = await fetchPrinterText(host, "/home/status.html");
-  const ink = parseInkLevels(html);
-  const warning = html.includes("moniWarning");
-  const busy = html.includes("moniBusy");
-  const ready = html.includes("moniReady");
-  let device_status = "Unknown";
-  if (warning) device_status = "Attention needed";
-  else if (busy) device_status = "Busy";
-  else if (ready) device_status = "Ready";
+  const [statusHtml, monitorHtml] = await Promise.all([
+    fetchPrinterText(host, "/home/status.html"),
+    fetchPrinterText(host, "/home/monitor.html"),
+  ]);
+  const ink = parseInkLevels(statusHtml);
+  const monitor = parseMonitorStatus(monitorHtml);
+  const alerts = buildStatusAlerts(monitor, ink);
   return {
-    device_status,
+    device_status: monitor.message,
+    device_status_level: monitor.level,
+    device_status_detail: expandBrotherStatusMessage(monitor.message),
+    alerts,
     ink,
-    page_yield: xmlAllTagValues(html.replace(/<[^>]+>/g, " "), "span").length > 0 ? null : null,
   };
 }
 
@@ -656,6 +808,38 @@ function renderPage(active: string, content: string): string {
       font-size: 0.85rem;
       font-weight: 600;
     }
+    .status-pill.success { background: #ecfdf5; color: #047857; }
+    .status-pill.info { background: #eff6ff; color: #1d4ed8; }
+    .status-pill.warning { background: #fffbeb; color: #b45309; }
+    .status-pill.error { background: #fef2f2; color: #b91c1c; }
+    html[data-theme="dark"] .status-pill.success { background: #052e16; color: #86efac; }
+    html[data-theme="dark"] .status-pill.info { background: #1e3a5f; color: #93c5fd; }
+    html[data-theme="dark"] .status-pill.warning { background: #451a03; color: #fcd34d; }
+    html[data-theme="dark"] .status-pill.error { background: #450a0a; color: #fca5a5; }
+    .notifications {
+      display: grid;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .notification {
+      border-radius: 0.9rem;
+      padding: 0.95rem 1rem;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .notification strong {
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+    .notification.success { border-color: #86efac; background: #ecfdf5; color: #065f46; }
+    .notification.info { border-color: #93c5fd; background: #eff6ff; color: #1e3a8a; }
+    .notification.warning { border-color: #fcd34d; background: #fffbeb; color: #92400e; }
+    .notification.error { border-color: #fca5a5; background: #fef2f2; color: #991b1b; }
+    html[data-theme="dark"] .notification.success { background: #052e16; color: #bbf7d0; }
+    html[data-theme="dark"] .notification.info { background: #172554; color: #bfdbfe; }
+    html[data-theme="dark"] .notification.warning { background: #451a03; color: #fde68a; }
+    html[data-theme="dark"] .notification.error { background: #450a0a; color: #fecaca; }
     .ink-bar {
       height: 10px;
       border-radius: 999px;
@@ -788,11 +972,13 @@ function dashboardContent(): string {
       <h2>Dashboard</h2>
       <span class="status-pill" id="connection-pill">Checking printer…</span>
     </div>
+    <div class="notifications" id="notifications" hidden></div>
     <div class="grid">
       <section class="card">
         <h3>Device</h3>
         <p class="muted" id="device-model">—</p>
         <p id="device-status" style="margin-top:0.75rem">—</p>
+        <p class="muted" id="device-status-detail" style="margin-top:0.5rem">—</p>
         <p class="muted" id="device-host" style="margin-top:0.5rem">—</p>
       </section>
       <section class="card">
@@ -812,7 +998,27 @@ function dashboardContent(): string {
     <script>
       function inkBar(level) {
         const cls = level.color.toLowerCase();
-        return '<div style="margin-bottom:0.75rem"><div style="display:flex;justify-content:space-between"><span>' + level.color + '</span><span>' + level.percent + '%</span></div><div class="ink-bar ' + cls + '"><span style="width:' + level.percent + '%"></span></div></div>';
+        const lowTag = level.low ? ' <span class="muted">(low)</span>' : '';
+        return '<div style="margin-bottom:0.75rem"><div style="display:flex;justify-content:space-between"><span>' + level.color + lowTag + '</span><span>' + level.percent + '%</span></div><div class="ink-bar ' + cls + '"><span style="width:' + level.percent + '%"></span></div></div>';
+      }
+      function renderNotifications(alerts) {
+        const container = document.getElementById("notifications");
+        if (!alerts || !alerts.length) {
+          container.hidden = true;
+          container.innerHTML = "";
+          return;
+        }
+        container.hidden = false;
+        container.innerHTML = alerts.map((alert) =>
+          '<div class="notification ' + alert.severity + '"><strong>' + alert.title + '</strong><span>' + alert.message + '</span></div>'
+        ).join("");
+      }
+      function pillLabel(level, message) {
+        if (level === "ready") return "Ready";
+        if (level === "busy") return "Busy";
+        if (level === "warning") return message || "Warning";
+        if (level === "error") return message || "Error";
+        return "Connected";
       }
       async function refreshDashboard() {
         const pill = document.getElementById("connection-pill");
@@ -820,17 +1026,28 @@ function dashboardContent(): string {
           const res = await fetch("/api/status");
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "Failed to load status");
-          pill.textContent = "Connected";
+          const level = data.printer.device_status_level || "unknown";
+          pill.className = "status-pill " + (level === "unknown" ? "info" : level);
+          pill.textContent = pillLabel(level, data.printer.device_status);
+          renderNotifications(data.printer.alerts || []);
           document.getElementById("device-model").textContent = data.capabilities.make_and_model;
-          document.getElementById("device-status").textContent = "Status: " + data.printer.device_status;
+          document.getElementById("device-status").textContent = "Printer says: " + data.printer.device_status;
+          document.getElementById("device-status-detail").textContent = data.printer.device_status_detail;
           document.getElementById("device-host").textContent = data.settings.printer_host;
           document.getElementById("scanner-state").textContent = "Scanner: " + data.scanner.state;
           document.getElementById("scanner-adf").textContent = "ADF: " + data.scanner.adf_state;
           document.getElementById("ink-cartridges").innerHTML = data.printer.ink.cartridges.map(inkBar).join("");
           document.getElementById("ink-reservoir").innerHTML = data.printer.ink.reservoir.map(inkBar).join("");
         } catch (error) {
+          pill.className = "status-pill error";
           pill.textContent = "Offline";
+          renderNotifications([{
+            severity: "error",
+            title: "Cannot reach printer",
+            message: error.message,
+          }]);
           document.getElementById("device-status").textContent = error.message;
+          document.getElementById("device-status-detail").textContent = "";
         }
       }
       window.refreshDashboard = refreshDashboard;
