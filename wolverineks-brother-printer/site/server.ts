@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -772,7 +772,18 @@ function renderPage(active: string, content: string): string {
       right: 1rem;
       bottom: 1rem;
       display: flex;
+      flex-direction: column;
       gap: 0.5rem;
+    }
+    .sidebar-footer-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .app-version {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-align: center;
+      opacity: 0.7;
     }
     .main { padding: 1.5rem; }
     .toolbar {
@@ -938,8 +949,11 @@ function renderPage(active: string, content: string): string {
       </div>
       <nav>${navHtml}</nav>
       <div class="sidebar-footer">
-        <button class="secondary" id="theme-toggle" type="button">Theme</button>
-        <button class="secondary" id="refresh-status" type="button">Refresh</button>
+        <div class="sidebar-footer-actions">
+          <button class="secondary" id="theme-toggle" type="button">Theme</button>
+          <button class="secondary" id="refresh-status" type="button">Refresh</button>
+        </div>
+        <div class="app-version">v${APP_VERSION}</div>
       </div>
     </aside>
     <main class="main">
