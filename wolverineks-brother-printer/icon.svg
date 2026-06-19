@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Brother printer">
+  <rect width="128" height="128" rx="24" fill="#0b5cab"/>
+  <rect x="24" y="52" width="80" height="44" rx="8" fill="#ffffff"/>
+  <rect x="32" y="32" width="64" height="28" rx="6" fill="#dbeafe"/>
+  <rect x="36" y="68" width="48" height="6" rx="3" fill="#94a3b8"/>
+  <rect x="36" y="78" width="32" height="6" rx="3" fill="#cbd5e1"/>
+  <rect x="40" y="96" width="48" height="10" rx="4" fill="#1d4ed8"/>
+  <circle cx="88" cy="88" r="6" fill="#22c55e"/>
+</svg>

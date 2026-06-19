@@ -1,0 +1,26 @@
+manifestVersion: 1
+id: wolverineks-brother-printer
+name: Brother Print & Scan
+tagline: Web interface for your Brother MFC-J1360DW
+icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-brother-printer/icon.svg
+category: files
+version: "1.0.0"
+port: 4030
+description: >-
+  A custom web interface for your network-connected Brother MFC-J1360DW printer,
+  scanner, and copier. Scan documents over eSCL, print files over IPP, check ink
+  levels, and manage saved scans from your Umbrel.
+developer: Wolverineks
+website: https://github.com/wolverineks
+repo: https://github.com/wolverineks/umbrel_store
+support: https://github.com/wolverineks/umbrel_store/issues
+gallery: []
+releaseNotes: >-
+  Initial release with dashboard, scan, print, copy, scan library, and settings
+  for Brother MFC-J1360DW over the local network.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+backupIgnore:
+  - data

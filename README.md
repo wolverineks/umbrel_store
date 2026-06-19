@@ -8,6 +8,8 @@ Add this repo to your Umbrel: `https://github.com/wolverineks/umbrel_store`
 
 - Hello World
 - Storich — minimal self-hosted drive
+- Recipes — self-hosted recipe library
+- Brother Print & Scan — web interface for Brother MFC-J1360DW
 
 ## How to contribute / add more apps
 

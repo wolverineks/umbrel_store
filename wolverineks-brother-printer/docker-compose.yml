@@ -1,0 +1,27 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: wolverineks-brother-printer_server_1
+      APP_PORT: 3000
+
+  server:
+    image: node:22-alpine
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache cups-client >/dev/null
+        mkdir -p /data/scans
+        chown -R 1000:1000 /data
+        exec su -s /bin/sh node -c "node /app/server.js"
+    volumes:
+      - ${APP_DATA_DIR}/site:/app:ro
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      PRINTER_DATA_DIR: /data
+      PRINTER_HOST: ${PRINTER_HOST:-192.168.86.31}
+      NODE_ENV: production
+    restart: on-failure
+    init: true
