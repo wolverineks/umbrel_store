@@ -1,7 +1,7 @@
 {
   "name": "wolverineks-hvac",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.1.1",
   "scripts": {
     "build": "tsc && cp dist/server.js server.js && cp dist/carrier-api.js carrier-api.js",
     "start": "node server.js",

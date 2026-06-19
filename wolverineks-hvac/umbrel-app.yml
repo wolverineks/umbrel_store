@@ -4,7 +4,7 @@ name: Bryant/Carrier HVAC
 tagline: Cloud web UI for Bryant Evolution and Carrier Infinity heat pumps
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-hvac/icon.svg
 category: automation
-version: "2.1.0"
+version: "2.1.1"
 port: 4040
 description: >-
   Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel
@@ -23,8 +23,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Draggable thermometer for setpoints with mode-aware heat/cool handles, fan
-  speed slider, and preset tiles on the zone dashboard.
+  Show current fan speed in the zone readout and fan control, with improved
+  fan resolution from live status and activity settings.
 dependencies: []
 path: ""
 defaultUsername: ""

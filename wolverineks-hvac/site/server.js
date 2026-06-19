@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.1.1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -123,6 +123,40 @@ function isZoneEnabled(configZone, statusZone) {
     const enabled = statusZone?.enabled ?? configZone.enabled;
     return enabled === "on";
 }
+function normalizeFanMode(fan) {
+    if (!fan)
+        return null;
+    const value = fan.toLowerCase();
+    if (value === "off")
+        return "auto";
+    return value;
+}
+function formatFanDisplay(fan) {
+    const normalized = normalizeFanMode(fan);
+    if (!normalized)
+        return null;
+    if (normalized === "auto")
+        return "Auto";
+    if (normalized === "on")
+        return "On";
+    if (normalized === "low")
+        return "Low";
+    if (normalized === "med")
+        return "Medium";
+    if (normalized === "high")
+        return "High";
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+function resolveZoneFan(statusZone, configZone) {
+    const statusFan = normalizeFanMode(statusZone?.fan);
+    if (statusFan)
+        return statusFan;
+    const activityType = statusZone?.currentActivity ?? configZone?.holdActivity ?? configZone?.activities[0]?.type ?? null;
+    if (!activityType || !configZone)
+        return null;
+    const activity = configZone.activities.find((item) => item.type === activityType);
+    return normalizeFanMode(activity?.fan);
+}
 function mapZones(system) {
     const cfgem = system.status.cfgem;
     const enabledStatusZones = system.status.zones.filter((zone) => zone.enabled === "on");
@@ -146,6 +180,7 @@ function mapZones(system) {
         if (!presets.includes("resume"))
             presets.push("resume");
         const indoorTemp = statusZone?.rt ?? null;
+        const fan = resolveZoneFan(statusZone, configZone);
         zones.push({
             id: zoneId,
             name: configZone?.name ?? `Zone ${zoneId}`,
@@ -157,7 +192,8 @@ function mapZones(system) {
             heat_setpoint: (0, carrier_api_1.toFahrenheit)(statusZone?.htsp ?? null, cfgem),
             cool_setpoint: (0, carrier_api_1.toFahrenheit)(statusZone?.clsp ?? null, cfgem),
             sensor_rt: indoorTemp,
-            fan: statusZone?.fan === "off" ? "auto" : (statusZone?.fan ?? null),
+            fan,
+            fan_display: formatFanDisplay(fan),
             activity: statusZone?.currentActivity ?? null,
             conditioning: statusZone?.zoneconditioning ?? "idle",
             hold: configZone?.hold === "on",
@@ -603,6 +639,10 @@ function pageStyles() {
       color: var(--muted);
       text-align: center;
     }
+    .fan-ticks span.active {
+      color: var(--accent);
+      font-weight: 700;
+    }
     .preset-tiles {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
@@ -855,6 +895,35 @@ function dashboardContent() {
         return index >= 0 ? index : 0;
       }
 
+      function fanDisplayText(zone) {
+        return zone.fan_display || FAN_LABELS[fanToIndex(zone.fan)] || "—";
+      }
+
+      function syncFanControl(card, zone) {
+        const fanIndex = fanToIndex(zone.fan);
+        const fanText = fanDisplayText(zone);
+        const readout = card.querySelector("[data-fan-readout]");
+        const label = card.querySelector("[data-fan-label]");
+        const slider = card.querySelector('[data-field="fan"]');
+        if (readout) readout.textContent = fanText;
+        if (label) label.textContent = fanText;
+        if (slider && document.activeElement !== slider) {
+          slider.value = String(fanIndex);
+        }
+        card.querySelectorAll(".fan-ticks span").forEach((tick, index) => {
+          tick.classList.toggle("active", index === fanIndex);
+        });
+      }
+
+      function updateZoneCardsFromData(zones) {
+        const zoneCards = document.getElementById("zone-cards");
+        for (const zone of zones) {
+          const card = zoneCards.querySelector('.zone-control-card[data-zone-id="' + CSS.escape(zone.id) + '"]');
+          if (!card || card.dataset.dragging === "true") continue;
+          syncFanControl(card, zone);
+        }
+      }
+
       function presetLabel(preset) {
         if (preset === "resume") return "Resume";
         return preset.charAt(0).toUpperCase() + preset.slice(1);
@@ -1008,7 +1077,13 @@ function dashboardContent() {
 
         const syncLabel = () => {
           const index = Number.parseInt(slider.value, 10);
-          label.textContent = FAN_LABELS[index] || "Auto";
+          const fanText = FAN_LABELS[index] || "Auto";
+          label.textContent = fanText;
+          const readout = card.querySelector("[data-fan-readout]");
+          if (readout) readout.textContent = fanText;
+          card.querySelectorAll(".fan-ticks span").forEach((tick, tickIndex) => {
+            tick.classList.toggle("active", tickIndex === index);
+          });
         };
 
         slider.addEventListener("input", syncLabel);
@@ -1055,6 +1130,7 @@ function dashboardContent() {
         const cool = parseTemp(zone.cool_setpoint_display ?? zone.cool_setpoint, 74);
         const indoor = parseTemp(zone.temperature_display ?? zone.temperature, heat);
         const fanIndex = fanToIndex(zone.fan);
+        const fanText = fanDisplayText(zone);
         const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
         const presetTiles = (zone.presets || []).map((preset) =>
           '<button type="button" class="preset-tile' + (preset === activePreset ? " active" : "") + '" data-preset="' + escapeHtml(preset) + '">' + escapeHtml(presetLabel(preset)) + "</button>"
@@ -1078,6 +1154,7 @@ function dashboardContent() {
               <div>
                 <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
                 <div class="stat-row"><span class="muted">Targets</span><span>\${targetSummary}</span></div>
+                <div class="stat-row"><span class="muted">Fan</span><span data-fan-readout>\${escapeHtml(fanText)}</span></div>
                 <div class="stat-row"><span class="muted">Activity</span><span>\${escapeHtml(zone.activity || "—")}</span></div>
                 <div class="stat-row"><span class="muted">Conditioning</span><span>\${escapeHtml(zone.conditioning || "idle")}</span></div>
               </div>
@@ -1107,14 +1184,14 @@ function dashboardContent() {
                 <div class="fan-control">
                   <div class="fan-label-row">
                     <span>Fan</span>
-                    <span data-fan-label>\${FAN_LABELS[fanIndex]}</span>
+                    <span data-fan-label>\${escapeHtml(fanText)}</span>
                   </div>
                   <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Fan speed" />
                   <div class="fan-ticks">
-                    <span>Auto</span>
-                    <span>Low</span>
-                    <span>Med</span>
-                    <span>High</span>
+                    <span class="\${fanIndex === 0 ? "active" : ""}">Auto</span>
+                    <span class="\${fanIndex === 1 ? "active" : ""}">Low</span>
+                    <span class="\${fanIndex === 2 ? "active" : ""}">Med</span>
+                    <span class="\${fanIndex === 3 ? "active" : ""}">High</span>
                   </div>
                 </div>
                 <div>
@@ -1193,8 +1270,12 @@ function dashboardContent() {
             });
           }
           if (!zoneDragging) {
-            zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode)).join("");
-            zoneCards.querySelectorAll(".zone-control-card").forEach(initZoneCard);
+            if (options.soft && zoneCards.querySelector(".zone-control-card")) {
+              updateZoneCardsFromData(data.zones);
+            } else {
+              zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode)).join("");
+              zoneCards.querySelectorAll(".zone-control-card").forEach(initZoneCard);
+            }
           }
         } catch (error) {
           pill.className = "status-pill error";
