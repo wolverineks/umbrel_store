@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.2";
+const APP_VERSION = "1.0.3";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const INFINITUDE_URLS = Array.from(
@@ -580,14 +580,24 @@ function setupContent(settings: Settings): string {
       <div class="steps">
         <div class="step"><strong>1.</strong> Open <em>Menu → Settings → Wireless → Advanced</em> on the thermostat touchscreen</div>
         <div class="step"><strong>2.</strong> Set <em>Proxy Server</em> to <code>${proxyHost}</code> (IP only, no port suffix)</div>
-        <div class="step"><strong>3.</strong> Set <em>Proxy Port</em> to <code>${proxyPort}</code></div>
+        <div class="step"><strong>3.</strong> Set <em>Proxy Port</em> to <code>${proxyPort}</code> (or <code>4036</code> if your docs mention port 3000)</div>
         <div class="step"><strong>4.</strong> Save, then reboot the thermostat if data does not appear within 2 minutes</div>
       </div>
       ${proxyTestUrl ? `<p class="muted">From a phone on the same WiFi, open <a href="${proxyTestUrl}" target="_blank" rel="noopener">${proxyTestUrl}</a>. You should see the Infinitude page.</p>` : ""}
       <p class="muted">
         Umbrel and the thermostat must be on the same local network. Do not use a hostname here —
-        use the numeric LAN IP. Some firmware versions above 4.05 may not support local proxy mode.
+        use the numeric LAN IP.
       </p>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <h3>If thermostat traffic stays at none</h3>
+      <div class="steps">
+        <div class="step"><strong>Check firmware.</strong> On the thermostat open <em>Menu → Settings → About</em> and note the version. Local proxy often stops working at firmware <strong>4.17+</strong> (MQTT cloud update).</div>
+        <div class="step"><strong>Clear and re-save proxy.</strong> Blank out proxy server/port, save, reboot, then enter IP <code>${proxyHost}</code> and port <code>${proxyPort}</code> again.</div>
+        <div class="step"><strong>Try alternate menus.</strong> Some models use <em>Settings → Network → Advanced</em> or <em>Dealer Settings → Wireless → Proxy</em> instead.</div>
+        <div class="step"><strong>Confirm the phone app still works.</strong> If the Carrier/Bryant app is offline too, fix WiFi on the thermostat first.</div>
+        <div class="step"><strong>Leave proxy port blank?</strong> Some installs default to port 80. We do not expose 80 on Umbrel, so the port field must be <code>${proxyPort}</code> or <code>4036</code>, not empty.</div>
+      </div>
     </div>
     <div class="card" style="margin-top:1rem">
       <h3>Diagnostics</h3>
