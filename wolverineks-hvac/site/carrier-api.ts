@@ -2,6 +2,7 @@ const GRAPHQL_NO_AUTH_URL = "https://dataservice.infinity.iot.carrier.com/graphq
 const GRAPHQL_AUTH_URL = "https://dataservice.infinity.iot.carrier.com/graphql";
 const TOKEN_URL = "https://sso.carrier.com/oauth2/default/v1/token";
 const OAUTH_CLIENT_ID = "0oa1ce7hwjuZbfOMB4x7";
+const REALTIME_WS_URL = "wss://realtime.infinity.iot.carrier.com/";
 
 export type SystemMode = "off" | "cool" | "heat" | "auto" | "fanonly";
 export type ActivityType = "home" | "away" | "sleep" | "wake" | "manual" | "vacation";
@@ -109,6 +110,14 @@ export class CarrierApiClient {
     await this.ensureLoggedIn();
     const rawSystems = await this.getSystems();
     return rawSystems.map((system) => this.normalizeSystem(system));
+  }
+
+  async getAccessToken(): Promise<string> {
+    await this.ensureLoggedIn();
+    if (!this.tokens) {
+      throw new CarrierApiError("Not authenticated");
+    }
+    return this.tokens.accessToken;
   }
 
   async setMode(serial: string, mode: SystemMode): Promise<void> {
@@ -513,6 +522,164 @@ function normalizeConfigZones(value: unknown): CarrierConfigZone[] {
       activities,
     };
   });
+}
+
+export function zoneIdsMatch(
+  left: string | number | null | undefined,
+  right: string | number | null | undefined,
+): boolean {
+  if (left === undefined || left === null || right === undefined || right === null) return false;
+  return String(left) === String(right);
+}
+
+export function temperatureUnitFromCfgem(cfgem: string | null | undefined): "F" | "C" {
+  return cfgem === "C" ? "C" : "F";
+}
+
+export function toFahrenheit(value: number | null, cfgem: string | null | undefined): number | null {
+  if (value === null) return null;
+  return temperatureUnitFromCfgem(cfgem) === "C" ? (value * 9) / 5 + 32 : value;
+}
+
+export function formatFahrenheit(value: number | null, cfgem: string | null | undefined): string | null {
+  const fahrenheit = toFahrenheit(value, cfgem);
+  if (fahrenheit === null) return null;
+  return String(Math.round(fahrenheit));
+}
+
+export function applyInfinityStatusMessage(systems: CarrierSystem[], rawMessage: string): boolean {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(rawMessage) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (parsed.messageType !== "InfinityStatus") return false;
+  const serial = parsed.deviceId;
+  if (typeof serial !== "string") return false;
+
+  const system = systems.find((item) => item.profile.serial === serial);
+  if (!system) return false;
+
+  const zones = parsed.zones;
+  if (Array.isArray(zones)) {
+    for (const zoneUpdate of zones) {
+      if (!zoneUpdate || typeof zoneUpdate !== "object") continue;
+      const record = zoneUpdate as Record<string, unknown>;
+      if (record.id === undefined || record.id === null) continue;
+      const zone = system.status.zones.find((item) => zoneIdsMatch(item.id, asString(record.id)));
+      if (!zone) continue;
+      if (record.rt !== undefined) zone.rt = asNumber(record.rt);
+      if (record.rh !== undefined) zone.rh = asNumber(record.rh);
+      if (record.htsp !== undefined) zone.htsp = asNumber(record.htsp);
+      if (record.clsp !== undefined) zone.clsp = asNumber(record.clsp);
+      if (record.fan !== undefined) zone.fan = nullableString(record.fan);
+      if (record.currentActivity !== undefined) {
+        zone.currentActivity = nullableString(record.currentActivity);
+      }
+      if (record.zoneconditioning !== undefined) {
+        zone.zoneconditioning = nullableString(record.zoneconditioning);
+      }
+      if (record.hold !== undefined) zone.hold = nullableString(record.hold);
+      if (record.enabled !== undefined) zone.enabled = nullableString(record.enabled);
+    }
+  }
+
+  if (parsed.oat !== undefined) system.status.oat = asNumber(parsed.oat);
+  if (parsed.mode !== undefined) system.status.mode = nullableString(parsed.mode);
+  if (parsed.filtrlvl !== undefined) system.status.filtrlvl = asNumber(parsed.filtrlvl);
+  if (parsed.isDisconnected !== undefined) {
+    system.status.isDisconnected = asBool(parsed.isDisconnected);
+  }
+
+  return true;
+}
+
+export class CarrierRealtime {
+  private ws: WebSocket | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private running = false;
+  private connecting = false;
+
+  constructor(
+    private readonly getToken: () => Promise<string>,
+    private readonly onMessage: (message: string) => void,
+  ) {}
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    void this.connect();
+  }
+
+  stop(): void {
+    this.running = false;
+    this.connecting = false;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.running || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, 5000);
+  }
+
+  private async connect(): Promise<void> {
+    if (!this.running || this.connecting || this.ws) return;
+    this.connecting = true;
+    try {
+      const token = await this.getToken();
+      const ws = new WebSocket(`${REALTIME_WS_URL}?Token=${encodeURIComponent(token)}`);
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.connecting = false;
+        if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ action: "keepalive" }));
+          }
+        }, 55_000);
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data !== "string" || event.data === "close cmd") return;
+        this.onMessage(event.data);
+      };
+
+      ws.onclose = () => {
+        this.connecting = false;
+        if (this.heartbeatTimer) {
+          clearInterval(this.heartbeatTimer);
+          this.heartbeatTimer = null;
+        }
+        this.ws = null;
+        this.scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    } catch {
+      this.connecting = false;
+      this.ws = null;
+      this.scheduleReconnect();
+    }
+  }
 }
 
 function asString(value: unknown): string {

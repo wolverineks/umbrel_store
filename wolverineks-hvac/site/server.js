@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.0.3";
+const APP_VERSION = "2.0.4";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -22,8 +22,13 @@ const DEFAULT_SETTINGS = {
 };
 let cachedSystems = [];
 let lastSyncAt = null;
+let lastLiveUpdateAt = null;
 let lastError = null;
 let pollTimer = null;
+let apiClient = null;
+let apiClientKey = "";
+let realtime = null;
+let realtimeKey = "";
 function escapeHtml(value) {
     return value
         .replace(/&/g, "&amp;")
@@ -65,31 +70,44 @@ async function saveSettings(settings) {
     await (0, promises_1.mkdir)(DATA_ROOT, { recursive: true });
     await (0, promises_1.writeFile)(SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
 }
-function createClient(settings) {
-    return new carrier_api_1.CarrierApiClient(settings.username, settings.password);
+function getClient(settings) {
+    const key = `${settings.username}\u0000${settings.password}`;
+    if (!apiClient || apiClientKey !== key) {
+        apiClient = new carrier_api_1.CarrierApiClient(settings.username, settings.password);
+        apiClientKey = key;
+    }
+    return apiClient;
 }
-function zoneIdsMatch(left, right) {
-    if (left === undefined || left === null || right === undefined || right === null)
-        return false;
-    return String(left) === String(right);
+function resetCloudConnections() {
+    realtime?.stop();
+    realtime = null;
+    realtimeKey = "";
+    apiClient = null;
+    apiClientKey = "";
 }
 function findStatusZone(system, zoneId) {
-    return system.status.zones.find((zone) => zoneIdsMatch(zone.id, zoneId));
+    return system.status.zones.find((zone) => (0, carrier_api_1.zoneIdsMatch)(zone.id, zoneId));
 }
 function findConfigZone(system, zoneId) {
-    return system.config.zones.find((zone) => zoneIdsMatch(zone.id, zoneId));
+    return system.config.zones.find((zone) => (0, carrier_api_1.zoneIdsMatch)(zone.id, zoneId));
 }
-function temperatureUnit(cfgem) {
-    return cfgem === "C" ? "C" : "F";
-}
-function formatTemperature(value, unit) {
-    if (value === null)
-        return null;
-    if (unit === "C") {
-        const rounded = Math.round(value * 2) / 2;
-        return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+function ensureRealtime(settings) {
+    if (!isConfigured(settings)) {
+        resetCloudConnections();
+        return;
     }
-    return String(Math.round(value));
+    const key = `${settings.username}\u0000${settings.password}`;
+    if (realtime && realtimeKey === key)
+        return;
+    realtime?.stop();
+    realtimeKey = key;
+    const client = getClient(settings);
+    realtime = new carrier_api_1.CarrierRealtime(() => client.getAccessToken(), (message) => {
+        if ((0, carrier_api_1.applyInfinityStatusMessage)(cachedSystems, message)) {
+            lastLiveUpdateAt = new Date();
+        }
+    });
+    realtime.start();
 }
 function selectSystem(settings, systems) {
     if (!systems.length)
@@ -106,7 +124,7 @@ function isZoneEnabled(configZone, statusZone) {
     return enabled === "on";
 }
 function mapZones(system) {
-    const unit = temperatureUnit(system.status.cfgem);
+    const cfgem = system.status.cfgem;
     const enabledStatusZones = system.status.zones.filter((zone) => zone.enabled === "on");
     const zonesToMap = enabledStatusZones.length
         ? enabledStatusZones.map((statusZone) => ({
@@ -131,11 +149,14 @@ function mapZones(system) {
         zones.push({
             id: zoneId,
             name: configZone?.name ?? `Zone ${zoneId}`,
-            temperature: indoorTemp,
-            temperature_display: formatTemperature(indoorTemp, unit),
+            temperature: (0, carrier_api_1.toFahrenheit)(indoorTemp, cfgem),
+            temperature_display: (0, carrier_api_1.formatFahrenheit)(indoorTemp, cfgem),
+            heat_setpoint_display: (0, carrier_api_1.formatFahrenheit)(statusZone?.htsp ?? null, cfgem),
+            cool_setpoint_display: (0, carrier_api_1.formatFahrenheit)(statusZone?.clsp ?? null, cfgem),
             humidity: statusZone?.rh ?? null,
-            heat_setpoint: statusZone?.htsp ?? null,
-            cool_setpoint: statusZone?.clsp ?? null,
+            heat_setpoint: (0, carrier_api_1.toFahrenheit)(statusZone?.htsp ?? null, cfgem),
+            cool_setpoint: (0, carrier_api_1.toFahrenheit)(statusZone?.clsp ?? null, cfgem),
+            sensor_rt: indoorTemp,
             fan: statusZone?.fan === "off" ? "auto" : (statusZone?.fan ?? null),
             activity: statusZone?.currentActivity ?? null,
             conditioning: statusZone?.zoneconditioning ?? "idle",
@@ -163,10 +184,11 @@ function buildSnapshot(settings) {
                 model: system.profile.model,
                 firmware: system.profile.firmware,
                 mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
-                outdoor_temp: system.status.oat,
+                outdoor_temp: (0, carrier_api_1.toFahrenheit)(system.status.oat, system.status.cfgem),
                 filter_remaining: system.status.filtrlvl,
                 disconnected: Boolean(system.status.isDisconnected),
-                temperature_unit: temperatureUnit(system.status.cfgem),
+                temperature_unit: "F",
+                outdoor_temp_display: (0, carrier_api_1.formatFahrenheit)(system.status.oat, system.status.cfgem),
             }
             : null,
         zones: system ? mapZones(system) : [],
@@ -174,6 +196,7 @@ function buildSnapshot(settings) {
             serial: item.profile.serial,
             name: item.profile.name,
         })),
+        last_live_update: lastLiveUpdateAt?.toISOString() ?? null,
     };
 }
 async function refreshCloudData(settings, force = false) {
@@ -187,10 +210,11 @@ async function refreshCloudData(settings, force = false) {
         return buildSnapshot(settings);
     }
     try {
-        const client = createClient(settings);
+        const client = getClient(settings);
         cachedSystems = await client.loadSystems();
         lastSyncAt = new Date();
         lastError = null;
+        ensureRealtime(settings);
         const selected = selectSystem(settings, cachedSystems);
         if (selected && !settings.system_serial) {
             settings.system_serial = selected.profile.serial;
@@ -217,8 +241,10 @@ function ensurePolling(settings) {
             clearInterval(pollTimer);
             pollTimer = null;
         }
+        resetCloudConnections();
         return;
     }
+    ensureRealtime(settings);
     if (pollTimer)
         return;
     pollTimer = setInterval(() => {
@@ -513,6 +539,8 @@ function setupContent(settings) {
       <div class="stat-row"><span class="muted">Cloud connection</span><span id="diag-cloud">Checking…</span></div>
       <div class="stat-row"><span class="muted">Systems found</span><span id="diag-systems">—</span></div>
       <div class="stat-row"><span class="muted">Last sync</span><span id="diag-sync">—</span></div>
+      <div class="stat-row"><span class="muted">Live update</span><span id="diag-live">—</span></div>
+      <div class="stat-row"><span class="muted">Zone sensor</span><span id="diag-sensor">—</span></div>
       <p class="muted message" id="diag-error" style="margin-top:0.75rem"></p>
     </div>
     <script>
@@ -521,12 +549,19 @@ function setupContent(settings) {
         const diagCloud = document.getElementById("diag-cloud");
         const diagSystems = document.getElementById("diag-systems");
         const diagSync = document.getElementById("diag-sync");
+        const diagLive = document.getElementById("diag-live");
+        const diagSensor = document.getElementById("diag-sensor");
         const diagError = document.getElementById("diag-error");
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
           diagSystems.textContent = String(data.systems?.length ?? 0);
           diagSync.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never";
+          diagLive.textContent = data.last_live_update ? new Date(data.last_live_update).toLocaleString() : "Waiting…";
+          const zone = data.zones?.[0];
+          diagSensor.textContent = zone
+            ? "rt " + (zone.sensor_rt ?? "—") + " → " + (zone.temperature_display ?? "—") + "°F · heat " + (zone.heat_setpoint_display ?? "—") + "°F"
+            : "—";
           if (data.connected) {
             pill.className = "status-pill success";
             const zoneCount = data.zones?.length ?? 0;
@@ -598,15 +633,12 @@ function dashboardContent() {
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       }
 
-      function tempUnit(data) {
-        return data.system?.temperature_unit === "C" ? "°C" : "°F";
-      }
-
-      function renderZoneCard(zone, unitLabel) {
+      function renderZoneCard(zone) {
+        const unitLabel = "°F";
         const temp = zone.temperature_display ?? (zone.temperature ?? "—");
         const humidity = zone.humidity ?? "—";
-        const heat = zone.heat_setpoint ?? "—";
-        const cool = zone.cool_setpoint ?? "—";
+        const heat = zone.heat_setpoint_display ?? (zone.heat_setpoint ?? "—");
+        const cool = zone.cool_setpoint_display ?? (zone.cool_setpoint ?? "—");
         const presetOptions = (zone.presets || []).map((preset) =>
           '<option value="' + escapeHtml(preset) + '">' + escapeHtml(preset === "resume" ? "Resume schedule" : preset) + '</option>'
         ).join("");
@@ -616,7 +648,7 @@ function dashboardContent() {
             <div class="temp-label">Indoor</div>
             <div class="temp-display">\${temp}\${temp === "—" ? "" : unitLabel}</div>
             <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
-            <div class="stat-row"><span class="muted">Setpoints (heat / cool)</span><span>\${heat}\${heat === "—" ? "" : unitLabel} / \${cool}\${cool === "—" ? "" : unitLabel}</span></div>
+            <div class="stat-row"><span class="muted">Heat / cool targets</span><span>\${heat}\${heat === "—" ? "" : unitLabel} / \${cool}\${cool === "—" ? "" : unitLabel}</span></div>
             <div class="stat-row"><span class="muted">Activity</span><span>\${escapeHtml(zone.activity || "—")}</span></div>
             <div class="stat-row"><span class="muted">Conditioning</span><span>\${escapeHtml(zone.conditioning || "idle")}</span></div>
             <div class="controls">
@@ -694,8 +726,8 @@ function dashboardContent() {
           pill.className = "status-pill success";
           pill.textContent = "Connected";
           const mode = data.system.mode || "auto";
-          const unitLabel = tempUnit(data);
-          const outdoor = data.system.outdoor_temp ?? "—";
+          const unitLabel = "°F";
+          const outdoor = data.system.outdoor_temp_display ?? data.system.outdoor_temp ?? "—";
           const filter = data.system.filter_remaining ?? "—";
           systemCards.innerHTML = \`
             <div class="card">
@@ -731,7 +763,7 @@ function dashboardContent() {
               if (modeRes.ok) loadDashboard();
             });
           });
-          zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, unitLabel)).join("");
+          zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone)).join("");
           zoneCards.querySelectorAll("[data-action='apply-zone']").forEach((button) => {
             button.addEventListener("click", () => applyZoneChanges(button.closest(".card")));
           });
@@ -810,7 +842,10 @@ function findManualActivity(system, zoneId) {
 }
 async function handleApi(route, req, res, settings) {
     if (route === "/api/status" && req.method === "GET") {
-        const snapshot = await refreshCloudData(settings);
+        const needsRefresh = !lastSyncAt ||
+            Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS ||
+            (!lastLiveUpdateAt && Date.now() - (lastSyncAt?.getTime() ?? 0) > 5_000);
+        const snapshot = await refreshCloudData(settings, needsRefresh);
         sendJson(res, 200, {
             ...snapshot,
             settings: publicSettings(settings),
@@ -823,9 +858,11 @@ async function handleApi(route, req, res, settings) {
     }
     if (route === "/api/settings" && req.method === "DELETE") {
         const cleared = { ...DEFAULT_SETTINGS, system_name: settings.system_name };
+        resetCloudConnections();
         await saveSettings(cleared);
         cachedSystems = [];
         lastSyncAt = null;
+        lastLiveUpdateAt = null;
         lastError = null;
         sendJson(res, 200, { settings: publicSettings(cleared) });
         return;
@@ -845,15 +882,17 @@ async function handleApi(route, req, res, settings) {
             system_serial: body.system_serial?.trim() ?? settings.system_serial,
         };
         try {
-            const client = createClient(next);
+            const client = getClient(next);
             const validation = await client.validate();
             if (!validation.systemCount) {
                 sendJson(res, 400, { error: "No HVAC systems found on this Carrier account" });
                 return;
             }
+            resetCloudConnections();
             await saveSettings(next);
             cachedSystems = [];
             lastSyncAt = null;
+            lastLiveUpdateAt = null;
             await refreshCloudData(next, true);
             ensurePolling(next);
             sendJson(res, 200, { settings: publicSettings(next) });
@@ -888,7 +927,7 @@ async function handleApi(route, req, res, settings) {
             return;
         }
         try {
-            const client = createClient(settings);
+            const client = getClient(settings);
             await client.setMode(system.profile.serial, mode);
             await refreshCloudData(settings, true);
             sendJson(res, 200, { ok: true });
@@ -913,7 +952,7 @@ async function handleApi(route, req, res, settings) {
             sendJson(res, 502, { error: "No system loaded" });
             return;
         }
-        const client = createClient(settings);
+        const client = getClient(settings);
         const serial = system.profile.serial;
         const statusZone = findStatusZone(system, zoneId);
         try {

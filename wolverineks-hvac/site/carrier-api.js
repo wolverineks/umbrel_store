@@ -1,10 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CarrierApiClient = exports.CarrierApiError = exports.CarrierAuthError = void 0;
+exports.CarrierRealtime = exports.CarrierApiClient = exports.CarrierApiError = exports.CarrierAuthError = void 0;
+exports.zoneIdsMatch = zoneIdsMatch;
+exports.temperatureUnitFromCfgem = temperatureUnitFromCfgem;
+exports.toFahrenheit = toFahrenheit;
+exports.formatFahrenheit = formatFahrenheit;
+exports.applyInfinityStatusMessage = applyInfinityStatusMessage;
 const GRAPHQL_NO_AUTH_URL = "https://dataservice.infinity.iot.carrier.com/graphql-no-auth";
 const GRAPHQL_AUTH_URL = "https://dataservice.infinity.iot.carrier.com/graphql";
 const TOKEN_URL = "https://sso.carrier.com/oauth2/default/v1/token";
 const OAUTH_CLIENT_ID = "0oa1ce7hwjuZbfOMB4x7";
+const REALTIME_WS_URL = "wss://realtime.infinity.iot.carrier.com/";
 class CarrierAuthError extends Error {
     constructor(message) {
         super(message);
@@ -38,6 +44,13 @@ class CarrierApiClient {
         await this.ensureLoggedIn();
         const rawSystems = await this.getSystems();
         return rawSystems.map((system) => this.normalizeSystem(system));
+    }
+    async getAccessToken() {
+        await this.ensureLoggedIn();
+        if (!this.tokens) {
+            throw new CarrierApiError("Not authenticated");
+        }
+        return this.tokens.accessToken;
     }
     async setMode(serial, mode) {
         await this.mutate("updateInfinityConfig", `mutation updateInfinityConfig($input: InfinityConfigInput!) {
@@ -333,6 +346,171 @@ function normalizeConfigZones(value) {
         };
     });
 }
+function zoneIdsMatch(left, right) {
+    if (left === undefined || left === null || right === undefined || right === null)
+        return false;
+    return String(left) === String(right);
+}
+function temperatureUnitFromCfgem(cfgem) {
+    return cfgem === "C" ? "C" : "F";
+}
+function toFahrenheit(value, cfgem) {
+    if (value === null)
+        return null;
+    return temperatureUnitFromCfgem(cfgem) === "C" ? (value * 9) / 5 + 32 : value;
+}
+function formatFahrenheit(value, cfgem) {
+    const fahrenheit = toFahrenheit(value, cfgem);
+    if (fahrenheit === null)
+        return null;
+    return String(Math.round(fahrenheit));
+}
+function applyInfinityStatusMessage(systems, rawMessage) {
+    let parsed;
+    try {
+        parsed = JSON.parse(rawMessage);
+    }
+    catch {
+        return false;
+    }
+    if (parsed.messageType !== "InfinityStatus")
+        return false;
+    const serial = parsed.deviceId;
+    if (typeof serial !== "string")
+        return false;
+    const system = systems.find((item) => item.profile.serial === serial);
+    if (!system)
+        return false;
+    const zones = parsed.zones;
+    if (Array.isArray(zones)) {
+        for (const zoneUpdate of zones) {
+            if (!zoneUpdate || typeof zoneUpdate !== "object")
+                continue;
+            const record = zoneUpdate;
+            if (record.id === undefined || record.id === null)
+                continue;
+            const zone = system.status.zones.find((item) => zoneIdsMatch(item.id, asString(record.id)));
+            if (!zone)
+                continue;
+            if (record.rt !== undefined)
+                zone.rt = asNumber(record.rt);
+            if (record.rh !== undefined)
+                zone.rh = asNumber(record.rh);
+            if (record.htsp !== undefined)
+                zone.htsp = asNumber(record.htsp);
+            if (record.clsp !== undefined)
+                zone.clsp = asNumber(record.clsp);
+            if (record.fan !== undefined)
+                zone.fan = nullableString(record.fan);
+            if (record.currentActivity !== undefined) {
+                zone.currentActivity = nullableString(record.currentActivity);
+            }
+            if (record.zoneconditioning !== undefined) {
+                zone.zoneconditioning = nullableString(record.zoneconditioning);
+            }
+            if (record.hold !== undefined)
+                zone.hold = nullableString(record.hold);
+            if (record.enabled !== undefined)
+                zone.enabled = nullableString(record.enabled);
+        }
+    }
+    if (parsed.oat !== undefined)
+        system.status.oat = asNumber(parsed.oat);
+    if (parsed.mode !== undefined)
+        system.status.mode = nullableString(parsed.mode);
+    if (parsed.filtrlvl !== undefined)
+        system.status.filtrlvl = asNumber(parsed.filtrlvl);
+    if (parsed.isDisconnected !== undefined) {
+        system.status.isDisconnected = asBool(parsed.isDisconnected);
+    }
+    return true;
+}
+class CarrierRealtime {
+    getToken;
+    onMessage;
+    ws = null;
+    heartbeatTimer = null;
+    reconnectTimer = null;
+    running = false;
+    connecting = false;
+    constructor(getToken, onMessage) {
+        this.getToken = getToken;
+        this.onMessage = onMessage;
+    }
+    start() {
+        if (this.running)
+            return;
+        this.running = true;
+        void this.connect();
+    }
+    stop() {
+        this.running = false;
+        this.connecting = false;
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
+    }
+    scheduleReconnect() {
+        if (!this.running || this.reconnectTimer)
+            return;
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.connect();
+        }, 5000);
+    }
+    async connect() {
+        if (!this.running || this.connecting || this.ws)
+            return;
+        this.connecting = true;
+        try {
+            const token = await this.getToken();
+            const ws = new WebSocket(`${REALTIME_WS_URL}?Token=${encodeURIComponent(token)}`);
+            this.ws = ws;
+            ws.onopen = () => {
+                this.connecting = false;
+                if (this.heartbeatTimer)
+                    clearInterval(this.heartbeatTimer);
+                this.heartbeatTimer = setInterval(() => {
+                    if (this.ws?.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({ action: "keepalive" }));
+                    }
+                }, 55_000);
+            };
+            ws.onmessage = (event) => {
+                if (typeof event.data !== "string" || event.data === "close cmd")
+                    return;
+                this.onMessage(event.data);
+            };
+            ws.onclose = () => {
+                this.connecting = false;
+                if (this.heartbeatTimer) {
+                    clearInterval(this.heartbeatTimer);
+                    this.heartbeatTimer = null;
+                }
+                this.ws = null;
+                this.scheduleReconnect();
+            };
+            ws.onerror = () => {
+                ws.close();
+            };
+        }
+        catch {
+            this.connecting = false;
+            this.ws = null;
+            this.scheduleReconnect();
+        }
+    }
+}
+exports.CarrierRealtime = CarrierRealtime;
 function asString(value) {
     if (value === undefined || value === null)
         return "";
