@@ -3,10 +3,20 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
-const INFINITUDE_URL = (process.env.INFINITUDE_URL ?? "http://infinitude:3000").replace(/\/$/, "");
+const INFINITUDE_URLS = Array.from(
+  new Set(
+    [
+      process.env.INFINITUDE_URL,
+      "http://wolverineks-hvac_infinitude_1:3000",
+      "http://infinitude:3000",
+    ]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .map((value) => value.replace(/\/$/, "")),
+  ),
+);
 const PROXY_PORT = process.env.PROXY_PORT?.trim() || "4035";
 const ICON_PATH = path.join(__dirname, "icon.svg");
 
@@ -90,18 +100,67 @@ async function saveSettings(settings: Settings): Promise<void> {
   await writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
 }
 
+function normalizeInfinitudeStatus(payload: unknown): InfinitudeStatus | null {
+  if (payload === null || payload === undefined) {
+    return null;
+  }
+  if (typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record.status) && record.status[0] && typeof record.status[0] === "object") {
+    return record.status[0] as InfinitudeStatus;
+  }
+  if (record.zones || record.mode || record.oat) {
+    return record as InfinitudeStatus;
+  }
+  return null;
+}
+
 async function infinitudeFetch(
   route: string,
   init?: RequestInit,
   timeoutMs = 10000,
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(`${INFINITUDE_URL}${route}`, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+  let lastError: Error | null = null;
+  for (const baseUrl of INFINITUDE_URLS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${baseUrl}${route}`, { ...init, signal: controller.signal });
+      clearTimeout(timer);
+      return response;
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
   }
+  throw lastError ?? new Error("No Infinitude backends configured");
+}
+
+async function checkInfinitudeAlive(): Promise<{ alive: boolean; error: string | null; backend: string | null }> {
+  let lastError: string | null = null;
+  for (const baseUrl of INFINITUDE_URLS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(`${baseUrl}/Alive`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!response.ok) {
+        lastError = `${baseUrl} returned HTTP ${response.status}`;
+        continue;
+      }
+      const text = (await response.text()).trim();
+      if (text === "alive") {
+        return { alive: true, error: null, backend: baseUrl };
+      }
+      lastError = `${baseUrl} returned unexpected health response`;
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error instanceof Error ? `${baseUrl}: ${error.message}` : String(error);
+    }
+  }
+  return { alive: false, error: lastError, backend: null };
 }
 
 function parseZones(status: InfinitudeStatus): Array<Record<string, unknown>> {
@@ -130,38 +189,65 @@ function isConnected(status: InfinitudeStatus | null): boolean {
 }
 
 async function getInfinitudeStatus(): Promise<{
+  proxy_online: boolean;
   connected: boolean;
   status: InfinitudeStatus | null;
   zones: Array<Record<string, unknown>>;
   error: string | null;
+  backend: string | null;
 }> {
+  const health = await checkInfinitudeAlive();
+  if (!health.alive) {
+    return {
+      proxy_online: false,
+      connected: false,
+      status: null,
+      zones: [],
+      error: health.error ?? "Infinitude proxy is not reachable",
+      backend: null,
+    };
+  }
+
   try {
     const response = await infinitudeFetch("/api/status/");
     if (!response.ok) {
       return {
+        proxy_online: true,
         connected: false,
         status: null,
         zones: [],
         error: `Infinitude returned HTTP ${response.status}`,
+        backend: health.backend,
       };
     }
-    const payload = (await response.json()) as { status?: InfinitudeStatus[] };
-    const status = payload.status?.[0] ?? null;
+    const payload = await response.json();
+    const status = normalizeInfinitudeStatus(payload);
     if (!status) {
-      return { connected: false, status: null, zones: [], error: null };
+      return {
+        proxy_online: true,
+        connected: false,
+        status: null,
+        zones: [],
+        error: null,
+        backend: health.backend,
+      };
     }
     return {
+      proxy_online: true,
       connected: isConnected(status),
       status,
       zones: parseZones(status),
       error: null,
+      backend: health.backend,
     };
   } catch (error) {
     return {
+      proxy_online: false,
       connected: false,
       status: null,
       zones: [],
       error: error instanceof Error ? error.message : String(error),
+      backend: health.backend,
     };
   }
 }
@@ -463,25 +549,49 @@ function setupContent(settings: Settings): string {
         support local proxy mode.
       </p>
     </div>
+    <div class="card" style="margin-top:1rem">
+      <h3>Diagnostics</h3>
+      <div class="stat-row"><span class="muted">Infinitude proxy</span><span id="diag-proxy">Checking…</span></div>
+      <div class="stat-row"><span class="muted">Thermostat data</span><span id="diag-thermostat">Checking…</span></div>
+      <div class="stat-row"><span class="muted">Backend</span><span id="diag-backend">—</span></div>
+      <p class="muted message" id="diag-error" style="margin-top:0.75rem"></p>
+    </div>
     <script>
       async function refreshConnection() {
         const pill = document.getElementById("connection-pill");
+        const diagProxy = document.getElementById("diag-proxy");
+        const diagThermostat = document.getElementById("diag-thermostat");
+        const diagBackend = document.getElementById("diag-backend");
+        const diagError = document.getElementById("diag-error");
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
+          diagBackend.textContent = data.backend || "—";
           if (data.connected) {
             pill.className = "status-pill success";
             pill.textContent = "Connected (" + data.zones.length + " zone" + (data.zones.length === 1 ? "" : "s") + ")";
-          } else if (data.error) {
+            diagProxy.textContent = "Online";
+            diagThermostat.textContent = "Receiving data";
+            diagError.textContent = "";
+          } else if (data.proxy_online) {
+            pill.className = "status-pill warning";
+            pill.textContent = "Proxy online — waiting for thermostat";
+            diagProxy.textContent = "Online";
+            diagThermostat.textContent = "No thermostat data yet";
+            diagError.textContent = "Proxy is running. Configure the thermostat proxy setting, then wait 1–2 minutes.";
+          } else {
             pill.className = "status-pill error";
             pill.textContent = "Proxy offline";
-          } else {
-            pill.className = "status-pill warning";
-            pill.textContent = "Waiting for thermostat…";
+            diagProxy.textContent = "Offline";
+            diagThermostat.textContent = "Unavailable";
+            diagError.textContent = data.error || "Infinitude container is not reachable from the app.";
           }
         } catch (error) {
           pill.className = "status-pill error";
           pill.textContent = "Cannot reach backend";
+          diagProxy.textContent = "Unknown";
+          diagThermostat.textContent = "Unknown";
+          diagError.textContent = String(error);
         }
       }
       document.getElementById("setup-form").addEventListener("submit", async (event) => {
@@ -609,9 +719,19 @@ function dashboardContent(): string {
           const res = await fetch("/api/status");
           const data = await res.json();
           if (!data.connected) {
-            pill.className = "status-pill warning";
-            pill.textContent = data.error ? "Proxy offline" : "Not connected";
-            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">Finish setup on the <a href="/setup">Setup page</a> and configure your thermostat proxy.</p></div>';
+            if (data.proxy_online) {
+              pill.className = "status-pill warning";
+              pill.textContent = "Proxy online — waiting for thermostat";
+            } else {
+              pill.className = "status-pill error";
+              pill.textContent = data.error ? "Proxy offline" : "Not connected";
+            }
+            const detail = data.proxy_online
+              ? "The Infinitude proxy is running, but no thermostat data has arrived yet. Finish proxy setup on the <a href=\"/setup\">Setup page</a>."
+              : (data.error
+                ? "Infinitude proxy is offline: " + escapeHtml(data.error) + ". Check that the app restarted cleanly, then open <a href=\"/setup\">Setup</a>."
+                : "Finish setup on the <a href=\"/setup\">Setup page</a> and configure your thermostat proxy.");
+            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + detail + '</p></div>';
             zoneCards.innerHTML = "";
             return;
           }
@@ -725,9 +845,12 @@ async function handleApi(
     const mode = asString(firstValue(snapshot.status?.mode));
     sendJson(res, 200, {
       connected: snapshot.connected,
+      proxy_online: snapshot.proxy_online,
       error: snapshot.error,
+      backend: snapshot.backend,
       settings,
       proxy_port: PROXY_PORT,
+      infinitude_urls: INFINITUDE_URLS,
       system: {
         mode: mode.toLowerCase(),
         outdoor_temp: asNumber(firstValue(snapshot.status?.oat)),
