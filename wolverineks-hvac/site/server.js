@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const INFINITUDE_URLS = Array.from(new Set([
@@ -149,6 +149,27 @@ function isConnected(status) {
     const zones = status.zones?.[0]?.zone ?? [];
     return zones.length > 0 && zones.some((zone) => asNumber(firstValue(zone.rt)) !== null);
 }
+async function getInfinitudeTraffic() {
+    try {
+        const response = await infinitudeFetch("/api/state_keys");
+        if (!response.ok) {
+            return { keys: [], thermostat_seen: false, has_status: false, has_config: false };
+        }
+        const keys = (await response.json());
+        const normalized = Array.isArray(keys) ? keys : [];
+        const hasStatus = normalized.some((key) => key === "status.json" || key.startsWith("status"));
+        const hasConfig = normalized.some((key) => key === "systems.xml" || key === "systems.json");
+        return {
+            keys: normalized,
+            thermostat_seen: hasStatus || hasConfig,
+            has_status: hasStatus,
+            has_config: hasConfig,
+        };
+    }
+    catch {
+        return { keys: [], thermostat_seen: false, has_status: false, has_config: false };
+    }
+}
 async function getInfinitudeStatus() {
     const health = await checkInfinitudeAlive();
     if (!health.alive) {
@@ -159,8 +180,10 @@ async function getInfinitudeStatus() {
             zones: [],
             error: health.error ?? "Infinitude proxy is not reachable",
             backend: null,
+            traffic: { keys: [], thermostat_seen: false, has_status: false, has_config: false },
         };
     }
+    const traffic = await getInfinitudeTraffic();
     try {
         const response = await infinitudeFetch("/api/status/");
         if (!response.ok) {
@@ -171,6 +194,7 @@ async function getInfinitudeStatus() {
                 zones: [],
                 error: `Infinitude returned HTTP ${response.status}`,
                 backend: health.backend,
+                traffic,
             };
         }
         const payload = await response.json();
@@ -183,6 +207,7 @@ async function getInfinitudeStatus() {
                 zones: [],
                 error: null,
                 backend: health.backend,
+                traffic,
             };
         }
         return {
@@ -192,6 +217,7 @@ async function getInfinitudeStatus() {
             zones: parseZones(status),
             error: null,
             backend: health.backend,
+            traffic,
         };
     }
     catch (error) {
@@ -202,6 +228,7 @@ async function getInfinitudeStatus() {
             zones: [],
             error: error instanceof Error ? error.message : String(error),
             backend: health.backend,
+            traffic,
         };
     }
 }
@@ -455,9 +482,13 @@ function renderPage(active, content) {
 </html>`;
 }
 function setupContent(settings) {
-    const proxyTarget = settings.umbrel_lan_ip
-        ? `${escapeHtml(settings.umbrel_lan_ip)}:${escapeHtml(PROXY_PORT)}`
-        : "your-umbrel-lan-ip:" + escapeHtml(PROXY_PORT);
+    const proxyHost = settings.umbrel_lan_ip
+        ? escapeHtml(settings.umbrel_lan_ip)
+        : "your-umbrel-lan-ip";
+    const proxyPort = escapeHtml(PROXY_PORT);
+    const proxyTestUrl = settings.umbrel_lan_ip
+        ? `http://${escapeHtml(settings.umbrel_lan_ip)}:${proxyPort}`
+        : "";
     return `
     <div class="toolbar">
       <h2>Setup</h2>
@@ -483,18 +514,21 @@ function setupContent(settings) {
       <h3>Configure thermostat proxy</h3>
       <p class="muted">On your thermostat touchscreen:</p>
       <div class="steps">
-        <div class="step"><strong>1.</strong> Open <em>Menu → Settings → Wireless → Advanced</em></div>
-        <div class="step"><strong>2.</strong> Set <em>Proxy Server</em> to <code>${proxyTarget}</code></div>
-        <div class="step"><strong>3.</strong> Save and wait 1–2 minutes for the app to detect your system</div>
+        <div class="step"><strong>1.</strong> Open <em>Menu → Settings → Wireless → Advanced</em> on the thermostat touchscreen</div>
+        <div class="step"><strong>2.</strong> Set <em>Proxy Server</em> to <code>${proxyHost}</code> (IP only, no port suffix)</div>
+        <div class="step"><strong>3.</strong> Set <em>Proxy Port</em> to <code>${proxyPort}</code></div>
+        <div class="step"><strong>4.</strong> Save, then reboot the thermostat if data does not appear within 2 minutes</div>
       </div>
+      ${proxyTestUrl ? `<p class="muted">From a phone on the same WiFi, open <a href="${proxyTestUrl}" target="_blank" rel="noopener">${proxyTestUrl}</a>. You should see the Infinitude page.</p>` : ""}
       <p class="muted">
-        The Carrier mobile app should keep working. Some firmware versions above 4.05 may not
-        support local proxy mode.
+        Umbrel and the thermostat must be on the same local network. Do not use a hostname here —
+        use the numeric LAN IP. Some firmware versions above 4.05 may not support local proxy mode.
       </p>
     </div>
     <div class="card" style="margin-top:1rem">
       <h3>Diagnostics</h3>
       <div class="stat-row"><span class="muted">Infinitude proxy</span><span id="diag-proxy">Checking…</span></div>
+      <div class="stat-row"><span class="muted">Thermostat traffic</span><span id="diag-traffic">Checking…</span></div>
       <div class="stat-row"><span class="muted">Thermostat data</span><span id="diag-thermostat">Checking…</span></div>
       <div class="stat-row"><span class="muted">Backend</span><span id="diag-backend">—</span></div>
       <p class="muted message" id="diag-error" style="margin-top:0.75rem"></p>
@@ -503,6 +537,7 @@ function setupContent(settings) {
       async function refreshConnection() {
         const pill = document.getElementById("connection-pill");
         const diagProxy = document.getElementById("diag-proxy");
+        const diagTraffic = document.getElementById("diag-traffic");
         const diagThermostat = document.getElementById("diag-thermostat");
         const diagBackend = document.getElementById("diag-backend");
         const diagError = document.getElementById("diag-error");
@@ -514,14 +549,22 @@ function setupContent(settings) {
             pill.className = "status-pill success";
             pill.textContent = "Connected (" + data.zones.length + " zone" + (data.zones.length === 1 ? "" : "s") + ")";
             diagProxy.textContent = "Online";
+            diagTraffic.textContent = "Seen by proxy";
             diagThermostat.textContent = "Receiving data";
             diagError.textContent = "";
           } else if (data.proxy_online) {
             pill.className = "status-pill warning";
             pill.textContent = "Proxy online — waiting for thermostat";
             diagProxy.textContent = "Online";
-            diagThermostat.textContent = "No thermostat data yet";
-            diagError.textContent = "Proxy is running. Configure the thermostat proxy setting, then wait 1–2 minutes.";
+            if (data.traffic?.thermostat_seen) {
+              diagTraffic.textContent = "Seen, waiting for status";
+              diagThermostat.textContent = "Partial data only";
+              diagError.textContent = "The thermostat has reached Umbrel, but full status is not available yet. Wait a few minutes or reboot the thermostat.";
+            } else {
+              diagTraffic.textContent = "None detected";
+              diagThermostat.textContent = "No thermostat data yet";
+              diagError.textContent = "Proxy is healthy. Set proxy server to your Umbrel IP, proxy port to ${proxyPort}, save on the thermostat, then wait 1–2 minutes.";
+            }
           } else {
             pill.className = "status-pill error";
             pill.textContent = "Proxy offline";
@@ -792,6 +835,7 @@ async function handleApi(route, req, res, settings) {
                     ?? asNumber(firstValue(snapshot.status?.filtrhvac)),
             },
             zones: snapshot.zones,
+            traffic: snapshot.traffic,
         });
         return;
     }
