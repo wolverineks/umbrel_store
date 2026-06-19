@@ -7,22 +7,22 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.4";
+const carrier_api_1 = require("./carrier-api");
+const APP_VERSION = "2.0.0";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
-const INFINITUDE_URLS = Array.from(new Set([
-    process.env.INFINITUDE_URL,
-    "http://wolverineks-hvac_infinitude_1:3000",
-    "http://infinitude:3000",
-]
-    .filter((value) => Boolean(value?.trim()))
-    .map((value) => value.replace(/\/$/, ""))));
-const PROXY_PORT = process.env.PROXY_PORT?.trim() || "4035";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
+const POLL_INTERVAL_MS = 30_000;
 const DEFAULT_SETTINGS = {
-    umbrel_lan_ip: "",
     system_name: "Home HVAC",
+    username: "",
+    password: "",
+    system_serial: "",
 };
+let cachedSystems = [];
+let lastSyncAt = null;
+let lastError = null;
+let pollTimer = null;
 function escapeHtml(value) {
     return value
         .replace(/&/g, "&amp;")
@@ -31,21 +31,16 @@ function escapeHtml(value) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
 }
-function firstValue(value) {
-    if (value === undefined)
-        return undefined;
-    return Array.isArray(value) ? value[0] : value;
+function isConfigured(settings) {
+    return Boolean(settings.username.trim() && settings.password);
 }
-function asNumber(value) {
-    if (value === undefined || value === null || value === "")
-        return null;
-    const num = Number(value);
-    return Number.isFinite(num) ? num : null;
-}
-function asString(value) {
-    if (value === undefined || value === null)
-        return "";
-    return String(value);
+function publicSettings(settings) {
+    return {
+        system_name: settings.system_name,
+        username: settings.username,
+        system_serial: settings.system_serial,
+        configured: isConfigured(settings),
+    };
 }
 async function loadSettings() {
     if (!(0, node_fs_1.existsSync)(SETTINGS_PATH)) {
@@ -55,8 +50,10 @@ async function loadSettings() {
         const raw = await (0, promises_1.readFile)(SETTINGS_PATH, "utf8");
         const parsed = JSON.parse(raw);
         return {
-            umbrel_lan_ip: parsed.umbrel_lan_ip?.trim() ?? "",
             system_name: parsed.system_name?.trim() || DEFAULT_SETTINGS.system_name,
+            username: parsed.username?.trim() ?? "",
+            password: parsed.password ?? "",
+            system_serial: parsed.system_serial?.trim() ?? "",
         };
     }
     catch {
@@ -65,172 +62,120 @@ async function loadSettings() {
 }
 async function saveSettings(settings) {
     await (0, promises_1.mkdir)(DATA_ROOT, { recursive: true });
-    await (0, promises_1.writeFile)(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+    await (0, promises_1.writeFile)(SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
 }
-function normalizeInfinitudeStatus(payload) {
-    if (payload === null || payload === undefined) {
+function createClient(settings) {
+    return new carrier_api_1.CarrierApiClient(settings.username, settings.password);
+}
+function selectSystem(settings, systems) {
+    if (!systems.length)
         return null;
+    if (settings.system_serial) {
+        const selected = systems.find((system) => system.profile.serial === settings.system_serial);
+        if (selected)
+            return selected;
     }
-    if (typeof payload !== "object") {
-        return null;
-    }
-    const record = payload;
-    if (Array.isArray(record.status) && record.status[0] && typeof record.status[0] === "object") {
-        return record.status[0];
-    }
-    if (record.zones || record.mode || record.oat) {
-        return record;
-    }
-    return null;
+    return systems[0] ?? null;
 }
-async function infinitudeFetch(route, init, timeoutMs = 10000) {
-    let lastError = null;
-    for (const baseUrl of INFINITUDE_URLS) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            const response = await fetch(`${baseUrl}${route}`, { ...init, signal: controller.signal });
-            clearTimeout(timer);
-            return response;
-        }
-        catch (error) {
-            clearTimeout(timer);
-            lastError = error instanceof Error ? error : new Error(String(error));
-        }
-    }
-    throw lastError ?? new Error("No Infinitude backends configured");
+function mapZones(system) {
+    return system.config.zones.map((configZone) => {
+        const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
+        const presets = configZone.activities.map((activity) => activity.type);
+        if (!presets.includes("resume"))
+            presets.push("resume");
+        return {
+            id: configZone.id,
+            name: configZone.name,
+            temperature: statusZone?.rt ?? null,
+            humidity: statusZone?.rh ?? null,
+            heat_setpoint: statusZone?.htsp ?? null,
+            cool_setpoint: statusZone?.clsp ?? null,
+            fan: statusZone?.fan === "off" ? "auto" : (statusZone?.fan ?? null),
+            activity: statusZone?.currentActivity ?? null,
+            conditioning: statusZone?.zoneconditioning ?? "idle",
+            hold: configZone.hold === "on",
+            hold_activity: configZone.holdActivity,
+            hold_until: configZone.otmr,
+            presets,
+        };
+    });
 }
-async function checkInfinitudeAlive() {
-    let lastError = null;
-    for (const baseUrl of INFINITUDE_URLS) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        try {
-            const response = await fetch(`${baseUrl}/Alive`, { signal: controller.signal });
-            clearTimeout(timer);
-            if (!response.ok) {
-                lastError = `${baseUrl} returned HTTP ${response.status}`;
-                continue;
+function buildSnapshot(settings) {
+    const system = selectSystem(settings, cachedSystems);
+    return {
+        connected: Boolean(system && !system.status.isDisconnected),
+        configured: isConfigured(settings),
+        error: lastError,
+        last_sync: lastSyncAt?.toISOString() ?? null,
+        identity_id: null,
+        system: system
+            ? {
+                serial: system.profile.serial,
+                name: settings.system_name || system.profile.name,
+                brand: system.profile.brand,
+                model: system.profile.model,
+                firmware: system.profile.firmware,
+                mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
+                outdoor_temp: system.status.oat,
+                filter_remaining: system.status.filtrlvl,
+                disconnected: Boolean(system.status.isDisconnected),
             }
-            const text = (await response.text()).trim();
-            if (text === "alive") {
-                return { alive: true, error: null, backend: baseUrl };
-            }
-            lastError = `${baseUrl} returned unexpected health response`;
-        }
-        catch (error) {
-            clearTimeout(timer);
-            lastError = error instanceof Error ? `${baseUrl}: ${error.message}` : String(error);
-        }
+            : null,
+        zones: system ? mapZones(system) : [],
+        systems: cachedSystems.map((item) => ({
+            serial: item.profile.serial,
+            name: item.profile.name,
+        })),
+    };
+}
+async function refreshCloudData(settings, force = false) {
+    if (!isConfigured(settings)) {
+        cachedSystems = [];
+        lastError = null;
+        lastSyncAt = null;
+        return buildSnapshot(settings);
     }
-    return { alive: false, error: lastError, backend: null };
-}
-function parseZones(status) {
-    const zones = status.zones?.[0]?.zone ?? [];
-    return zones.map((zone, index) => ({
-        id: asNumber(firstValue(zone.id)) ?? index + 1,
-        name: asString(firstValue(zone.name)) || `Zone ${index + 1}`,
-        temperature: asNumber(firstValue(zone.rt)),
-        humidity: asNumber(firstValue(zone.rh)),
-        heat_setpoint: asNumber(firstValue(zone.htsp)),
-        cool_setpoint: asNumber(firstValue(zone.clsp)),
-        fan: asString(firstValue(zone.fan)),
-        hold: asString(firstValue(zone.hold)),
-        hold_activity: asString(firstValue(zone.holdActivity)),
-        activity: asString(firstValue(zone.currentActivity)),
-        conditioning: asString(firstValue(zone.zoneconditioning)),
-        damper: asNumber(firstValue(zone.damperposition)),
-        hold_until: asString(firstValue(zone.otmr)),
-    }));
-}
-function isConnected(status) {
-    if (!status)
-        return false;
-    const zones = status.zones?.[0]?.zone ?? [];
-    return zones.length > 0 && zones.some((zone) => asNumber(firstValue(zone.rt)) !== null);
-}
-async function getInfinitudeTraffic() {
+    if (!force && lastSyncAt && Date.now() - lastSyncAt.getTime() < POLL_INTERVAL_MS - 2000) {
+        return buildSnapshot(settings);
+    }
     try {
-        const response = await infinitudeFetch("/api/state_keys");
-        if (!response.ok) {
-            return { keys: [], thermostat_seen: false, has_status: false, has_config: false };
+        const client = createClient(settings);
+        cachedSystems = await client.loadSystems();
+        lastSyncAt = new Date();
+        lastError = null;
+        const selected = selectSystem(settings, cachedSystems);
+        if (selected && !settings.system_serial) {
+            settings.system_serial = selected.profile.serial;
+            await saveSettings(settings);
         }
-        const keys = (await response.json());
-        const normalized = Array.isArray(keys) ? keys : [];
-        const hasStatus = normalized.some((key) => key === "status.json" || key.startsWith("status"));
-        const hasConfig = normalized.some((key) => key === "systems.xml" || key === "systems.json");
-        return {
-            keys: normalized,
-            thermostat_seen: hasStatus || hasConfig,
-            has_status: hasStatus,
-            has_config: hasConfig,
-        };
-    }
-    catch {
-        return { keys: [], thermostat_seen: false, has_status: false, has_config: false };
-    }
-}
-async function getInfinitudeStatus() {
-    const health = await checkInfinitudeAlive();
-    if (!health.alive) {
-        return {
-            proxy_online: false,
-            connected: false,
-            status: null,
-            zones: [],
-            error: health.error ?? "Infinitude proxy is not reachable",
-            backend: null,
-            traffic: { keys: [], thermostat_seen: false, has_status: false, has_config: false },
-        };
-    }
-    const traffic = await getInfinitudeTraffic();
-    try {
-        const response = await infinitudeFetch("/api/status/");
-        if (!response.ok) {
-            return {
-                proxy_online: true,
-                connected: false,
-                status: null,
-                zones: [],
-                error: `Infinitude returned HTTP ${response.status}`,
-                backend: health.backend,
-                traffic,
-            };
-        }
-        const payload = await response.json();
-        const status = normalizeInfinitudeStatus(payload);
-        if (!status) {
-            return {
-                proxy_online: true,
-                connected: false,
-                status: null,
-                zones: [],
-                error: null,
-                backend: health.backend,
-                traffic,
-            };
-        }
-        return {
-            proxy_online: true,
-            connected: isConnected(status),
-            status,
-            zones: parseZones(status),
-            error: null,
-            backend: health.backend,
-            traffic,
-        };
     }
     catch (error) {
-        return {
-            proxy_online: false,
-            connected: false,
-            status: null,
-            zones: [],
-            error: error instanceof Error ? error.message : String(error),
-            backend: health.backend,
-            traffic,
-        };
+        if (error instanceof carrier_api_1.CarrierAuthError) {
+            lastError = error.message;
+            cachedSystems = [];
+        }
+        else if (error instanceof carrier_api_1.CarrierApiError) {
+            lastError = error.message;
+        }
+        else {
+            lastError = error instanceof Error ? error.message : String(error);
+        }
     }
+    return buildSnapshot(settings);
+}
+function ensurePolling(settings) {
+    if (!isConfigured(settings)) {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        return;
+    }
+    if (pollTimer)
+        return;
+    pollTimer = setInterval(() => {
+        void refreshCloudData(settings, true);
+    }, POLL_INTERVAL_MS);
 }
 function sendJson(res, statusCode, payload) {
     const body = Buffer.from(JSON.stringify(payload));
@@ -267,8 +212,6 @@ function pageStyles() {
       --border: #e2e8f0;
       --accent: #0f766e;
       --accent-soft: #ccfbf1;
-      --heat: #f97316;
-      --cool: #38bdf8;
       --success: #16a34a;
       --danger: #dc2626;
       --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
@@ -386,7 +329,7 @@ function pageStyles() {
       font-size: 0.9rem;
       margin-bottom: 0.85rem;
     }
-    input, select, button, textarea {
+    input, select, button {
       font: inherit;
       border: 1px solid var(--border);
       border-radius: 0.65rem;
@@ -406,11 +349,7 @@ function pageStyles() {
       color: var(--text);
       border-color: var(--border);
     }
-    .steps {
-      display: grid;
-      gap: 0.75rem;
-      margin: 1rem 0;
-    }
+    .steps { display: grid; gap: 0.75rem; margin: 1rem 0; }
     .step {
       border: 1px solid var(--border);
       border-radius: 0.85rem;
@@ -418,11 +357,7 @@ function pageStyles() {
       background: var(--panel);
     }
     .step strong { display: block; margin-bottom: 0.35rem; }
-    .controls {
-      display: grid;
-      gap: 0.75rem;
-      margin-top: 1rem;
-    }
+    .controls { display: grid; gap: 0.75rem; margin-top: 1rem; }
     .control-row {
       display: flex;
       gap: 0.5rem;
@@ -430,10 +365,7 @@ function pageStyles() {
       align-items: end;
     }
     .control-row label { flex: 1 1 8rem; margin-bottom: 0; }
-    .message {
-      margin-top: 0.75rem;
-      font-size: 0.9rem;
-    }
+    .message { margin-top: 0.75rem; font-size: 0.9rem; }
     .message.error { color: var(--danger); }
     .message.success { color: var(--success); }
     @media (max-width: 900px) {
@@ -466,128 +398,87 @@ function renderPage(active, content) {
         <img src="/icon.svg" alt="" />
         <div>
           <h1>Bryant/Carrier HVAC</h1>
-          <p>Local thermostat control</p>
+          <p>Cloud thermostat control</p>
         </div>
       </div>
       <nav>${navHtml}</nav>
     </aside>
     <main class="main">${content}</main>
   </div>
-  <script>
-    const themeKey = "hvac-theme";
-    const savedTheme = localStorage.getItem(themeKey);
-    if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
-  </script>
 </body>
 </html>`;
 }
 function setupContent(settings) {
-    const proxyHost = settings.umbrel_lan_ip
-        ? escapeHtml(settings.umbrel_lan_ip)
-        : "your-umbrel-lan-ip";
-    const proxyPort = escapeHtml(PROXY_PORT);
-    const proxyTestUrl = settings.umbrel_lan_ip
-        ? `http://${escapeHtml(settings.umbrel_lan_ip)}:${proxyPort}`
-        : "";
     return `
     <div class="toolbar">
       <h2>Setup</h2>
-      <span class="status-pill warning" id="connection-pill">Checking connection…</span>
+      <span class="status-pill warning" id="connection-pill">Checking…</span>
     </div>
     <div class="card">
-      <h3>No thermostat IP needed</h3>
+      <h3>Sign in with your Bryant/Carrier account</h3>
       <p class="muted">
-        Bryant/Carrier Infinity and Evolution thermostats connect <em>to</em> your Umbrel
-        through an HTTP proxy. You only need your Umbrel's LAN address.
+        Use the same email and password as the Bryant or Carrier mobile app.
+        Your Umbrel needs internet access to reach Carrier's cloud API.
       </p>
       <form id="setup-form">
         <label>
-          Umbrel LAN IP address
-          <input id="umbrel_lan_ip" name="umbrel_lan_ip" value="${escapeHtml(settings.umbrel_lan_ip)}" placeholder="192.168.1.42" required />
+          Email / username
+          <input id="username" name="username" value="${escapeHtml(settings.username)}" autocomplete="username" required />
         </label>
-        <p class="muted">Find this in your router's DHCP client list or Umbrel network settings.</p>
-        <button type="submit">Save LAN IP</button>
+        <label>
+          Password
+          <input id="password" name="password" type="password" autocomplete="current-password" ${settings.configured ? "" : "required"} placeholder="${settings.configured ? "Leave blank to keep saved password" : ""}" />
+        </label>
+        <button type="submit">Save &amp; connect</button>
         <div class="message" id="setup-message"></div>
       </form>
     </div>
     <div class="card" style="margin-top:1rem">
-      <h3>Configure thermostat proxy</h3>
-      <p class="muted">On your thermostat touchscreen:</p>
+      <h3>How it works</h3>
       <div class="steps">
-        <div class="step"><strong>Bryant Evolution Connex:</strong> tap <em>Menu</em> (bottom-right) → down arrow → <em>Wireless</em> → <em>Advanced Settings</em> → <em>Manage Proxy</em></div>
-        <div class="step"><strong>Carrier Infinity Touch:</strong> <em>Menu → Settings → Wireless → Advanced</em></div>
-        <div class="step">Set <em>Proxy Server</em> to <code>${proxyHost}</code> (IP only, no port suffix)</div>
-        <div class="step">Set <em>Proxy Port</em> to <code>${proxyPort}</code> (or <code>4036</code> if your docs mention port 3000)</div>
-        <div class="step">Save, then reboot the thermostat if data does not appear within 2 minutes</div>
-      </div>
-      ${proxyTestUrl ? `<p class="muted">From a phone on the same WiFi, open <a href="${proxyTestUrl}" target="_blank" rel="noopener">${proxyTestUrl}</a>. You should see the Infinitude page.</p>` : ""}
-      <p class="muted">
-        Umbrel and the thermostat must be on the same local network. Do not use a hostname here —
-        use the numeric LAN IP.
-      </p>
-    </div>
-    <div class="card" style="margin-top:1rem">
-      <h3>If thermostat traffic stays at none</h3>
-      <div class="steps">
-        <div class="step"><strong>Check software version.</strong> Bryant Connex: <em>Menu → down arrow → Service → Model/Serial Numbers → Wall Control</em>. Carrier: <em>Menu → Settings → About</em>. Newer Connex software (Series B/C) may not support local proxy.</div>
-        <div class="step"><strong>No proxy menu?</strong> If <em>Wireless → Advanced Settings → Manage Proxy</em> is missing, your software may have removed local proxy support. Reply with your wall control software version.</div>
-        <div class="step"><strong>Clear and re-save proxy.</strong> Blank out proxy server/port, save, reboot, then enter IP <code>${proxyHost}</code> and port <code>${proxyPort}</code> again.</div>
-        <div class="step"><strong>Confirm the phone app still works.</strong> If the Carrier/Bryant app is offline too, fix WiFi on the thermostat first.</div>
-        <div class="step"><strong>Leave proxy port blank?</strong> Some installs default to port 80. We do not expose 80 on Umbrel, so the port field must be <code>${proxyPort}</code> or <code>4036</code>, not empty.</div>
+        <div class="step"><strong>No thermostat IP needed.</strong> This app talks to Carrier's cloud, the same way the official mobile app does.</div>
+        <div class="step"><strong>Works with newer Connex firmware.</strong> Local proxy setups often fail on Series B Connex software (firmware 4.17+).</div>
+        <div class="step"><strong>Internet required.</strong> Umbrel must reach Carrier's servers. Your thermostat still uses WiFi as usual.</div>
       </div>
     </div>
     <div class="card" style="margin-top:1rem">
       <h3>Diagnostics</h3>
-      <div class="stat-row"><span class="muted">Infinitude proxy</span><span id="diag-proxy">Checking…</span></div>
-      <div class="stat-row"><span class="muted">Thermostat traffic</span><span id="diag-traffic">Checking…</span></div>
-      <div class="stat-row"><span class="muted">Thermostat data</span><span id="diag-thermostat">Checking…</span></div>
-      <div class="stat-row"><span class="muted">Backend</span><span id="diag-backend">—</span></div>
+      <div class="stat-row"><span class="muted">Cloud connection</span><span id="diag-cloud">Checking…</span></div>
+      <div class="stat-row"><span class="muted">Systems found</span><span id="diag-systems">—</span></div>
+      <div class="stat-row"><span class="muted">Last sync</span><span id="diag-sync">—</span></div>
       <p class="muted message" id="diag-error" style="margin-top:0.75rem"></p>
     </div>
     <script>
       async function refreshConnection() {
         const pill = document.getElementById("connection-pill");
-        const diagProxy = document.getElementById("diag-proxy");
-        const diagTraffic = document.getElementById("diag-traffic");
-        const diagThermostat = document.getElementById("diag-thermostat");
-        const diagBackend = document.getElementById("diag-backend");
+        const diagCloud = document.getElementById("diag-cloud");
+        const diagSystems = document.getElementById("diag-systems");
+        const diagSync = document.getElementById("diag-sync");
         const diagError = document.getElementById("diag-error");
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
-          diagBackend.textContent = data.backend || "—";
+          diagSystems.textContent = String(data.systems?.length ?? 0);
+          diagSync.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never";
           if (data.connected) {
             pill.className = "status-pill success";
-            pill.textContent = "Connected (" + data.zones.length + " zone" + (data.zones.length === 1 ? "" : "s") + ")";
-            diagProxy.textContent = "Online";
-            diagTraffic.textContent = "Seen by proxy";
-            diagThermostat.textContent = "Receiving data";
+            pill.textContent = "Connected";
+            diagCloud.textContent = "Online";
             diagError.textContent = "";
-          } else if (data.proxy_online) {
+          } else if (data.configured) {
             pill.className = "status-pill warning";
-            pill.textContent = "Proxy online — waiting for thermostat";
-            diagProxy.textContent = "Online";
-            if (data.traffic?.thermostat_seen) {
-              diagTraffic.textContent = "Seen, waiting for status";
-              diagThermostat.textContent = "Partial data only";
-              diagError.textContent = "The thermostat has reached Umbrel, but full status is not available yet. Wait a few minutes or reboot the thermostat.";
-            } else {
-              diagTraffic.textContent = "None detected";
-              diagThermostat.textContent = "No thermostat data yet";
-              diagError.textContent = "Proxy is healthy. Set proxy server to your Umbrel IP, proxy port to ${proxyPort}, save on the thermostat, then wait 1–2 minutes.";
-            }
+            pill.textContent = data.error ? "Connection issue" : "Waiting for data";
+            diagCloud.textContent = data.error ? "Error" : "Syncing";
+            diagError.textContent = data.error || "Credentials saved. Waiting for thermostat data from Carrier cloud.";
           } else {
-            pill.className = "status-pill error";
-            pill.textContent = "Proxy offline";
-            diagProxy.textContent = "Offline";
-            diagThermostat.textContent = "Unavailable";
-            diagError.textContent = data.error || "Infinitude container is not reachable from the app.";
+            pill.className = "status-pill warning";
+            pill.textContent = "Not configured";
+            diagCloud.textContent = "Not signed in";
+            diagError.textContent = "Enter your Bryant/Carrier account credentials above.";
           }
         } catch (error) {
           pill.className = "status-pill error";
-          pill.textContent = "Cannot reach backend";
-          diagProxy.textContent = "Unknown";
-          diagThermostat.textContent = "Unknown";
+          pill.textContent = "Cannot reach app";
           diagError.textContent = String(error);
         }
       }
@@ -599,14 +490,14 @@ function setupContent(settings) {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            umbrel_lan_ip: form.umbrel_lan_ip.value.trim(),
-            system_name: form.system_name?.value?.trim() || undefined,
+            username: form.username.value.trim(),
+            password: form.password.value,
           }),
         });
         const data = await res.json();
         message.className = "message " + (res.ok ? "success" : "error");
-        message.textContent = res.ok ? "Saved." : (data.error || "Could not save settings.");
-        if (res.ok) location.reload();
+        message.textContent = res.ok ? "Connected. Redirecting…" : (data.error || "Could not save credentials.");
+        if (res.ok) window.location.href = "/";
       });
       refreshConnection();
       setInterval(refreshConnection, 5000);
@@ -634,6 +525,8 @@ function dashboardContent() {
 
       function modeLabel(mode) {
         if (!mode) return "Unknown";
+        if (mode === "fanonly") return "Fan only";
+        if (mode === "auto") return "Auto";
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       }
 
@@ -642,8 +535,11 @@ function dashboardContent() {
         const humidity = zone.humidity ?? "—";
         const heat = zone.heat_setpoint ?? "—";
         const cool = zone.cool_setpoint ?? "—";
+        const presetOptions = (zone.presets || []).map((preset) =>
+          '<option value="' + escapeHtml(preset) + '">' + escapeHtml(preset === "resume" ? "Resume schedule" : preset) + '</option>'
+        ).join("");
         return \`
-          <div class="card" data-zone-id="\${zone.id}">
+          <div class="card" data-zone-id="\${escapeHtml(zone.id)}">
             <h3>\${escapeHtml(zone.name)}</h3>
             <div class="temp-display">\${temp}°</div>
             <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
@@ -670,14 +566,7 @@ function dashboardContent() {
                   </select>
                 </label>
                 <label>Preset
-                  <select data-field="preset">
-                    <option value="home">Home</option>
-                    <option value="away">Away</option>
-                    <option value="sleep">Sleep</option>
-                    <option value="wake">Wake</option>
-                    <option value="hold">Hold manual</option>
-                    <option value="schedule">Resume schedule</option>
-                  </select>
+                  <select data-field="preset">\${presetOptions}</select>
                 </label>
               </div>
               <div class="control-row">
@@ -690,16 +579,17 @@ function dashboardContent() {
       }
 
       async function applyZoneChanges(card) {
-        const zoneId = Number(card.dataset.zoneId);
+        const zoneId = card.dataset.zoneId;
         const message = card.querySelector(".zone-message");
-        const heat = card.querySelector('[data-field="heat_setpoint"]').value;
-        const cool = card.querySelector('[data-field="cool_setpoint"]').value;
-        const fan = card.querySelector('[data-field="fan"]').value;
-        const preset = card.querySelector('[data-field="preset"]').value;
-        const res = await fetch("/api/zone/" + zoneId, {
+        const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ heat_setpoint: heat, cool_setpoint: cool, fan, preset }),
+          body: JSON.stringify({
+            heat_setpoint: card.querySelector('[data-field="heat_setpoint"]').value,
+            cool_setpoint: card.querySelector('[data-field="cool_setpoint"]').value,
+            fan: card.querySelector('[data-field="fan"]').value,
+            preset: card.querySelector('[data-field="preset"]').value,
+          }),
         });
         const data = await res.json();
         message.className = "message " + (res.ok ? "success" : "error");
@@ -714,20 +604,17 @@ function dashboardContent() {
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
+          if (!data.configured) {
+            pill.className = "status-pill warning";
+            pill.textContent = "Setup required";
+            systemCards.innerHTML = '<div class="card"><h3>Sign in required</h3><p class="muted">Connect your Bryant/Carrier account on the <a href="/setup">Setup page</a>.</p></div>';
+            zoneCards.innerHTML = "";
+            return;
+          }
           if (!data.connected) {
-            if (data.proxy_online) {
-              pill.className = "status-pill warning";
-              pill.textContent = "Proxy online — waiting for thermostat";
-            } else {
-              pill.className = "status-pill error";
-              pill.textContent = data.error ? "Proxy offline" : "Not connected";
-            }
-            const detail = data.proxy_online
-              ? "The Infinitude proxy is running, but no thermostat data has arrived yet. Finish proxy setup on the <a href=\"/setup\">Setup page</a>."
-              : (data.error
-                ? "Infinitude proxy is offline: " + escapeHtml(data.error) + ". Check that the app restarted cleanly, then open <a href=\"/setup\">Setup</a>."
-                : "Finish setup on the <a href=\"/setup\">Setup page</a> and configure your thermostat proxy.");
-            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + detail + '</p></div>';
+            pill.className = "status-pill warning";
+            pill.textContent = data.error ? "Connection issue" : "Syncing";
+            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + escapeHtml(data.error || "Waiting for data from Carrier cloud. Check your internet connection.") + '</p></div>';
             zoneCards.innerHTML = "";
             return;
           }
@@ -752,6 +639,7 @@ function dashboardContent() {
               <h3>Outdoor</h3>
               <div class="temp-display">\${outdoor}°</div>
               <div class="stat-row"><span class="muted">Filter remaining</span><span>\${filter}%</span></div>
+              <div class="stat-row"><span class="muted">Firmware</span><span>\${escapeHtml(data.system.firmware || "—")}</span></div>
             </div>
           \`;
           systemCards.querySelectorAll("[data-mode]").forEach((button) => {
@@ -785,9 +673,6 @@ function dashboardContent() {
   `;
 }
 function settingsContent(settings) {
-    const proxyTarget = settings.umbrel_lan_ip
-        ? `${escapeHtml(settings.umbrel_lan_ip)}:${escapeHtml(PROXY_PORT)}`
-        : "(set LAN IP first)";
     return `
     <div class="toolbar"><h2>Settings</h2></div>
     <div class="card">
@@ -797,12 +682,15 @@ function settingsContent(settings) {
           <input id="system_name" name="system_name" value="${escapeHtml(settings.system_name)}" />
         </label>
         <label>
-          Umbrel LAN IP address
-          <input id="umbrel_lan_ip" name="umbrel_lan_ip" value="${escapeHtml(settings.umbrel_lan_ip)}" placeholder="192.168.1.42" />
+          Bryant/Carrier username
+          <input id="username" name="username" value="${escapeHtml(settings.username)}" autocomplete="username" />
         </label>
-        <p class="muted">Thermostat proxy target: <strong>${proxyTarget}</strong></p>
-        <p class="muted">Advanced schedules: <a href="http://${escapeHtml(settings.umbrel_lan_ip || "umbrel-local")}:${escapeHtml(PROXY_PORT)}" target="_blank" rel="noopener">Open Infinitude UI</a></p>
+        <label>
+          Password
+          <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Leave blank to keep saved password" />
+        </label>
         <button type="submit">Save settings</button>
+        <button type="button" class="secondary" id="clear-credentials" style="margin-left:0.5rem">Sign out</button>
         <div class="message" id="settings-message"></div>
       </form>
     </div>
@@ -815,8 +703,9 @@ function settingsContent(settings) {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            umbrel_lan_ip: form.umbrel_lan_ip.value.trim(),
             system_name: form.system_name.value.trim(),
+            username: form.username.value.trim(),
+            password: form.password.value,
           }),
         });
         const data = await res.json();
@@ -824,110 +713,177 @@ function settingsContent(settings) {
         message.textContent = res.ok ? "Saved." : (data.error || "Could not save settings.");
         if (res.ok) setTimeout(() => location.reload(), 500);
       });
+      document.getElementById("clear-credentials").addEventListener("click", async () => {
+        const message = document.getElementById("settings-message");
+        const res = await fetch("/api/settings", {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        message.className = "message " + (res.ok ? "success" : "error");
+        message.textContent = res.ok ? "Signed out." : (data.error || "Could not clear credentials.");
+        if (res.ok) window.location.href = "/setup";
+      });
     </script>
   `;
 }
+function findConfigZone(system, zoneId) {
+    return system.config.zones.find((zone) => zone.id === zoneId);
+}
+function findManualActivity(system, zoneId) {
+    const zone = findConfigZone(system, zoneId);
+    return zone?.activities.find((activity) => activity.type === "manual");
+}
 async function handleApi(route, req, res, settings) {
     if (route === "/api/status" && req.method === "GET") {
-        const snapshot = await getInfinitudeStatus();
-        const mode = asString(firstValue(snapshot.status?.mode));
+        const snapshot = await refreshCloudData(settings);
         sendJson(res, 200, {
-            connected: snapshot.connected,
-            proxy_online: snapshot.proxy_online,
-            error: snapshot.error,
-            backend: snapshot.backend,
-            settings,
-            proxy_port: PROXY_PORT,
-            infinitude_urls: INFINITUDE_URLS,
-            system: {
-                mode: mode.toLowerCase(),
-                outdoor_temp: asNumber(firstValue(snapshot.status?.oat)),
-                filter_remaining: asNumber(firstValue(snapshot.status?.filtrhvacremtime))
-                    ?? asNumber(firstValue(snapshot.status?.filtrhvac)),
-            },
-            zones: snapshot.zones,
-            traffic: snapshot.traffic,
+            ...snapshot,
+            settings: publicSettings(settings),
         });
         return;
     }
     if (route === "/api/settings" && req.method === "GET") {
-        sendJson(res, 200, { settings, proxy_port: PROXY_PORT });
+        sendJson(res, 200, { settings: publicSettings(settings) });
+        return;
+    }
+    if (route === "/api/settings" && req.method === "DELETE") {
+        const cleared = { ...DEFAULT_SETTINGS, system_name: settings.system_name };
+        await saveSettings(cleared);
+        cachedSystems = [];
+        lastSyncAt = null;
+        lastError = null;
+        sendJson(res, 200, { settings: publicSettings(cleared) });
         return;
     }
     if (route === "/api/settings" && req.method === "PUT") {
         const body = JSON.parse((await readBody(req)).toString("utf8"));
+        const username = body.username?.trim() ?? settings.username;
+        const password = body.password?.trim() ? body.password : settings.password;
+        if (!username || !password) {
+            sendJson(res, 400, { error: "Username and password are required" });
+            return;
+        }
         const next = {
-            umbrel_lan_ip: body.umbrel_lan_ip?.trim() ?? settings.umbrel_lan_ip,
-            system_name: body.system_name?.trim() || settings.system_name,
+            system_name: body.system_name?.trim() || settings.system_name || DEFAULT_SETTINGS.system_name,
+            username,
+            password,
+            system_serial: body.system_serial?.trim() ?? settings.system_serial,
         };
-        await saveSettings(next);
-        sendJson(res, 200, { settings: next, proxy_port: PROXY_PORT });
+        try {
+            const client = createClient(next);
+            const validation = await client.validate();
+            if (!validation.systemCount) {
+                sendJson(res, 400, { error: "No HVAC systems found on this Carrier account" });
+                return;
+            }
+            await saveSettings(next);
+            cachedSystems = [];
+            lastSyncAt = null;
+            await refreshCloudData(next, true);
+            ensurePolling(next);
+            sendJson(res, 200, { settings: publicSettings(next) });
+        }
+        catch (error) {
+            const message = error instanceof carrier_api_1.CarrierAuthError
+                ? error.message
+                : error instanceof carrier_api_1.CarrierApiError
+                    ? error.message
+                    : error instanceof Error
+                        ? error.message
+                        : "Could not validate credentials";
+            sendJson(res, 400, { error: message });
+        }
         return;
     }
     if (route === "/api/mode" && req.method === "POST") {
+        if (!isConfigured(settings)) {
+            sendJson(res, 400, { error: "Account not configured" });
+            return;
+        }
         const body = JSON.parse((await readBody(req)).toString("utf8"));
         const mode = body.mode?.trim().toLowerCase();
-        if (!mode || !["heat", "cool", "auto", "off"].includes(mode)) {
-            sendJson(res, 400, { error: "mode must be heat, cool, auto, or off" });
+        const allowed = ["heat", "cool", "auto", "off", "fanonly"];
+        if (!mode || !allowed.includes(mode)) {
+            sendJson(res, 400, { error: "mode must be heat, cool, auto, off, or fanonly" });
             return;
         }
-        const params = new URLSearchParams({ mode });
-        const response = await infinitudeFetch("/api/mode", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: params.toString(),
-        });
-        const payload = await response.json().catch(() => ({}));
-        sendJson(res, response.ok ? 200 : 502, response.ok ? payload : { error: "Infinitude mode update failed", details: payload });
+        const system = selectSystem(settings, cachedSystems);
+        if (!system) {
+            sendJson(res, 502, { error: "No system loaded" });
+            return;
+        }
+        try {
+            const client = createClient(settings);
+            await client.setMode(system.profile.serial, mode);
+            await refreshCloudData(settings, true);
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            sendJson(res, 502, {
+                error: error instanceof Error ? error.message : "Mode update failed",
+            });
+        }
         return;
     }
-    const zoneMatch = route.match(/^\/api\/zone\/(\d+)$/);
+    const zoneMatch = route.match(/^\/api\/zone\/([^/]+)$/);
     if (zoneMatch && req.method === "POST") {
-        const zoneId = zoneMatch[1];
-        const body = JSON.parse((await readBody(req)).toString("utf8"));
-        if (body.preset) {
-            const preset = body.preset.toLowerCase();
-            const holdParams = new URLSearchParams();
-            if (preset === "schedule") {
-                holdParams.set("hold", "off");
-                holdParams.set("activity", "home");
-            }
-            else if (preset === "hold") {
-                holdParams.set("hold", "on");
-                holdParams.set("activity", "manual");
-                holdParams.set("until", "forever");
-            }
-            else if (["home", "away", "sleep", "wake"].includes(preset)) {
-                holdParams.set("hold", "on");
-                holdParams.set("activity", preset);
-            }
-            const holdResponse = await infinitudeFetch(`/api/${zoneId}/hold?${holdParams.toString()}`, { method: "GET" });
-            if (!holdResponse.ok) {
-                sendJson(res, 502, { error: "Preset update failed" });
-                return;
-            }
-        }
-        const activityParams = new URLSearchParams();
-        if (body.heat_setpoint !== undefined && body.heat_setpoint !== "") {
-            activityParams.set("htsp", String(body.heat_setpoint));
-        }
-        if (body.cool_setpoint !== undefined && body.cool_setpoint !== "") {
-            activityParams.set("clsp", String(body.cool_setpoint));
-        }
-        if (body.fan) {
-            activityParams.set("fan", body.fan);
-        }
-        if ([...activityParams.keys()].length > 0) {
-            const activityResponse = await infinitudeFetch(`/api/${zoneId}/activity/manual?${activityParams.toString()}`, { method: "GET" });
-            if (!activityResponse.ok) {
-                sendJson(res, 502, { error: "Zone update failed" });
-                return;
-            }
-            const payload = await activityResponse.json().catch(() => ({}));
-            sendJson(res, 200, payload);
+        if (!isConfigured(settings)) {
+            sendJson(res, 400, { error: "Account not configured" });
             return;
         }
-        sendJson(res, 200, { ok: true });
+        const zoneId = decodeURIComponent(zoneMatch[1]);
+        const body = JSON.parse((await readBody(req)).toString("utf8"));
+        const system = selectSystem(settings, cachedSystems);
+        if (!system) {
+            sendJson(res, 502, { error: "No system loaded" });
+            return;
+        }
+        const client = createClient(settings);
+        const serial = system.profile.serial;
+        try {
+            if (body.preset) {
+                const preset = body.preset.toLowerCase();
+                if (preset === "resume" || preset === "schedule") {
+                    await client.resumeSchedule(serial, zoneId);
+                }
+                else if (["home", "away", "sleep", "wake", "manual", "vacation"].includes(preset)) {
+                    await client.setHold(serial, zoneId, preset, null);
+                }
+            }
+            const heat = body.heat_setpoint !== undefined && body.heat_setpoint !== "" ? String(body.heat_setpoint) : null;
+            const cool = body.cool_setpoint !== undefined && body.cool_setpoint !== "" ? String(body.cool_setpoint) : null;
+            const fan = body.fan?.trim().toLowerCase();
+            if (heat || cool || (fan && fan !== "auto")) {
+                const manual = findManualActivity(system, zoneId);
+                const heatSetpoint = heat ?? String(manual?.htsp ?? system.status.zones.find((z) => z.id === zoneId)?.htsp ?? 68);
+                const coolSetpoint = cool ?? String(manual?.clsp ?? system.status.zones.find((z) => z.id === zoneId)?.clsp ?? 74);
+                let fanMode;
+                if (fan === "auto" || fan === "on") {
+                    fanMode = "off";
+                }
+                else if (fan && ["low", "med", "high", "off"].includes(fan)) {
+                    fanMode = fan;
+                }
+                else if (manual?.fan) {
+                    fanMode = manual.fan;
+                }
+                await client.setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode);
+                await client.setHold(serial, zoneId, "manual", null);
+            }
+            else if (fan === "auto" || fan === "low" || fan === "med" || fan === "high") {
+                const configZone = findConfigZone(system, zoneId);
+                const activityType = (configZone?.holdActivity || system.status.zones.find((z) => z.id === zoneId)?.currentActivity || "home");
+                const fanMode = fan === "auto" ? "off" : fan;
+                await client.updateFan(serial, zoneId, activityType, fanMode);
+            }
+            await refreshCloudData(settings, true);
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            sendJson(res, 502, {
+                error: error instanceof Error ? error.message : "Zone update failed",
+            });
+        }
         return;
     }
     sendJson(res, 404, { error: "Not found" });
@@ -936,6 +892,7 @@ async function handleRequest(req, res) {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const route = url.pathname;
     const settings = await loadSettings();
+    ensurePolling(settings);
     if (route === "/health" || route === "/healthz") {
         sendText(res, 200, "text/plain; charset=utf-8", "ok");
         return;
@@ -961,12 +918,13 @@ async function handleRequest(req, res) {
         }
         return;
     }
+    const publicView = publicSettings(settings);
     if (route === "/setup") {
-        sendText(res, 200, "text/html; charset=utf-8", renderPage("setup", setupContent(settings)));
+        sendText(res, 200, "text/html; charset=utf-8", renderPage("setup", setupContent(publicView)));
         return;
     }
     if (route === "/settings") {
-        sendText(res, 200, "text/html; charset=utf-8", renderPage("settings", settingsContent(settings)));
+        sendText(res, 200, "text/html; charset=utf-8", renderPage("settings", settingsContent(publicView)));
         return;
     }
     sendText(res, 200, "text/html; charset=utf-8", renderPage("dashboard", dashboardContent()));
@@ -978,4 +936,10 @@ const port = Number(process.env.PORT ?? 3000);
     });
 }).listen(port, "0.0.0.0", () => {
     console.log(`Bryant/Carrier HVAC v${APP_VERSION} listening on :${port}`);
+    void loadSettings().then((settings) => {
+        ensurePolling(settings);
+        if (isConfigured(settings)) {
+            void refreshCloudData(settings, true);
+        }
+    });
 });

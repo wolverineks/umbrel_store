@@ -1,30 +1,30 @@
 manifestVersion: 1
 id: wolverineks-hvac
 name: Bryant/Carrier HVAC
-tagline: Local web UI for Bryant Evolution and Carrier Infinity heat pumps
+tagline: Cloud web UI for Bryant Evolution and Carrier Infinity heat pumps
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-hvac/icon.svg
 category: automation
-version: "1.0.4"
+version: "2.0.0"
 port: 4040
 description: >-
-  Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel.
+  Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel
+  through Carrier's cloud API — the same connection the official mobile app uses.
 
 
-  This app does not need your thermostat's IP address. Instead, you point the
-  thermostat's wireless proxy setting at your Umbrel's LAN address and port 4035.
+  Sign in with your Bryant or Carrier account email and password. No thermostat
+  IP address or local proxy setup is required.
 
 
-  Important: Some newer thermostat firmware versions break local proxy access.
-  If setup fails, check firmware version (4.05 and below often work best) before
-  upgrading.
+  Internet access is required. This approach works with newer Connex firmware
+  (Series B/C) where local Infinitude proxy setups often fail.
 developer: Wolverineks
 website: https://github.com/wolverineks
 repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Add Bryant Evolution Connex-specific menu paths for proxy setup and software
-  version lookup.
+  v2.0.0 — Cloud pivot. Removed Infinitude local proxy. Connect with your
+  Bryant/Carrier account credentials instead. Works with newer Connex firmware.
 dependencies: []
 path: ""
 defaultUsername: ""
