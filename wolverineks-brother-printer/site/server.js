@@ -9,13 +9,14 @@ const node_child_process_1 = require("node:child_process");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.4";
+const APP_VERSION = "1.0.5";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = node_path_1.default.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const PRINT_JOB_TEST_PATH = node_path_1.default.join(__dirname, "print-job.test");
 const IPPTOOL_PATH = process.env.IPPTOOL_PATH?.trim() || "/usr/bin/ipptool";
+const PDFTOPPM_PATH = process.env.PDFTOPPM_PATH?.trim() || "/usr/bin/pdftoppm";
 const ESCL_NS = "http://schemas.hp.com/imaging/escl/2011/05/03";
 const PWG_NS = "http://www.pwg.org/schemas/2010/12/sm";
 const DEFAULT_SETTINGS = {
@@ -523,11 +524,19 @@ async function deleteScan(id) {
     await (0, promises_1.rm)(node_path_1.default.join(SCANS_DIR, `${id}.json`), { force: true });
     return true;
 }
-function runCommand(command, args) {
+function runCommand(command, args, timeoutMs = 120000) {
     return new Promise((resolve, reject) => {
         const child = (0, node_child_process_1.spawn)(command, args);
         let stdout = "";
         let stderr = "";
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            child.kill("SIGTERM");
+            settled = true;
+            reject(new Error(`Command timed out: ${command} ${args.join(" ")}`));
+        }, timeoutMs);
         child.stdout.on("data", (chunk) => {
             stdout += chunk.toString();
         });
@@ -535,6 +544,10 @@ function runCommand(command, args) {
             stderr += chunk.toString();
         });
         child.on("error", (error) => {
+            if (settled)
+                return;
+            clearTimeout(timer);
+            settled = true;
             if (error.code === "ENOENT") {
                 reject(new Error(`Command not found: ${command}`));
                 return;
@@ -542,16 +555,64 @@ function runCommand(command, args) {
             reject(error);
         });
         child.on("close", (code) => {
+            if (settled)
+                return;
+            clearTimeout(timer);
+            settled = true;
             resolve({ stdout, stderr, code: code ?? 1 });
         });
     });
 }
-function ippDocumentFormat(filePath) {
+function sortPagePaths(paths) {
+    return [...paths].sort((left, right) => {
+        const leftMatch = left.match(/-(\d+)\.[^.]+$/);
+        const rightMatch = right.match(/-(\d+)\.[^.]+$/);
+        const leftNum = Number.parseInt(leftMatch?.[1] ?? "0", 10);
+        const rightNum = Number.parseInt(rightMatch?.[1] ?? "0", 10);
+        return leftNum - rightNum;
+    });
+}
+async function convertImageToJpeg(inputPath, outputPath) {
+    for (const command of ["magick", "convert"]) {
+        const result = await runCommand(command, [inputPath, "-quality", "90", outputPath]);
+        if (result.code === 0)
+            return;
+    }
+    throw new Error("Failed to convert image to JPEG for printing.");
+}
+async function preparePrintPages(filePath) {
     const ext = node_path_1.default.extname(filePath).toLowerCase();
-    if (ext === ".jpg" || ext === ".jpeg")
-        return "image/jpeg";
-    // Brother's IPP endpoint accepts octet-stream for PDF/PNG and handles conversion internally.
-    return "application/octet-stream";
+    const cleanup = [];
+    if (ext === ".pdf") {
+        if (!(0, node_fs_1.existsSync)(PDFTOPPM_PATH)) {
+            throw new Error(`pdftoppm was not found at ${PDFTOPPM_PATH}. Reinstall the app so the container can install poppler-utils.`);
+        }
+        const prefix = node_path_1.default.join(DATA_ROOT, `print-page-${(0, node_crypto_1.randomUUID)()}`);
+        const result = await runCommand(PDFTOPPM_PATH, ["-jpeg", "-r", "300", filePath, prefix], 180000);
+        if (result.code !== 0) {
+            throw new Error(result.stderr.trim() || result.stdout.trim() || "Failed to convert PDF to images for printing.");
+        }
+        const base = node_path_1.default.basename(prefix);
+        const dir = node_path_1.default.dirname(prefix);
+        const pages = sortPagePaths((await (0, promises_1.readdir)(dir))
+            .filter((name) => name.startsWith(`${base}-`) && name.endsWith(".jpg"))
+            .map((name) => node_path_1.default.join(dir, name)));
+        if (pages.length === 0) {
+            throw new Error("The PDF did not produce any printable pages.");
+        }
+        cleanup.push(...pages);
+        return { pages, cleanup };
+    }
+    if (ext === ".png" || ext === ".webp" || ext === ".gif") {
+        const outputPath = node_path_1.default.join(DATA_ROOT, `print-img-${(0, node_crypto_1.randomUUID)()}.jpg`);
+        await convertImageToJpeg(filePath, outputPath);
+        cleanup.push(outputPath);
+        return { pages: [outputPath], cleanup };
+    }
+    if (ext === ".jpg" || ext === ".jpeg") {
+        return { pages: [filePath], cleanup: [] };
+    }
+    throw new Error("Unsupported file type. Upload a PDF, JPEG, or PNG.");
 }
 function formatPrintError(result) {
     const output = `${result.stderr}\n${result.stdout}`.trim();
@@ -571,10 +632,28 @@ async function ensurePrintTools() {
         throw new Error("Print job template is missing from the app bundle.");
     }
 }
-async function printFile(host, filePath, options) {
-    await ensurePrintTools();
+async function getPrintWarnings(host, options) {
+    const warnings = [];
+    try {
+        const printer = await getPrinterStatus(host);
+        const blackCartridge = printer.ink.cartridges.find((level) => level.color === "Black");
+        if (options.color === "monochrome" && blackCartridge && (blackCartridge.percent === 0 || blackCartridge.low)) {
+            warnings.push("Black ink is low or empty. Monochrome jobs may not print until the black cartridge is replaced.");
+        }
+        if (printer.device_status_level === "warning" || printer.device_status_level === "error") {
+            warnings.push(printer.device_status_detail);
+        }
+    }
+    catch {
+        // Ignore status lookup failures and still attempt printing.
+    }
+    return warnings;
+}
+async function sendIppPrintJob(host, filePath, options) {
     const copies = String(Math.max(1, Math.min(999, options.copies)));
     const result = await runCommand(IPPTOOL_PATH, [
+        "-T",
+        "60",
         "-f",
         filePath,
         "-d",
@@ -584,7 +663,7 @@ async function printFile(host, filePath, options) {
         "-d",
         `filename=${filePath}`,
         "-d",
-        `filetype=${ippDocumentFormat(filePath)}`,
+        "filetype=image/jpeg",
         "-d",
         `copies=${copies}`,
         "-d",
@@ -597,6 +676,26 @@ async function printFile(host, filePath, options) {
     ]);
     if (result.code !== 0) {
         throw new Error(formatPrintError(result));
+    }
+}
+async function printFile(host, filePath, options) {
+    await ensurePrintTools();
+    const warnings = await getPrintWarnings(host, options);
+    const prepared = await preparePrintPages(filePath);
+    const cleanup = [...prepared.cleanup];
+    try {
+        for (const pagePath of prepared.pages) {
+            await sendIppPrintJob(host, pagePath, options);
+        }
+        const pageLabel = prepared.pages.length === 1 ? "page" : "pages";
+        return {
+            message: `Sent ${prepared.pages.length} ${pageLabel} to the printer.`,
+            warnings,
+            pages_printed: prepared.pages.length,
+        };
+    }
+    finally {
+        await Promise.all(cleanup.map((filePath) => (0, promises_1.rm)(filePath, { force: true })));
     }
 }
 function parseMultipart(contentType, body) {
@@ -1158,7 +1257,10 @@ function printContent() {
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "Print failed");
           message.className = "message success show";
-          message.textContent = data.message || "Print job submitted.";
+          const warningText = Array.isArray(data.warnings) && data.warnings.length
+            ? " Warning: " + data.warnings.join(" ")
+            : "";
+          message.textContent = (data.message || "Print job submitted.") + warningText;
           form.reset();
         } catch (error) {
           message.className = "message error show";
@@ -1399,8 +1501,8 @@ async function handleApi(req, res, route, settings) {
                     color: parsed.fields.color === "monochrome" ? "monochrome" : "color",
                     media: parsed.fields.media || "na_letter_8.5x11in",
                 };
-                await printFile(settings.printer_host, tempPath, options);
-                sendJson(res, 200, { message: "Print job submitted to the printer." });
+                const result = await printFile(settings.printer_host, tempPath, options);
+                sendJson(res, 200, result);
             }
             finally {
                 await (0, promises_1.rm)(tempPath, { force: true });
@@ -1427,11 +1529,12 @@ async function handleApi(req, res, route, settings) {
                 color: body.color_mode === "BlackAndWhite1" ? "monochrome" : "color",
                 media: "na_letter_8.5x11in",
             };
-            const result = await performScan(settings.printer_host, scanOptions);
-            const record = await saveScan(result.buffers, result.contentType, scanOptions);
+            const scanResult = await performScan(settings.printer_host, scanOptions);
+            const record = await saveScan(scanResult.buffers, scanResult.contentType, scanOptions);
             const filePath = node_path_1.default.join(SCANS_DIR, record.filename);
-            await printFile(settings.printer_host, filePath, printOptions);
+            const printResult = await printFile(settings.printer_host, filePath, printOptions);
             sendJson(res, 200, {
+                ...printResult,
                 message: `Copied ${record.page_count} page(s) to the printer.`,
                 record,
             });
