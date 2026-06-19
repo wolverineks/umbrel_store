@@ -44,6 +44,7 @@ export type CarrierZoneActivity = {
 export type CarrierConfigZone = {
   id: string;
   name: string;
+  enabled: string | null;
   hold: string;
   holdActivity: string | null;
   otmr: string | null;
@@ -352,6 +353,7 @@ export class CarrierApiClient {
             zones {
               id
               name
+              enabled
               hold
               holdActivity
               otmr
@@ -501,6 +503,7 @@ function normalizeConfigZones(value: unknown): CarrierConfigZone[] {
     return {
       id: asString(record.id),
       name: asString(record.name) || "Zone",
+      enabled: nullableString(record.enabled),
       hold: asString(record.hold),
       holdActivity: nullableString(record.holdActivity),
       otmr: nullableString(record.otmr),

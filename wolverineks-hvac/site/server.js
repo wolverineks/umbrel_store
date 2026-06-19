@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -77,8 +77,15 @@ function selectSystem(settings, systems) {
     }
     return systems[0] ?? null;
 }
+function isZoneEnabled(configZone, statusZone) {
+    const enabled = statusZone?.enabled ?? configZone.enabled;
+    return enabled === "on";
+}
 function mapZones(system) {
-    return system.config.zones.map((configZone) => {
+    return system.config.zones.filter((configZone) => {
+        const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
+        return isZoneEnabled(configZone, statusZone);
+    }).map((configZone) => {
         const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
         const presets = configZone.activities.map((activity) => activity.type);
         if (!presets.includes("resume"))
@@ -462,7 +469,8 @@ function setupContent(settings) {
           diagSync.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never";
           if (data.connected) {
             pill.className = "status-pill success";
-            pill.textContent = "Connected";
+            const zoneCount = data.zones?.length ?? 0;
+            pill.textContent = zoneCount === 1 ? "Connected" : "Connected (" + zoneCount + " zones)";
             diagCloud.textContent = "Online";
             diagError.textContent = "";
           } else if (data.configured) {

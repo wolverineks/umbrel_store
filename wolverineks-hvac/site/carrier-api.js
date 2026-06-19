@@ -201,6 +201,7 @@ class CarrierApiClient {
             zones {
               id
               name
+              enabled
               hold
               holdActivity
               otmr
@@ -322,6 +323,7 @@ function normalizeConfigZones(value) {
         return {
             id: asString(record.id),
             name: asString(record.name) || "Zone",
+            enabled: nullableString(record.enabled),
             hold: asString(record.hold),
             holdActivity: nullableString(record.holdActivity),
             otmr: nullableString(record.otmr),

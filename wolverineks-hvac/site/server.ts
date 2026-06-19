@@ -12,7 +12,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -139,8 +139,16 @@ function selectSystem(settings: Settings, systems: CarrierSystem[]): CarrierSyst
   return systems[0] ?? null;
 }
 
+function isZoneEnabled(configZone: CarrierSystem["config"]["zones"][number], statusZone?: CarrierSystem["status"]["zones"][number]): boolean {
+  const enabled = statusZone?.enabled ?? configZone.enabled;
+  return enabled === "on";
+}
+
 function mapZones(system: CarrierSystem): ZoneView[] {
-  return system.config.zones.map((configZone) => {
+  return system.config.zones.filter((configZone) => {
+    const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
+    return isZoneEnabled(configZone, statusZone);
+  }).map((configZone) => {
     const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
     const presets = configZone.activities.map((activity) => activity.type);
     if (!presets.includes("resume")) presets.push("resume");
@@ -536,7 +544,8 @@ function setupContent(settings: PublicSettings): string {
           diagSync.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never";
           if (data.connected) {
             pill.className = "status-pill success";
-            pill.textContent = "Connected";
+            const zoneCount = data.zones?.length ?? 0;
+            pill.textContent = zoneCount === 1 ? "Connected" : "Connected (" + zoneCount + " zones)";
             diagCloud.textContent = "Online";
             diagError.textContent = "";
           } else if (data.configured) {
