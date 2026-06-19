@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.0.4";
+const APP_VERSION = "2.1.0";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -460,9 +460,191 @@ function pageStyles() {
     .message { margin-top: 0.75rem; font-size: 0.9rem; }
     .message.error { color: var(--danger); }
     .message.success { color: var(--success); }
+    #zone-cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .zone-control-card {
+      overflow: hidden;
+    }
+    .zone-control-layout {
+      display: grid;
+      grid-template-columns: minmax(140px, 180px) 1fr;
+      gap: 1.25rem;
+      margin-top: 0.75rem;
+      align-items: start;
+    }
+    .thermo-widget {
+      position: relative;
+      display: grid;
+      grid-template-columns: 2rem 1fr;
+      gap: 0.35rem;
+      user-select: none;
+      touch-action: none;
+    }
+    .thermo-scale {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 280px;
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding: 0.15rem 0;
+    }
+    .thermo-track {
+      position: relative;
+      height: 280px;
+      border-radius: 999px;
+      background: linear-gradient(to top, #fef3c7 0%, #e0f2fe 55%, #dbeafe 100%);
+      border: 2px solid var(--border);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
+    }
+    html[data-theme="dark"] .thermo-track {
+      background: linear-gradient(to top, #451a03 0%, #0c4a6e 55%, #1e3a5f 100%);
+    }
+    .thermo-band {
+      position: absolute;
+      left: 18%;
+      right: 18%;
+      border-radius: 999px;
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .thermo-band-heat {
+      background: #f97316;
+      bottom: 0;
+    }
+    .thermo-band-cool {
+      background: #38bdf8;
+      top: 0;
+    }
+    .thermo-indoor-marker {
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      height: 3px;
+      background: var(--text);
+      border-radius: 999px;
+      pointer-events: none;
+      z-index: 2;
+      opacity: 0.55;
+    }
+    .thermo-indoor-marker::after {
+      content: "";
+      position: absolute;
+      right: -6px;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text);
+      transform: translateY(-50%);
+    }
+    .thermo-handle {
+      position: absolute;
+      left: 50%;
+      transform: translate(-50%, 50%);
+      z-index: 3;
+      border: none;
+      border-radius: 999px;
+      padding: 0.35rem 0.55rem;
+      min-width: 3.1rem;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: grab;
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);
+    }
+    .thermo-handle:active { cursor: grabbing; }
+    .thermo-handle-heat {
+      background: #ea580c;
+      color: #fff;
+    }
+    .thermo-handle-cool {
+      background: #0284c7;
+      color: #fff;
+    }
+    .zone-control-card.mode-heat .thermo-handle-cool,
+    .zone-control-card.mode-heat .thermo-band-cool,
+    .zone-control-card.mode-cool .thermo-handle-heat,
+    .zone-control-card.mode-cool .thermo-band-heat {
+      display: none;
+    }
+    .zone-side-panel {
+      display: grid;
+      gap: 1rem;
+    }
+    .fan-control {
+      border: 1px solid var(--border);
+      border-radius: 0.85rem;
+      padding: 0.85rem 1rem;
+      background: var(--bg);
+    }
+    .fan-label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .fan-label-row span:last-child {
+      color: var(--accent);
+      font-size: 0.85rem;
+    }
+    .fan-control input[type="range"] {
+      width: 100%;
+      margin: 0.35rem 0 0.5rem;
+      accent-color: var(--accent);
+    }
+    .fan-ticks {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.25rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    .preset-tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
+      gap: 0.5rem;
+    }
+    .preset-tile {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 0.55rem 0.45rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+    .preset-tile:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .preset-tile.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .preset-tile:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    .zone-readout {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.25rem;
+    }
+    .zone-readout .temp-display {
+      font-size: 2rem;
+      margin: 0;
+    }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       .sidebar { position: static; height: auto; }
+      .zone-control-layout { grid-template-columns: 1fr; }
     }
   `;
 }
@@ -618,6 +800,12 @@ function dashboardContent() {
     </div>
     <div id="zone-cards" class="grid" style="margin-top:1rem"></div>
     <script>
+      const THERMO_MIN = 60;
+      const THERMO_MAX = 90;
+      const THERMO_DEADBAND = 2;
+      const FAN_LEVELS = ["auto", "low", "med", "high"];
+      const FAN_LABELS = ["Auto", "Low", "Medium", "High"];
+
       function escapeHtml(value) {
         return String(value)
           .replaceAll("&", "&amp;")
@@ -626,86 +814,325 @@ function dashboardContent() {
           .replaceAll('"', "&quot;");
       }
 
-      function modeLabel(mode) {
-        if (!mode) return "Unknown";
-        if (mode === "fanonly") return "Fan only";
-        if (mode === "auto") return "Auto";
-        return mode.charAt(0).toUpperCase() + mode.slice(1);
+      function normalizeMode(mode) {
+        if (!mode) return "auto";
+        const m = String(mode).toLowerCase();
+        if (m.includes("cool")) return "cool";
+        if (m.includes("heat") || m === "emheat") return "heat";
+        if (m === "fanonly" || m === "fan_only") return "fanonly";
+        if (m === "off") return "off";
+        return "auto";
       }
 
-      function renderZoneCard(zone) {
+      function modeLabel(mode) {
+        const normalized = normalizeMode(mode);
+        if (normalized === "fanonly") return "Fan only";
+        if (normalized === "auto") return "Auto";
+        return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+      }
+
+      function clampTemp(value) {
+        return Math.max(THERMO_MIN, Math.min(THERMO_MAX, value));
+      }
+
+      function parseTemp(value, fallback) {
+        const parsed = Number.parseInt(String(value), 10);
+        return Number.isFinite(parsed) ? clampTemp(parsed) : fallback;
+      }
+
+      function tempToBottom(temp) {
+        return ((clampTemp(temp) - THERMO_MIN) / (THERMO_MAX - THERMO_MIN)) * 100;
+      }
+
+      function bottomToTemp(bottom) {
+        const ratio = Math.max(0, Math.min(100, bottom)) / 100;
+        return clampTemp(Math.round(THERMO_MIN + ratio * (THERMO_MAX - THERMO_MIN)));
+      }
+
+      function fanToIndex(fan) {
+        if (fan === "on") return 1;
+        const index = FAN_LEVELS.indexOf(fan || "auto");
+        return index >= 0 ? index : 0;
+      }
+
+      function presetLabel(preset) {
+        if (preset === "resume") return "Resume";
+        return preset.charAt(0).toUpperCase() + preset.slice(1);
+      }
+
+      function updateThermoWidget(widget) {
+        const track = widget.querySelector(".thermo-track");
+        const heatHandle = widget.querySelector(".thermo-handle-heat");
+        const coolHandle = widget.querySelector(".thermo-handle-cool");
+        const heatBand = widget.querySelector(".thermo-band-heat");
+        const coolBand = widget.querySelector(".thermo-band-cool");
+        const indoorMarker = widget.querySelector(".thermo-indoor-marker");
+        const heat = parseTemp(heatHandle.dataset.value, 68);
+        const cool = parseTemp(coolHandle.dataset.value, 74);
+        const indoor = parseTemp(widget.dataset.indoor, heat);
+        const heatBottom = tempToBottom(heat);
+        const coolBottom = tempToBottom(cool);
+        const indoorBottom = tempToBottom(indoor);
+
+        heatHandle.dataset.value = String(heat);
+        coolHandle.dataset.value = String(cool);
+        heatHandle.textContent = heat + "°";
+        coolHandle.textContent = cool + "°";
+        heatHandle.style.bottom = heatBottom + "%";
+        coolHandle.style.bottom = coolBottom + "%";
+        indoorMarker.style.bottom = indoorBottom + "%";
+
+        if (heatBand) {
+          heatBand.style.height = heatBottom + "%";
+        }
+        if (coolBand) {
+          coolBand.style.height = (100 - coolBottom) + "%";
+        }
+      }
+
+      function nearestVisibleHandle(widget, temp) {
+        const card = widget.closest(".zone-control-card");
+        const mode = card.dataset.systemMode || "auto";
+        if (mode === "heat") return widget.querySelector(".thermo-handle-heat");
+        if (mode === "cool") return widget.querySelector(".thermo-handle-cool");
+        const heatHandle = widget.querySelector(".thermo-handle-heat");
+        const coolHandle = widget.querySelector(".thermo-handle-cool");
+        const heat = parseTemp(heatHandle.dataset.value, 68);
+        const cool = parseTemp(coolHandle.dataset.value, 74);
+        return Math.abs(temp - heat) <= Math.abs(temp - cool) ? heatHandle : coolHandle;
+      }
+
+      function setHandleTemp(widget, handle, temp) {
+        const heatHandle = widget.querySelector(".thermo-handle-heat");
+        const coolHandle = widget.querySelector(".thermo-handle-cool");
+        let next = clampTemp(temp);
+        if (handle.classList.contains("thermo-handle-heat") && coolHandle.offsetParent !== null) {
+          const cool = parseTemp(coolHandle.dataset.value, 74);
+          next = Math.min(next, cool - THERMO_DEADBAND);
+        }
+        if (handle.classList.contains("thermo-handle-cool") && heatHandle.offsetParent !== null) {
+          const heat = parseTemp(heatHandle.dataset.value, 68);
+          next = Math.max(next, heat + THERMO_DEADBAND);
+        }
+        handle.dataset.value = String(next);
+        updateThermoWidget(widget);
+      }
+
+      function tempFromPointer(track, clientY) {
+        const rect = track.getBoundingClientRect();
+        const ratio = 1 - Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+        return bottomToTemp(ratio * 100);
+      }
+
+      function initThermoWidget(widget) {
+        if (widget.dataset.initialized === "true") return;
+        widget.dataset.initialized = "true";
+        const track = widget.querySelector(".thermo-track");
+        const handles = widget.querySelectorAll(".thermo-handle");
+        updateThermoWidget(widget);
+
+        handles.forEach((handle) => {
+          handle.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            const card = widget.closest(".zone-control-card");
+            card.dataset.dragging = "true";
+            handle.setPointerCapture(event.pointerId);
+
+            const onMove = (moveEvent) => {
+              setHandleTemp(widget, handle, tempFromPointer(track, moveEvent.clientY));
+            };
+
+            const onEnd = async () => {
+              card.dataset.dragging = "false";
+              handle.removeEventListener("pointermove", onMove);
+              handle.removeEventListener("pointerup", onEnd);
+              handle.removeEventListener("pointercancel", onEnd);
+              await applyZoneSetpoints(card);
+            };
+
+            handle.addEventListener("pointermove", onMove);
+            handle.addEventListener("pointerup", onEnd);
+            handle.addEventListener("pointercancel", onEnd);
+          });
+        });
+
+        track.addEventListener("pointerdown", (event) => {
+          if (event.target.closest(".thermo-handle")) return;
+          const handle = nearestVisibleHandle(widget, tempFromPointer(track, event.clientY));
+          if (!handle) return;
+          setHandleTemp(widget, handle, tempFromPointer(track, event.clientY));
+          const card = widget.closest(".zone-control-card");
+          applyZoneSetpoints(card);
+        });
+      }
+
+      async function postZoneUpdate(card, payload) {
+        const zoneId = card.dataset.zoneId;
+        const message = card.querySelector(".zone-message");
+        message.className = "message";
+        message.textContent = "Updating…";
+        const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        message.className = "message " + (res.ok ? "success" : "error");
+        message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
+        if (res.ok) {
+          setTimeout(() => loadDashboard({ soft: true }), 600);
+        }
+        return res.ok;
+      }
+
+      async function applyZoneSetpoints(card) {
+        const widget = card.querySelector(".thermo-widget");
+        const heatHandle = widget.querySelector(".thermo-handle-heat");
+        const coolHandle = widget.querySelector(".thermo-handle-cool");
+        const payload = {};
+        if (heatHandle.offsetParent !== null) {
+          payload.heat_setpoint = heatHandle.dataset.value;
+        }
+        if (coolHandle.offsetParent !== null) {
+          payload.cool_setpoint = coolHandle.dataset.value;
+        }
+        if (!Object.keys(payload).length) return false;
+        return postZoneUpdate(card, payload);
+      }
+
+      function initFanSlider(card) {
+        const slider = card.querySelector('[data-field="fan"]');
+        const label = card.querySelector("[data-fan-label]");
+        if (!slider || slider.dataset.initialized === "true") return;
+        slider.dataset.initialized = "true";
+
+        const syncLabel = () => {
+          const index = Number.parseInt(slider.value, 10);
+          label.textContent = FAN_LABELS[index] || "Auto";
+        };
+
+        slider.addEventListener("input", syncLabel);
+        slider.addEventListener("change", async () => {
+          const fan = FAN_LEVELS[Number.parseInt(slider.value, 10)] || "auto";
+          await postZoneUpdate(card, { fan });
+        });
+        syncLabel();
+      }
+
+      function initPresetTiles(card) {
+        card.querySelectorAll("[data-preset]").forEach((tile) => {
+          if (tile.dataset.initialized === "true") return;
+          tile.dataset.initialized = "true";
+          tile.addEventListener("click", async () => {
+            card.querySelectorAll("[data-preset]").forEach((item) => {
+              item.disabled = true;
+            });
+            const ok = await postZoneUpdate(card, { preset: tile.dataset.preset });
+            card.querySelectorAll("[data-preset]").forEach((item) => {
+              item.disabled = false;
+            });
+            if (ok) {
+              card.querySelectorAll("[data-preset]").forEach((item) => {
+                item.classList.toggle("active", item.dataset.preset === tile.dataset.preset);
+              });
+            }
+          });
+        });
+      }
+
+      function initZoneCard(card) {
+        initThermoWidget(card.querySelector(".thermo-widget"));
+        initFanSlider(card);
+        initPresetTiles(card);
+      }
+
+      function renderZoneCard(zone, systemMode) {
         const unitLabel = "°F";
+        const normalizedMode = normalizeMode(systemMode);
         const temp = zone.temperature_display ?? (zone.temperature ?? "—");
         const humidity = zone.humidity ?? "—";
-        const heat = zone.heat_setpoint_display ?? (zone.heat_setpoint ?? "—");
-        const cool = zone.cool_setpoint_display ?? (zone.cool_setpoint ?? "—");
-        const presetOptions = (zone.presets || []).map((preset) =>
-          '<option value="' + escapeHtml(preset) + '">' + escapeHtml(preset === "resume" ? "Resume schedule" : preset) + '</option>'
+        const heat = parseTemp(zone.heat_setpoint_display ?? zone.heat_setpoint, 68);
+        const cool = parseTemp(zone.cool_setpoint_display ?? zone.cool_setpoint, 74);
+        const indoor = parseTemp(zone.temperature_display ?? zone.temperature, heat);
+        const fanIndex = fanToIndex(zone.fan);
+        const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
+        const presetTiles = (zone.presets || []).map((preset) =>
+          '<button type="button" class="preset-tile' + (preset === activePreset ? " active" : "") + '" data-preset="' + escapeHtml(preset) + '">' + escapeHtml(presetLabel(preset)) + "</button>"
         ).join("");
+        const heatLabel = normalizedMode === "cool" ? "" : heat + unitLabel;
+        const coolLabel = normalizedMode === "heat" ? "" : cool + unitLabel;
+        const targetSummary = normalizedMode === "heat"
+          ? "Heat " + heat + unitLabel
+          : normalizedMode === "cool"
+            ? "Cool " + cool + unitLabel
+            : "Heat " + heat + unitLabel + " / Cool " + cool + unitLabel;
+
         return \`
-          <div class="card" data-zone-id="\${escapeHtml(zone.id)}">
+          <div class="card zone-control-card mode-\${escapeHtml(normalizedMode)}" data-zone-id="\${escapeHtml(zone.id)}" data-system-mode="\${escapeHtml(normalizedMode)}">
             <h3>\${escapeHtml(zone.name)}</h3>
-            <div class="temp-label">Indoor</div>
-            <div class="temp-display">\${temp}\${temp === "—" ? "" : unitLabel}</div>
-            <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
-            <div class="stat-row"><span class="muted">Heat / cool targets</span><span>\${heat}\${heat === "—" ? "" : unitLabel} / \${cool}\${cool === "—" ? "" : unitLabel}</span></div>
-            <div class="stat-row"><span class="muted">Activity</span><span>\${escapeHtml(zone.activity || "—")}</span></div>
-            <div class="stat-row"><span class="muted">Conditioning</span><span>\${escapeHtml(zone.conditioning || "idle")}</span></div>
-            <div class="controls">
-              <div class="control-row">
-                <label>Heat setpoint
-                  <input type="number" step="1" min="50" max="90" data-field="heat_setpoint" value="\${heat === "—" ? "" : heat}" />
-                </label>
-                <label>Cool setpoint
-                  <input type="number" step="1" min="50" max="90" data-field="cool_setpoint" value="\${cool === "—" ? "" : cool}" />
-                </label>
+            <div class="zone-readout">
+              <div>
+                <div class="temp-label">Indoor</div>
+                <div class="temp-display">\${temp}\${temp === "—" ? "" : unitLabel}</div>
               </div>
-              <div class="control-row">
-                <label>Fan
-                  <select data-field="fan">
-                    <option value="auto" \${zone.fan === "auto" ? "selected" : ""}>Auto</option>
-                    <option value="on" \${zone.fan === "on" ? "selected" : ""}>On</option>
-                    <option value="low" \${zone.fan === "low" ? "selected" : ""}>Low</option>
-                    <option value="med" \${zone.fan === "med" ? "selected" : ""}>Medium</option>
-                    <option value="high" \${zone.fan === "high" ? "selected" : ""}>High</option>
-                  </select>
-                </label>
-                <label>Preset
-                  <select data-field="preset">\${presetOptions}</select>
-                </label>
+              <div>
+                <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
+                <div class="stat-row"><span class="muted">Targets</span><span>\${targetSummary}</span></div>
+                <div class="stat-row"><span class="muted">Activity</span><span>\${escapeHtml(zone.activity || "—")}</span></div>
+                <div class="stat-row"><span class="muted">Conditioning</span><span>\${escapeHtml(zone.conditioning || "idle")}</span></div>
               </div>
-              <div class="control-row">
-                <button type="button" data-action="apply-zone">Apply zone changes</button>
+            </div>
+            <div class="zone-control-layout">
+              <div
+                class="thermo-widget"
+                data-indoor="\${indoor}"
+                data-heat="\${heat}"
+                data-cool="\${cool}"
+              >
+                <div class="thermo-scale" aria-hidden="true">
+                  <span>90°</span>
+                  <span>80°</span>
+                  <span>70°</span>
+                  <span>60°</span>
+                </div>
+                <div class="thermo-track">
+                  <div class="thermo-band thermo-band-heat"></div>
+                  <div class="thermo-band thermo-band-cool"></div>
+                  <div class="thermo-indoor-marker" title="Indoor \${indoor}\${unitLabel}"></div>
+                  <button type="button" class="thermo-handle thermo-handle-heat" data-value="\${heat}" aria-label="Heat setpoint \${heatLabel}">\${heat}°</button>
+                  <button type="button" class="thermo-handle thermo-handle-cool" data-value="\${cool}" aria-label="Cool setpoint \${coolLabel}">\${cool}°</button>
+                </div>
               </div>
-              <div class="message zone-message"></div>
+              <div class="zone-side-panel">
+                <div class="fan-control">
+                  <div class="fan-label-row">
+                    <span>Fan</span>
+                    <span data-fan-label>\${FAN_LABELS[fanIndex]}</span>
+                  </div>
+                  <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Fan speed" />
+                  <div class="fan-ticks">
+                    <span>Auto</span>
+                    <span>Low</span>
+                    <span>Med</span>
+                    <span>High</span>
+                  </div>
+                </div>
+                <div>
+                  <div class="temp-label">Preset</div>
+                  <div class="preset-tiles">\${presetTiles}</div>
+                </div>
+                <div class="message zone-message"></div>
+              </div>
             </div>
           </div>
         \`;
       }
 
-      async function applyZoneChanges(card) {
-        const zoneId = card.dataset.zoneId;
-        const message = card.querySelector(".zone-message");
-        const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            heat_setpoint: card.querySelector('[data-field="heat_setpoint"]').value,
-            cool_setpoint: card.querySelector('[data-field="cool_setpoint"]').value,
-            fan: card.querySelector('[data-field="fan"]').value,
-            preset: card.querySelector('[data-field="preset"]').value,
-          }),
-        });
-        const data = await res.json();
-        message.className = "message " + (res.ok ? "success" : "error");
-        message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
-        if (res.ok) loadDashboard();
-      }
-
-      async function loadDashboard() {
+      async function loadDashboard(options = {}) {
         const pill = document.getElementById("connection-pill");
         const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
+        const zoneDragging = Boolean(zoneCards.querySelector('[data-dragging="true"]'));
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
@@ -729,53 +1156,57 @@ function dashboardContent() {
           const unitLabel = "°F";
           const outdoor = data.system.outdoor_temp_display ?? data.system.outdoor_temp ?? "—";
           const filter = data.system.filter_remaining ?? "—";
-          systemCards.innerHTML = \`
-            <div class="card">
-              <h3>System mode</h3>
-              <div class="temp-display" style="font-size:1.5rem">\${escapeHtml(modeLabel(mode))}</div>
-              <div class="control-row" style="margin-top:1rem">
-                <button type="button" data-mode="heat">Heat</button>
-                <button type="button" data-mode="cool">Cool</button>
-                <button type="button" data-mode="auto">Auto</button>
-                <button type="button" class="secondary" data-mode="off">Off</button>
+          if (!options.soft) {
+            systemCards.innerHTML = \`
+              <div class="card">
+                <h3>System mode</h3>
+                <div class="temp-display" style="font-size:1.5rem">\${escapeHtml(modeLabel(mode))}</div>
+                <div class="control-row" style="margin-top:1rem">
+                  <button type="button" data-mode="heat">Heat</button>
+                  <button type="button" data-mode="cool">Cool</button>
+                  <button type="button" data-mode="auto">Auto</button>
+                  <button type="button" class="secondary" data-mode="off">Off</button>
+                </div>
+                <div class="message" id="mode-message"></div>
               </div>
-              <div class="message" id="mode-message"></div>
-            </div>
-            <div class="card">
-              <h3>Outdoor</h3>
-              <div class="temp-label">Outside</div>
-              <div class="temp-display">\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
-              <div class="stat-row"><span class="muted">Filter remaining</span><span>\${filter}%</span></div>
-              <div class="stat-row"><span class="muted">Firmware</span><span>\${escapeHtml(data.system.firmware || "—")}</span></div>
-            </div>
-          \`;
-          systemCards.querySelectorAll("[data-mode]").forEach((button) => {
-            button.addEventListener("click", async () => {
-              const message = document.getElementById("mode-message");
-              const modeRes = await fetch("/api/mode", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ mode: button.dataset.mode }),
+              <div class="card">
+                <h3>Outdoor</h3>
+                <div class="temp-label">Outside</div>
+                <div class="temp-display">\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
+                <div class="stat-row"><span class="muted">Filter remaining</span><span>\${filter}%</span></div>
+                <div class="stat-row"><span class="muted">Firmware</span><span>\${escapeHtml(data.system.firmware || "—")}</span></div>
+              </div>
+            \`;
+            systemCards.querySelectorAll("[data-mode]").forEach((button) => {
+              button.addEventListener("click", async () => {
+                const message = document.getElementById("mode-message");
+                const modeRes = await fetch("/api/mode", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ mode: button.dataset.mode }),
+                });
+                const modeData = await modeRes.json();
+                message.className = "message " + (modeRes.ok ? "success" : "error");
+                message.textContent = modeRes.ok ? "Mode updated." : (modeData.error || "Mode update failed.");
+                if (modeRes.ok) loadDashboard();
               });
-              const modeData = await modeRes.json();
-              message.className = "message " + (modeRes.ok ? "success" : "error");
-              message.textContent = modeRes.ok ? "Mode updated." : (modeData.error || "Mode update failed.");
-              if (modeRes.ok) loadDashboard();
             });
-          });
-          zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone)).join("");
-          zoneCards.querySelectorAll("[data-action='apply-zone']").forEach((button) => {
-            button.addEventListener("click", () => applyZoneChanges(button.closest(".card")));
-          });
+          }
+          if (!zoneDragging) {
+            zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode)).join("");
+            zoneCards.querySelectorAll(".zone-control-card").forEach(initZoneCard);
+          }
         } catch (error) {
           pill.className = "status-pill error";
           pill.textContent = "Error";
-          systemCards.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + '</p></div>';
-          zoneCards.innerHTML = "";
+          if (!options.soft) {
+            systemCards.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + '</p></div>';
+            zoneCards.innerHTML = "";
+          }
         }
       }
       loadDashboard();
-      setInterval(loadDashboard, 15000);
+      setInterval(() => loadDashboard(), 15000);
     </script>
   `;
 }
