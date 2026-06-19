@@ -5,12 +5,13 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.0.4";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const PRINT_JOB_TEST_PATH = path.join(__dirname, "print-job.test");
+const IPPTOOL_PATH = process.env.IPPTOOL_PATH?.trim() || "/usr/bin/ipptool";
 
 const ESCL_NS = "http://schemas.hp.com/imaging/escl/2011/05/03";
 const PWG_NS = "http://www.pwg.org/schemas/2010/12/sm";
@@ -611,7 +612,13 @@ function runCommand(command: string, args: string[]): Promise<{ stdout: string; 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error(`Command not found: ${command}`));
+        return;
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
       resolve({ stdout, stderr, code: code ?? 1 });
     });
@@ -636,13 +643,22 @@ function formatPrintError(result: { stdout: string; stderr: string; code: number
   return output || "Print command failed";
 }
 
-async function printFile(host: string, filePath: string, options: PrintOptions): Promise<void> {
+async function ensurePrintTools(): Promise<void> {
+  if (!existsSync(IPPTOOL_PATH)) {
+    throw new Error(
+      `ipptool was not found at ${IPPTOOL_PATH}. Reinstall the app so the container can install the ipptool package.`,
+    );
+  }
   if (!existsSync(PRINT_JOB_TEST_PATH)) {
     throw new Error("Print job template is missing from the app bundle.");
   }
+}
+
+async function printFile(host: string, filePath: string, options: PrintOptions): Promise<void> {
+  await ensurePrintTools();
 
   const copies = String(Math.max(1, Math.min(999, options.copies)));
-  const result = await runCommand("ipptool", [
+  const result = await runCommand(IPPTOOL_PATH, [
     "-f",
     filePath,
     "-d",

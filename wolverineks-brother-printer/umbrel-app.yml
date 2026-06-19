@@ -4,7 +4,7 @@ name: Brother Print & Scan
 tagline: Web interface for your Brother MFC-J1360DW
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-brother-printer/icon.svg
 category: files
-version: "1.0.3"
+version: "1.0.4"
 port: 4030
 description: >-
   A custom web interface for your network-connected Brother MFC-J1360DW printer,
@@ -16,8 +16,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fix PDF printing by sending jobs directly over IPP instead of relying on a local
-  CUPS queue that does not exist inside the container.
+  Install the Alpine ipptool package in the container so PDF printing works instead
+  of failing with spawn ipptool ENOENT.
 dependencies: []
 path: ""
 defaultUsername: ""
