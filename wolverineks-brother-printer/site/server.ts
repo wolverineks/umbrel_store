@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.7";
+const APP_VERSION = "1.0.8";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -25,6 +25,7 @@ type Settings = {
 type ScanRecord = {
   id: string;
   filename: string;
+  display_name?: string;
   content_type: string;
   source: "platen" | "adf";
   color_mode: string;
@@ -33,6 +34,20 @@ type ScanRecord = {
   page_count: number;
   created_at: string;
 };
+
+function scanDisplayName(record: ScanRecord): string {
+  const custom = record.display_name?.trim();
+  if (custom) return custom;
+  const when = new Date(record.created_at).toLocaleString();
+  return `Scan ${when}`;
+}
+
+function normalizeScanRecord(record: ScanRecord): ScanRecord {
+  return {
+    ...record,
+    display_name: scanDisplayName(record),
+  };
+}
 
 type ScanOptions = {
   source: "platen" | "adf";
@@ -613,16 +628,18 @@ async function saveScan(
   const filePath = path.join(SCANS_DIR, filename);
   const merged = buffers.length === 1 ? buffers[0] : Buffer.concat(buffers);
   await writeFile(filePath, merged);
+  const createdAt = new Date().toISOString();
   const record: ScanRecord = {
     id,
     filename,
+    display_name: `Scan ${new Date(createdAt).toLocaleString()}`,
     content_type: contentType,
     source: options.source,
     color_mode: options.color_mode,
     resolution: options.resolution,
     format: options.format,
     page_count: buffers.length,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
   };
   await writeFile(path.join(SCANS_DIR, `${id}.json`), JSON.stringify(record, null, 2));
   return record;
@@ -641,14 +658,34 @@ async function listScans(): Promise<ScanRecord[]> {
       // ignore invalid metadata
     }
   }
-  return records.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return records
+    .map((record) => normalizeScanRecord(record))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
 async function getScanRecord(id: string): Promise<ScanRecord | null> {
   const metaPath = path.join(SCANS_DIR, `${id}.json`);
   if (!existsSync(metaPath)) return null;
   const raw = await readFile(metaPath, "utf8");
-  return JSON.parse(raw) as ScanRecord;
+  return normalizeScanRecord(JSON.parse(raw) as ScanRecord);
+}
+
+async function renameScan(id: string, displayName: string): Promise<ScanRecord | null> {
+  const record = await getScanRecord(id);
+  if (!record) return null;
+  const trimmed = displayName.trim();
+  if (!trimmed) {
+    throw new Error("Name cannot be empty.");
+  }
+  if (trimmed.length > 120) {
+    throw new Error("Name is too long.");
+  }
+  if (/[\\/<>:"|?*]/.test(trimmed)) {
+    throw new Error("Name contains invalid characters.");
+  }
+  const updated: ScanRecord = { ...record, display_name: trimmed };
+  await writeFile(path.join(SCANS_DIR, `${id}.json`), JSON.stringify(updated, null, 2));
+  return updated;
 }
 
 async function deleteScan(id: string): Promise<boolean> {
@@ -1129,19 +1166,133 @@ function renderPage(active: string, content: string): string {
     .message.show { display: block; }
     .message.error { background: #fef2f2; color: #b91c1c; }
     .message.success { background: #ecfdf5; color: #047857; }
-    .scan-list, .library-list {
+    .scan-list {
       display: grid;
       gap: 0.75rem;
     }
-    .scan-item, .library-item {
-      display: flex;
-      justify-content: space-between;
+    .library-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
       gap: 1rem;
+      min-height: 520px;
+    }
+    .library-sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      max-height: 72vh;
+      overflow: auto;
+      padding-right: 0.25rem;
+    }
+    .library-item {
+      display: flex;
       align-items: center;
+      gap: 0.75rem;
+      width: 100%;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.85rem;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+    }
+    .library-item:hover,
+    .library-item.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .library-thumb {
+      width: 44px;
+      height: 44px;
+      border-radius: 0.55rem;
+      object-fit: cover;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      flex: 0 0 44px;
+    }
+    .library-thumb.pdf-thumb {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+    .library-item-text {
+      min-width: 0;
+      flex: 1;
+    }
+    .library-item-text strong {
+      display: block;
+      font-size: 0.9rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .library-item-text span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.75rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .library-preview-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-height: 520px;
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      background: var(--panel);
       padding: 1rem;
+    }
+    .library-preview-stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 360px;
+      background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 0.9rem;
-      background: var(--panel);
+      overflow: hidden;
+    }
+    .library-preview-large {
+      max-width: 100%;
+      max-height: 68vh;
+      object-fit: contain;
+    }
+    .library-preview-large.pdf-preview {
+      width: 100%;
+      height: 68vh;
+      border: 0;
+      background: white;
+    }
+    .library-preview-empty {
+      color: var(--muted);
+      text-align: center;
+      padding: 2rem;
+    }
+    .library-preview-meta h3 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    .library-preview-meta p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .library-rename {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .library-rename input {
+      flex: 1;
+      min-width: 180px;
     }
     .preview {
       margin-top: 1rem;
@@ -1153,6 +1304,9 @@ function renderPage(active: string, content: string): string {
       .layout { grid-template-columns: 1fr; }
       .sidebar { position: static; height: auto; }
       .sidebar-footer { position: static; margin-top: 1rem; }
+      .library-layout { grid-template-columns: 1fr; }
+      .library-sidebar { max-height: none; }
+      .library-preview-stage { min-height: 280px; }
     }
   </style>
 </head>
@@ -1519,33 +1673,163 @@ function libraryContent(): string {
   return `
     <div class="toolbar"><h2>Scan Library</h2></div>
     <section class="card">
-      <div class="library-list" id="library-list"></div>
+      <div class="library-layout" id="library-layout" hidden>
+        <div class="library-sidebar" id="library-list"></div>
+        <div class="library-preview-panel">
+          <div class="library-preview-stage" id="library-preview-stage">
+            <div class="library-preview-empty">Select a scan to preview it.</div>
+          </div>
+          <div class="library-preview-meta" id="library-preview-meta" hidden>
+            <h3 id="library-preview-title"></h3>
+            <p id="library-preview-details"></p>
+          </div>
+          <div class="library-rename" id="library-rename" hidden>
+            <input id="library-rename-input" type="text" maxlength="120" />
+            <button id="library-rename-btn" type="button">Rename</button>
+            <a class="button secondary" id="library-download-btn" href="#">Download</a>
+            <button class="secondary" id="library-delete-btn" type="button">Delete</button>
+          </div>
+        </div>
+      </div>
       <p class="muted" id="library-empty" hidden>No saved scans yet.</p>
     </section>
     <script>
-      async function loadLibrary() {
+      let libraryScans = [];
+      let selectedScanId = null;
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function isImageScan(scan) {
+        return scan.content_type && scan.content_type.startsWith("image/");
+      }
+
+      function scanFileUrl(scan) {
+        return "/api/scans/" + encodeURIComponent(scan.id) + "/file";
+      }
+
+      function thumbHtml(scan) {
+        if (isImageScan(scan)) {
+          return '<img class="library-thumb" src="' + scanFileUrl(scan) + '" alt="" loading="lazy" />';
+        }
+        return '<div class="library-thumb pdf-thumb">PDF</div>';
+      }
+
+      function previewHtml(scan) {
+        if (isImageScan(scan)) {
+          return '<img class="library-preview-large" src="' + scanFileUrl(scan) + '" alt="" />';
+        }
+        return '<iframe class="library-preview-large pdf-preview" src="' + scanFileUrl(scan) + '" title="PDF preview"></iframe>';
+      }
+
+      function renderPreview(scan) {
+        const stage = document.getElementById("library-preview-stage");
+        const meta = document.getElementById("library-preview-meta");
+        const rename = document.getElementById("library-rename");
+        const title = document.getElementById("library-preview-title");
+        const details = document.getElementById("library-preview-details");
+        const renameInput = document.getElementById("library-rename-input");
+        const downloadBtn = document.getElementById("library-download-btn");
+        if (!scan) {
+          stage.innerHTML = '<div class="library-preview-empty">Select a scan to preview it.</div>';
+          meta.hidden = true;
+          rename.hidden = true;
+          return;
+        }
+        stage.innerHTML = previewHtml(scan);
+        meta.hidden = false;
+        rename.hidden = false;
+        title.textContent = scan.display_name || scan.filename;
+        details.textContent = scan.source + " · " + scan.resolution + " dpi · " + scan.page_count + " page(s) · " + new Date(scan.created_at).toLocaleString();
+        renameInput.value = scan.display_name || scan.filename;
+        downloadBtn.href = scanFileUrl(scan);
+        downloadBtn.setAttribute("download", scan.filename);
+      }
+
+      function selectScan(id) {
+        selectedScanId = id;
+        document.querySelectorAll(".library-item").forEach((button) => {
+          button.classList.toggle("active", button.dataset.id === id);
+        });
+        const scan = libraryScans.find((entry) => entry.id === id);
+        renderPreview(scan || null);
+      }
+
+      async function renameSelectedScan() {
+        if (!selectedScanId) return;
+        const input = document.getElementById("library-rename-input");
+        const res = await fetch("/api/scans/" + encodeURIComponent(selectedScanId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ display_name: input.value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Rename failed");
+        await loadLibrary(selectedScanId);
+      }
+
+      async function deleteSelectedScan() {
+        if (!selectedScanId) return;
+        if (!confirm("Delete this scan?")) return;
+        await fetch("/api/scans/" + encodeURIComponent(selectedScanId), { method: "DELETE" });
+        selectedScanId = null;
+        await loadLibrary();
+      }
+
+      async function loadLibrary(preferredId) {
+        const layout = document.getElementById("library-layout");
         const list = document.getElementById("library-list");
         const empty = document.getElementById("library-empty");
         const res = await fetch("/api/scans");
         const data = await res.json();
-        if (!data.scans.length) {
-          list.innerHTML = "";
+        libraryScans = data.scans || [];
+        if (!libraryScans.length) {
+          layout.hidden = true;
           empty.hidden = false;
+          list.innerHTML = "";
+          renderPreview(null);
           return;
         }
+        layout.hidden = false;
         empty.hidden = true;
-        list.innerHTML = data.scans.map((scan) => {
-          const when = new Date(scan.created_at).toLocaleString();
-          return '<div class="library-item"><div><strong>' + scan.filename + '</strong><div class="muted">' + scan.source + ' · ' + scan.resolution + ' dpi · ' + when + '</div></div><div class="actions"><a class="button secondary" href="/api/scans/' + scan.id + '/file">Download</a><button class="secondary" data-id="' + scan.id + '" type="button">Delete</button></div></div>';
+        list.innerHTML = libraryScans.map((scan) => {
+          const when = new Date(scan.created_at).toLocaleDateString();
+          return '<button class="library-item" data-id="' + escapeHtml(scan.id) + '" type="button">' +
+            thumbHtml(scan) +
+            '<div class="library-item-text"><strong>' + escapeHtml(scan.display_name || scan.filename) + '</strong><span>' + escapeHtml(when) + ' · ' + escapeHtml(String(scan.resolution)) + ' dpi</span></div>' +
+            '</button>';
         }).join("");
-        list.querySelectorAll("button[data-id]").forEach((button) => {
-          button.addEventListener("click", async () => {
-            if (!confirm("Delete this scan?")) return;
-            await fetch("/api/scans/" + button.dataset.id, { method: "DELETE" });
-            loadLibrary();
-          });
+        list.querySelectorAll(".library-item").forEach((button) => {
+          button.addEventListener("click", () => selectScan(button.dataset.id));
         });
+        const nextId = preferredId && libraryScans.some((scan) => scan.id === preferredId)
+          ? preferredId
+          : (selectedScanId && libraryScans.some((scan) => scan.id === selectedScanId) ? selectedScanId : libraryScans[0].id);
+        selectScan(nextId);
       }
+
+      document.getElementById("library-rename-btn")?.addEventListener("click", async () => {
+        try {
+          await renameSelectedScan();
+        } catch (error) {
+          alert(error.message);
+        }
+      });
+      document.getElementById("library-rename-input")?.addEventListener("keydown", async (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        try {
+          await renameSelectedScan();
+        } catch (error) {
+          alert(error.message);
+        }
+      });
+      document.getElementById("library-delete-btn")?.addEventListener("click", deleteSelectedScan);
       loadLibrary();
     </script>`;
 }
@@ -1652,13 +1936,35 @@ async function handleApi(
       return true;
     }
     const body = await readFile(filePath);
-    sendBytes(res, 200, record.content_type, body, record.filename);
+    const downloadName = `${scanDisplayName(record)}${path.extname(record.filename)}`;
+    sendBytes(res, 200, record.content_type, body, downloadName);
     return true;
   }
 
-  const scanDeleteMatch = route.match(/^\/api\/scans\/([^/]+)$/);
-  if (scanDeleteMatch && req.method === "DELETE") {
-    const id = decodeURIComponent(scanDeleteMatch[1]);
+  const scanIdMatch = route.match(/^\/api\/scans\/([^/]+)$/);
+  if (scanIdMatch && req.method === "PATCH") {
+    try {
+      const id = decodeURIComponent(scanIdMatch[1]);
+      const body = await readJson<{ display_name?: string }>(req);
+      if (!body.display_name?.trim()) {
+        sendJson(res, 400, { error: "display_name is required" });
+        return true;
+      }
+      const updated = await renameScan(id, body.display_name);
+      if (!updated) {
+        sendJson(res, 404, { error: "Scan not found" });
+        return true;
+      }
+      sendJson(res, 200, { scan: updated });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(res, 400, { error: message });
+    }
+    return true;
+  }
+
+  if (scanIdMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(scanIdMatch[1]);
     const deleted = await deleteScan(id);
     sendJson(res, deleted ? 200 : 404, { ok: deleted });
     return true;

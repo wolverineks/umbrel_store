@@ -4,7 +4,7 @@ name: Brother Print & Scan
 tagline: Web interface for your Brother MFC-J1360DW
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-brother-printer/icon.svg
 category: files
-version: "1.0.7"
+version: "1.0.8"
 port: 4030
 description: >-
   A custom web interface for your network-connected Brother MFC-J1360DW printer,
@@ -16,8 +16,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Delete eSCL scan jobs after each scan and retry cleanup when the Brother scanner
-  stays busy, instead of failing with Scanner did not become idle in time.
+  Library now has thumbnail icons, a large preview pane, and rename support for
+  saved scans.
 dependencies: []
 path: ""
 defaultUsername: ""
