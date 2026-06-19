@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.2.2";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -131,7 +131,7 @@ function normalizeFanMode(fan) {
         return "auto";
     return value;
 }
-function formatFanDisplay(fan) {
+function formatFanSettingLabel(fan) {
     const normalized = normalizeFanMode(fan);
     if (!normalized)
         return null;
@@ -147,15 +147,42 @@ function formatFanDisplay(fan) {
         return "High";
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
-function resolveZoneFan(statusZone, configZone) {
-    const statusFan = normalizeFanMode(statusZone?.fan);
-    if (statusFan)
-        return statusFan;
+function formatFanSpeedLabel(speed) {
+    if (!speed || speed === "off")
+        return "Off";
+    if (speed === "on")
+        return "Low";
+    if (speed === "low")
+        return "Low";
+    if (speed === "med")
+        return "Medium";
+    if (speed === "high")
+        return "High";
+    return speed.charAt(0).toUpperCase() + speed.slice(1);
+}
+function formatFanDisplayForZone(setting, speed) {
+    const normalizedSetting = setting ?? "auto";
+    if (normalizedSetting === "auto") {
+        return formatFanSpeedLabel(speed);
+    }
+    return formatFanSettingLabel(normalizedSetting);
+}
+function resolveFanSetting(statusZone, configZone) {
     const activityType = statusZone?.currentActivity ?? configZone?.holdActivity ?? configZone?.activities[0]?.type ?? null;
     if (!activityType || !configZone)
-        return null;
+        return "auto";
     const activity = configZone.activities.find((item) => item.type === activityType);
-    return normalizeFanMode(activity?.fan);
+    return normalizeFanMode(activity?.fan) ?? "auto";
+}
+function resolveFanSpeed(statusZone) {
+    if (!statusZone?.fan)
+        return "off";
+    const value = statusZone.fan.toLowerCase();
+    if (value === "on")
+        return "low";
+    if (["off", "low", "med", "high"].includes(value))
+        return value;
+    return value;
 }
 function mapZones(system) {
     const cfgem = system.status.cfgem;
@@ -180,7 +207,8 @@ function mapZones(system) {
         if (!presets.includes("resume"))
             presets.push("resume");
         const indoorTemp = statusZone?.rt ?? null;
-        const fan = resolveZoneFan(statusZone, configZone);
+        const fan = resolveFanSetting(statusZone, configZone);
+        const fanSpeed = resolveFanSpeed(statusZone);
         zones.push({
             id: zoneId,
             name: configZone?.name ?? `Zone ${zoneId}`,
@@ -193,7 +221,8 @@ function mapZones(system) {
             cool_setpoint: (0, carrier_api_1.toFahrenheit)(statusZone?.clsp ?? null, cfgem),
             sensor_rt: indoorTemp,
             fan,
-            fan_display: formatFanDisplay(fan),
+            fan_speed: fanSpeed,
+            fan_display: formatFanDisplayForZone(fan, fanSpeed),
             activity: statusZone?.currentActivity ?? null,
             conditioning: statusZone?.zoneconditioning ?? "idle",
             hold: configZone?.hold === "on",
@@ -1232,8 +1261,21 @@ function dashboardContent() {
         return index >= 0 ? index : 0;
       }
 
+      function fanSpeedToIndex(speed) {
+        if (!speed || speed === "off") return 0;
+        if (speed === "on") return 1;
+        const index = FAN_LEVELS.indexOf(speed);
+        return index >= 0 ? index : 0;
+      }
+
+      function fanBarsIndex(zone) {
+        const settingIndex = fanToIndex(zone.fan);
+        if (settingIndex === 0) return fanSpeedToIndex(zone.fan_speed);
+        return settingIndex;
+      }
+
       function fanDisplayText(zone) {
-        return zone.fan_display || FAN_LABELS[fanToIndex(zone.fan)] || "—";
+        return zone.fan_display || "—";
       }
 
       function scheduleLabel(activity) {
@@ -1279,11 +1321,12 @@ function dashboardContent() {
         return scheduleLabel(preset);
       }
 
-      function syncFanBars(card, fanIndex) {
+      function syncFanBars(card, zone) {
+        const barsIndex = fanBarsIndex(zone);
         card.querySelectorAll(".fan-bar").forEach((bar, index) => {
-          const lit = fanIndex === 0 || index < (fanIndex === 1 ? 1 : fanIndex === 2 ? 2 : 4);
+          const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
           bar.classList.toggle("active", lit);
-          bar.classList.toggle("auto", fanIndex === 0);
+          bar.classList.toggle("auto", false);
         });
       }
 
@@ -1301,7 +1344,7 @@ function dashboardContent() {
         card.querySelectorAll(".fan-ticks span").forEach((tick, index) => {
           tick.classList.toggle("active", index === fanIndex);
         });
-        syncFanBars(card, fanIndex);
+        syncFanBars(card, zone);
       }
 
       function syncZoneReadout(card, zone) {
@@ -1496,14 +1539,18 @@ function dashboardContent() {
 
         const syncLabel = () => {
           const index = Number.parseInt(slider.value, 10);
-          const fanText = FAN_LABELS[index] || "Auto";
-          label.textContent = fanText;
           const readout = card.querySelector("[data-fan-readout]");
-          if (readout) readout.textContent = fanText;
+          const fanText = index === 0
+            ? (readout?.textContent?.trim() || "Off")
+            : (FAN_LABELS[index] || "Low");
+          label.textContent = fanText;
+          if (index !== 0 && readout) readout.textContent = fanText;
           card.querySelectorAll(".fan-ticks span").forEach((tick, tickIndex) => {
             tick.classList.toggle("active", tickIndex === index);
           });
-          syncFanBars(card, index);
+          if (index !== 0) {
+            syncFanBars(card, { fan: FAN_LEVELS[index], fan_speed: FAN_LEVELS[index] });
+          }
         };
 
         slider.addEventListener("input", syncLabel);
@@ -1541,10 +1588,11 @@ function dashboardContent() {
         initPresetTiles(card);
       }
 
-      function renderFanBars(fanIndex) {
+      function renderFanBars(zone) {
+        const barsIndex = fanBarsIndex(zone);
         return [0, 1, 2, 3].map((index) => {
-          const lit = fanIndex === 0 || index < (fanIndex === 1 ? 1 : fanIndex === 2 ? 2 : 4);
-          const classes = "fan-bar" + (lit ? " active" : "") + (fanIndex === 0 && lit ? " auto" : "");
+          const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
+          const classes = "fan-bar" + (lit ? " active" : "");
           return '<span class="' + classes + '"></span>';
         }).join("");
       }
@@ -1591,7 +1639,7 @@ function dashboardContent() {
                 \${ICONS.fan}
                 <span class="chip-label">Blower</span>
                 <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
-                <div class="fan-bars">\${renderFanBars(fanIndex)}</div>
+                <div class="fan-bars">\${renderFanBars({ fan: zone.fan || "auto", fan_speed: zone.fan_speed || "off" })}</div>
               </div>
               <div class="stat-chip">
                 \${ICONS.calendar}
