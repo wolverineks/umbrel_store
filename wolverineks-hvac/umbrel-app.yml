@@ -4,7 +4,7 @@ name: Bryant/Carrier HVAC
 tagline: Cloud web UI for Bryant Evolution and Carrier Infinity heat pumps
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-hvac/icon.svg
 category: automation
-version: "2.0.2"
+version: "2.0.3"
 port: 4040
 description: >-
   Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel
@@ -23,7 +23,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Show app version in the sidebar footer.
+  Label indoor temperature separately from setpoints, use Carrier rt sensor
+  field with proper zone matching, rounding, and fresher polling.
 dependencies: []
 path: ""
 defaultUsername: ""

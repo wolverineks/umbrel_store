@@ -180,6 +180,7 @@ class CarrierApiClient {
           status {
             isDisconnected
             mode
+            cfgem
             oat
             filtrlvl
             zones {
@@ -271,6 +272,7 @@ class CarrierApiClient {
             status: {
                 isDisconnected: asBool(status.isDisconnected),
                 mode: nullableString(status.mode),
+                cfgem: nullableString(status.cfgem),
                 oat: asNumber(status.oat),
                 filtrlvl: asNumber(status.filtrlvl),
                 zones: normalizeStatusZones(status.zones),

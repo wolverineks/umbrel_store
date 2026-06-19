@@ -12,11 +12,12 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.0.2";
+const APP_VERSION = "2.0.3";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
 const POLL_INTERVAL_MS = 30_000;
+const STATUS_CACHE_MS = 15_000;
 
 type Settings = {
   system_name: string;
@@ -36,6 +37,7 @@ type ZoneView = {
   id: string;
   name: string;
   temperature: number | null;
+  temperature_display: string | null;
   humidity: number | null;
   heat_setpoint: number | null;
   cool_setpoint: number | null;
@@ -64,6 +66,7 @@ type StatusSnapshot = {
     outdoor_temp: number | null;
     filter_remaining: number | null;
     disconnected: boolean;
+    temperature_unit: "F" | "C";
   } | null;
   zones: ZoneView[];
   systems: Array<{ serial: string; name: string }>;
@@ -130,6 +133,32 @@ function createClient(settings: Settings): CarrierApiClient {
   return new CarrierApiClient(settings.username, settings.password);
 }
 
+function zoneIdsMatch(left: string | number | null | undefined, right: string | number | null | undefined): boolean {
+  if (left === undefined || left === null || right === undefined || right === null) return false;
+  return String(left) === String(right);
+}
+
+function findStatusZone(system: CarrierSystem, zoneId: string): CarrierSystem["status"]["zones"][number] | undefined {
+  return system.status.zones.find((zone) => zoneIdsMatch(zone.id, zoneId));
+}
+
+function findConfigZone(system: CarrierSystem, zoneId: string): CarrierSystem["config"]["zones"][number] | undefined {
+  return system.config.zones.find((zone) => zoneIdsMatch(zone.id, zoneId));
+}
+
+function temperatureUnit(cfgem: string | null | undefined): "F" | "C" {
+  return cfgem === "C" ? "C" : "F";
+}
+
+function formatTemperature(value: number | null, unit: "F" | "C"): string | null {
+  if (value === null) return null;
+  if (unit === "C") {
+    const rounded = Math.round(value * 2) / 2;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
+  return String(Math.round(value));
+}
+
 function selectSystem(settings: Settings, systems: CarrierSystem[]): CarrierSystem | null {
   if (!systems.length) return null;
   if (settings.system_serial) {
@@ -145,29 +174,45 @@ function isZoneEnabled(configZone: CarrierSystem["config"]["zones"][number], sta
 }
 
 function mapZones(system: CarrierSystem): ZoneView[] {
-  return system.config.zones.filter((configZone) => {
-    const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
-    return isZoneEnabled(configZone, statusZone);
-  }).map((configZone) => {
-    const statusZone = system.status.zones.find((zone) => zone.id === configZone.id);
-    const presets = configZone.activities.map((activity) => activity.type);
+  const unit = temperatureUnit(system.status.cfgem);
+  const enabledStatusZones = system.status.zones.filter((zone) => zone.enabled === "on");
+  const zonesToMap = enabledStatusZones.length
+    ? enabledStatusZones.map((statusZone) => ({
+        statusZone,
+        configZone: findConfigZone(system, statusZone.id),
+      }))
+    : system.config.zones
+        .filter((configZone) => isZoneEnabled(configZone, findStatusZone(system, configZone.id)))
+        .map((configZone) => ({
+          statusZone: findStatusZone(system, configZone.id),
+          configZone,
+        }));
+
+  const zones: ZoneView[] = [];
+  for (const { statusZone, configZone } of zonesToMap) {
+    if (!statusZone && !configZone) continue;
+    const zoneId = configZone?.id ?? statusZone?.id ?? "";
+    const presets = (configZone?.activities ?? []).map((activity) => activity.type);
     if (!presets.includes("resume")) presets.push("resume");
-    return {
-      id: configZone.id,
-      name: configZone.name,
-      temperature: statusZone?.rt ?? null,
+    const indoorTemp = statusZone?.rt ?? null;
+    zones.push({
+      id: zoneId,
+      name: configZone?.name ?? `Zone ${zoneId}`,
+      temperature: indoorTemp,
+      temperature_display: formatTemperature(indoorTemp, unit),
       humidity: statusZone?.rh ?? null,
       heat_setpoint: statusZone?.htsp ?? null,
       cool_setpoint: statusZone?.clsp ?? null,
       fan: statusZone?.fan === "off" ? "auto" : (statusZone?.fan ?? null),
       activity: statusZone?.currentActivity ?? null,
       conditioning: statusZone?.zoneconditioning ?? "idle",
-      hold: configZone.hold === "on",
-      hold_activity: configZone.holdActivity,
-      hold_until: configZone.otmr,
+      hold: configZone?.hold === "on",
+      hold_activity: configZone?.holdActivity ?? null,
+      hold_until: configZone?.otmr ?? null,
       presets,
-    };
-  });
+    });
+  }
+  return zones;
 }
 
 function buildSnapshot(settings: Settings): StatusSnapshot {
@@ -189,6 +234,7 @@ function buildSnapshot(settings: Settings): StatusSnapshot {
           outdoor_temp: system.status.oat,
           filter_remaining: system.status.filtrlvl,
           disconnected: Boolean(system.status.isDisconnected),
+          temperature_unit: temperatureUnit(system.status.cfgem),
         }
       : null,
     zones: system ? mapZones(system) : [],
@@ -207,7 +253,7 @@ async function refreshCloudData(settings: Settings, force = false): Promise<Stat
     return buildSnapshot(settings);
   }
 
-  if (!force && lastSyncAt && Date.now() - lastSyncAt.getTime() < POLL_INTERVAL_MS - 2000) {
+  if (!force && lastSyncAt && Date.now() - lastSyncAt.getTime() < STATUS_CACHE_MS) {
     return buildSnapshot(settings);
   }
 
@@ -396,11 +442,19 @@ function pageStyles(): string {
     html[data-theme="dark"] .status-pill.success { background: #052e16; color: #86efac; }
     html[data-theme="dark"] .status-pill.warning { background: #451a03; color: #fcd34d; }
     html[data-theme="dark"] .status-pill.error { background: #450a0a; color: #fca5a5; }
+    .temp-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
     .temp-display {
       font-size: 2.5rem;
       font-weight: 700;
       line-height: 1;
-      margin: 0.5rem 0;
+      margin: 0.15rem 0 0.5rem;
     }
     .stat-row {
       display: flex;
@@ -625,8 +679,12 @@ function dashboardContent(): string {
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       }
 
-      function renderZoneCard(zone) {
-        const temp = zone.temperature ?? "—";
+      function tempUnit(data) {
+        return data.system?.temperature_unit === "C" ? "°C" : "°F";
+      }
+
+      function renderZoneCard(zone, unitLabel) {
+        const temp = zone.temperature_display ?? (zone.temperature ?? "—");
         const humidity = zone.humidity ?? "—";
         const heat = zone.heat_setpoint ?? "—";
         const cool = zone.cool_setpoint ?? "—";
@@ -636,9 +694,10 @@ function dashboardContent(): string {
         return \`
           <div class="card" data-zone-id="\${escapeHtml(zone.id)}">
             <h3>\${escapeHtml(zone.name)}</h3>
-            <div class="temp-display">\${temp}°</div>
+            <div class="temp-label">Indoor</div>
+            <div class="temp-display">\${temp}\${temp === "—" ? "" : unitLabel}</div>
             <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
-            <div class="stat-row"><span class="muted">Heat / Cool</span><span>\${heat}° / \${cool}°</span></div>
+            <div class="stat-row"><span class="muted">Setpoints (heat / cool)</span><span>\${heat}\${heat === "—" ? "" : unitLabel} / \${cool}\${cool === "—" ? "" : unitLabel}</span></div>
             <div class="stat-row"><span class="muted">Activity</span><span>\${escapeHtml(zone.activity || "—")}</span></div>
             <div class="stat-row"><span class="muted">Conditioning</span><span>\${escapeHtml(zone.conditioning || "idle")}</span></div>
             <div class="controls">
@@ -716,6 +775,7 @@ function dashboardContent(): string {
           pill.className = "status-pill success";
           pill.textContent = "Connected";
           const mode = data.system.mode || "auto";
+          const unitLabel = tempUnit(data);
           const outdoor = data.system.outdoor_temp ?? "—";
           const filter = data.system.filter_remaining ?? "—";
           systemCards.innerHTML = \`
@@ -732,7 +792,8 @@ function dashboardContent(): string {
             </div>
             <div class="card">
               <h3>Outdoor</h3>
-              <div class="temp-display">\${outdoor}°</div>
+              <div class="temp-label">Outside</div>
+              <div class="temp-display">\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
               <div class="stat-row"><span class="muted">Filter remaining</span><span>\${filter}%</span></div>
               <div class="stat-row"><span class="muted">Firmware</span><span>\${escapeHtml(data.system.firmware || "—")}</span></div>
             </div>
@@ -751,7 +812,7 @@ function dashboardContent(): string {
               if (modeRes.ok) loadDashboard();
             });
           });
-          zoneCards.innerHTML = data.zones.map(renderZoneCard).join("");
+          zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, unitLabel)).join("");
           zoneCards.querySelectorAll("[data-action='apply-zone']").forEach((button) => {
             button.addEventListener("click", () => applyZoneChanges(button.closest(".card")));
           });
@@ -763,7 +824,7 @@ function dashboardContent(): string {
         }
       }
       loadDashboard();
-      setInterval(loadDashboard, 30000);
+      setInterval(loadDashboard, 15000);
     </script>
   `;
 }
@@ -823,12 +884,12 @@ function settingsContent(settings: PublicSettings): string {
   `;
 }
 
-function findConfigZone(system: CarrierSystem, zoneId: string) {
-  return system.config.zones.find((zone) => zone.id === zoneId);
+function findConfigZoneById(system: CarrierSystem, zoneId: string) {
+  return findConfigZone(system, zoneId);
 }
 
 function findManualActivity(system: CarrierSystem, zoneId: string) {
-  const zone = findConfigZone(system, zoneId);
+  const zone = findConfigZoneById(system, zoneId);
   return zone?.activities.find((activity) => activity.type === "manual");
 }
 
@@ -957,6 +1018,7 @@ async function handleApi(
 
     const client = createClient(settings);
     const serial = system.profile.serial;
+    const statusZone = findStatusZone(system, zoneId);
 
     try {
       if (body.preset) {
@@ -974,8 +1036,8 @@ async function handleApi(
 
       if (heat || cool || (fan && fan !== "auto")) {
         const manual = findManualActivity(system, zoneId);
-        const heatSetpoint = heat ?? String(manual?.htsp ?? system.status.zones.find((z) => z.id === zoneId)?.htsp ?? 68);
-        const coolSetpoint = cool ?? String(manual?.clsp ?? system.status.zones.find((z) => z.id === zoneId)?.clsp ?? 74);
+        const heatSetpoint = heat ?? String(manual?.htsp ?? statusZone?.htsp ?? 68);
+        const coolSetpoint = cool ?? String(manual?.clsp ?? statusZone?.clsp ?? 74);
         let fanMode: FanMode | undefined;
         if (fan === "auto" || fan === "on") {
           fanMode = "off";
@@ -988,8 +1050,8 @@ async function handleApi(
         await client.setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode);
         await client.setHold(serial, zoneId, "manual", null);
       } else if (fan === "auto" || fan === "low" || fan === "med" || fan === "high") {
-        const configZone = findConfigZone(system, zoneId);
-        const activityType = (configZone?.holdActivity || system.status.zones.find((z) => z.id === zoneId)?.currentActivity || "home") as ActivityType;
+        const configZone = findConfigZoneById(system, zoneId);
+        const activityType = (configZone?.holdActivity || statusZone?.currentActivity || "home") as ActivityType;
         const fanMode: FanMode = fan === "auto" ? "off" : (fan as FanMode);
         await client.updateFan(serial, zoneId, activityType, fanMode);
       }

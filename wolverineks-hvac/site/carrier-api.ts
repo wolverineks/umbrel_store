@@ -75,6 +75,7 @@ export type CarrierSystem = {
   status: {
     isDisconnected: boolean | null;
     mode: string | null;
+    cfgem: string | null;
     oat: number | null;
     filtrlvl: number | null;
     zones: CarrierStatusZone[];
@@ -332,6 +333,7 @@ export class CarrierApiClient {
           status {
             isDisconnected
             mode
+            cfgem
             oat
             filtrlvl
             zones {
@@ -452,6 +454,7 @@ export class CarrierApiClient {
       status: {
         isDisconnected: asBool(status.isDisconnected),
         mode: nullableString(status.mode),
+        cfgem: nullableString(status.cfgem),
         oat: asNumber(status.oat),
         filtrlvl: asNumber(status.filtrlvl),
         zones: normalizeStatusZones(status.zones),
