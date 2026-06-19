@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.6";
+const APP_VERSION = "1.0.7";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -454,36 +454,61 @@ function buildScanSettingsXml(options: ScanOptions, maxWidth: number, maxHeight:
 </scan:ScanSettings>`;
 }
 
-async function waitForScannerIdle(host: string, timeoutMs = 30000): Promise<void> {
+function scanJobUrl(host: string, uri: string): string {
+  if (uri.startsWith("http")) return uri;
+  return `${printerBaseUrl(host)}${uri.startsWith("/") ? uri : `/${uri}`}`;
+}
+
+async function waitForScannerIdle(host: string, timeoutMs = 30000, required = true): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const status = await getScannerStatus(host);
-    if (status.state.toLowerCase() === "idle") return;
+    if (status.state.toLowerCase() === "idle") return true;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  throw new Error("Scanner did not become idle in time");
+  if (required) {
+    throw new Error("Scanner is busy. Wait a moment, then try again.");
+  }
+  return false;
 }
 
-async function cancelActiveScanJobs(host: string): Promise<void> {
+async function deleteScanJob(host: string, jobUrl: string): Promise<void> {
+  try {
+    await fetch(jobUrl, { method: "DELETE" });
+  } catch {
+    // Ignore cleanup failures.
+  }
+}
+
+async function cancelActiveScanJobs(host: string): Promise<number> {
   const xml = await fetchPrinterText(host, "/eSCL/ScannerStatus");
   const jobUris = [...new Set(xmlAllTagValues(xml, "JobUri"))];
-  await Promise.all(
-    jobUris.map(async (uri) => {
-      const jobUrl = uri.startsWith("http") ? uri : `${esclBaseUrl(host)}${uri.replace(/^\/eSCL/, "")}`;
-      try {
-        await fetch(jobUrl, { method: "DELETE" });
-      } catch {
-        // Ignore cleanup failures for stale jobs.
-      }
-    }),
-  );
+  let canceled = 0;
+  for (const uri of jobUris) {
+    try {
+      const response = await fetch(scanJobUrl(host, uri), { method: "DELETE" });
+      if (response.ok) canceled += 1;
+    } catch {
+      // Ignore cleanup failures for stale jobs.
+    }
+  }
+  if (canceled > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  return canceled;
 }
 
 async function ensureScannerReady(host: string): Promise<void> {
   const status = await getScannerStatus(host);
   if (status.state.toLowerCase() === "idle") return;
-  await cancelActiveScanJobs(host);
-  await waitForScannerIdle(host, 15000);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await cancelActiveScanJobs(host);
+    const idle = await waitForScannerIdle(host, 10000, false);
+    if (idle) return;
+  }
+
+  throw new Error("Scanner is busy with an earlier scan job. Wait a few seconds and try again.");
 }
 
 async function fetchNextDocument(jobUrl: string, timeoutMs = 180000): Promise<Response> {
@@ -560,10 +585,13 @@ async function performScan(host: string, options: ScanOptions): Promise<{ buffer
   }
 
   if (buffers.length === 0) {
+    await deleteScanJob(host, jobUrl);
     throw new Error("No scanned pages were returned by the printer.");
   }
 
-  await waitForScannerIdle(host, 30000);
+  await deleteScanJob(host, jobUrl);
+  await cancelActiveScanJobs(host);
+  await waitForScannerIdle(host, 15000, false);
   return { buffers, contentType };
 }
 
