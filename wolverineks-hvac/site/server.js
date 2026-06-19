@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -504,7 +504,7 @@ function pageStyles() {
     }
     .zone-control-layout {
       display: grid;
-      grid-template-columns: minmax(140px, 180px) 1fr;
+      grid-template-columns: minmax(200px, 240px) 1fr;
       gap: 1.25rem;
       margin-top: 0.75rem;
       align-items: start;
@@ -512,8 +512,8 @@ function pageStyles() {
     .thermo-widget {
       position: relative;
       display: grid;
-      grid-template-columns: 2rem 1fr;
-      gap: 0.35rem;
+      grid-template-columns: 3.25rem 1fr;
+      gap: 0.5rem;
       user-select: none;
       touch-action: none;
     }
@@ -521,87 +521,202 @@ function pageStyles() {
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      height: 280px;
-      font-size: 0.7rem;
+      height: 260px;
+      margin-top: 0;
+      padding: 0;
+    }
+    .thermo-tick {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.68rem;
       color: var(--muted);
-      padding: 0.15rem 0;
+      font-variant-numeric: tabular-nums;
     }
-    .thermo-track {
+    .thermo-tick-mark {
+      display: block;
+      width: 0.55rem;
+      height: 1px;
+      background: var(--muted);
+      opacity: 0.7;
+    }
+    .thermo-tick-major .thermo-tick-mark {
+      width: 0.85rem;
+      height: 2px;
+      opacity: 1;
+    }
+    .thermo-tick-major .thermo-tick-label {
+      font-weight: 700;
+      color: var(--text);
+    }
+    .thermo-body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 3.25rem;
+    }
+    .thermo-tube {
       position: relative;
-      height: 280px;
-      border-radius: 999px;
-      background: linear-gradient(to top, #fef3c7 0%, #e0f2fe 55%, #dbeafe 100%);
-      border: 2px solid var(--border);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
-    }
-    html[data-theme="dark"] .thermo-track {
-      background: linear-gradient(to top, #451a03 0%, #0c4a6e 55%, #1e3a5f 100%);
-    }
-    .thermo-band {
-      position: absolute;
-      left: 18%;
-      right: 18%;
-      border-radius: 999px;
-      opacity: 0.45;
-      pointer-events: none;
-    }
-    .thermo-band-heat {
-      background: #f97316;
-      bottom: 0;
-    }
-    .thermo-band-cool {
-      background: #38bdf8;
-      top: 0;
-    }
-    .thermo-indoor-marker {
-      position: absolute;
-      left: 8%;
-      right: 8%;
-      height: 3px;
-      background: var(--text);
-      border-radius: 999px;
-      pointer-events: none;
+      width: 34px;
+      height: 260px;
+      margin-bottom: -12px;
       z-index: 2;
-      opacity: 0.55;
     }
-    .thermo-indoor-marker::after {
-      content: "";
+    .thermo-glass {
       position: absolute;
-      right: -6px;
-      top: 50%;
-      width: 8px;
-      height: 8px;
+      inset: 0;
+      border-radius: 17px 17px 6px 6px;
+      background: linear-gradient(90deg, #f8fafc 0%, #e8f0f8 35%, #f1f5f9 65%, #f8fafc 100%);
+      border: 2px solid #94a3b8;
+      box-shadow:
+        inset 3px 0 10px rgba(255, 255, 255, 0.95),
+        inset -3px 0 6px rgba(15, 23, 42, 0.06),
+        0 4px 14px rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+    }
+    html[data-theme="dark"] .thermo-glass {
+      background: linear-gradient(90deg, #1e293b 0%, #334155 50%, #1e293b 100%);
+      border-color: #64748b;
+      box-shadow:
+        inset 3px 0 10px rgba(255, 255, 255, 0.08),
+        inset -3px 0 6px rgba(0, 0, 0, 0.25),
+        0 4px 14px rgba(0, 0, 0, 0.35);
+    }
+    .thermo-shine {
+      position: absolute;
+      top: 8%;
+      left: 18%;
+      width: 28%;
+      height: 72%;
+      border-radius: 999px;
+      background: linear-gradient(to bottom, rgba(255,255,255,0.75), rgba(255,255,255,0.05));
+      pointer-events: none;
+      z-index: 4;
+    }
+    html[data-theme="dark"] .thermo-shine {
+      background: linear-gradient(to bottom, rgba(255,255,255,0.18), rgba(255,255,255,0));
+    }
+    .thermo-zone {
+      position: absolute;
+      left: 12%;
+      right: 12%;
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.22;
+    }
+    .thermo-zone-heat {
+      bottom: 0;
+      background: linear-gradient(to top, #ef4444, transparent);
+      border-radius: 0 0 8px 8px;
+    }
+    .thermo-zone-cool {
+      top: 0;
+      background: linear-gradient(to bottom, #3b82f6, transparent);
+      border-radius: 8px 8px 0 0;
+    }
+    .thermo-fill {
+      position: absolute;
+      bottom: 0;
+      left: 22%;
+      right: 22%;
+      background: linear-gradient(to top, #991b1b 0%, #dc2626 45%, #ef4444 100%);
+      border-radius: 0 0 6px 6px;
+      z-index: 2;
+      box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.2);
+      pointer-events: none;
+      transition: height 0.25s ease;
+    }
+    .thermo-fill-cap {
+      position: absolute;
+      top: -3px;
+      left: -15%;
+      right: -15%;
+      height: 6px;
+      border-radius: 999px;
+      background: #ef4444;
+      z-index: 3;
+    }
+    .thermo-inner-ticks {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 3;
+      opacity: 0.35;
+    }
+    .thermo-inner-tick {
+      position: absolute;
+      left: 15%;
+      right: 15%;
+      height: 1px;
+      background: #64748b;
+    }
+    .thermo-bulb {
+      width: 58px;
+      height: 58px;
       border-radius: 50%;
-      background: var(--text);
-      transform: translateY(-50%);
+      background: radial-gradient(circle at 32% 28%, #fca5a5 0%, #dc2626 42%, #991b1b 100%);
+      border: 2px solid #b91c1c;
+      box-shadow:
+        inset -4px -6px 10px rgba(0, 0, 0, 0.2),
+        inset 3px 3px 8px rgba(255, 255, 255, 0.25),
+        0 6px 16px rgba(220, 38, 38, 0.28);
+      z-index: 1;
+    }
+    html[data-theme="dark"] .thermo-bulb {
+      background: radial-gradient(circle at 32% 28%, #f87171 0%, #b91c1c 45%, #7f1d1d 100%);
+      border-color: #991b1b;
     }
     .thermo-handle {
       position: absolute;
-      left: 50%;
-      transform: translate(-50%, 50%);
-      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      z-index: 5;
       border: none;
-      border-radius: 999px;
-      padding: 0.35rem 0.55rem;
-      min-width: 3.1rem;
-      font-size: 0.8rem;
-      font-weight: 700;
+      padding: 0;
+      background: transparent;
       cursor: grab;
-      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);
+      box-shadow: none;
+      transform: translateY(50%);
     }
     .thermo-handle:active { cursor: grabbing; }
     .thermo-handle-heat {
-      background: #ea580c;
-      color: #fff;
+      right: calc(100% + 10px);
+      flex-direction: row-reverse;
+      color: #b91c1c;
     }
     .thermo-handle-cool {
-      background: #0284c7;
+      left: calc(100% + 10px);
+      color: #1d4ed8;
+    }
+    .thermo-flag-stem {
+      display: block;
+      width: 12px;
+      height: 2px;
+      background: currentColor;
+    }
+    .thermo-flag-label {
+      padding: 0.22rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
       color: #fff;
+      min-width: 2.55rem;
+      text-align: center;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
+    }
+    .thermo-handle-heat .thermo-flag-label {
+      background: linear-gradient(180deg, #ef4444, #b91c1c);
+    }
+    .thermo-handle-cool .thermo-flag-label {
+      background: linear-gradient(180deg, #3b82f6, #1d4ed8);
     }
     .zone-control-card.mode-heat .thermo-handle-cool,
-    .zone-control-card.mode-heat .thermo-band-cool,
+    .zone-control-card.mode-heat .thermo-zone-cool,
     .zone-control-card.mode-cool .thermo-handle-heat,
-    .zone-control-card.mode-cool .thermo-band-heat {
+    .zone-control-card.mode-cool .thermo-zone-heat {
       display: none;
     }
     .zone-side-panel {
@@ -865,19 +980,17 @@ function pageStyles() {
       padding: 0.65rem 0.4rem;
     }
     .preset-tile .icon { width: 1.2rem; height: 1.2rem; }
-    .thermo-handle {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-    }
-    .thermo-handle .icon { width: 0.85rem; height: 0.85rem; }
     .thermo-legend {
       display: flex;
       justify-content: space-between;
       font-size: 0.68rem;
       color: var(--muted);
-      margin-top: 0.35rem;
-      padding: 0 0.25rem;
+      margin-top: 0.5rem;
+      padding: 0 3.25rem;
+    }
+    .thermo-legend span:nth-child(2) {
+      color: #dc2626;
+      font-weight: 600;
     }
     .icon {
       display: inline-block;
@@ -1209,6 +1322,12 @@ function dashboardContent() {
         if (humidityBar) {
           humidityBar.style.width = Number.isFinite(humidity) ? Math.max(0, Math.min(100, humidity)) + "%" : "0%";
         }
+        const widget = card.querySelector(".thermo-widget");
+        if (widget) {
+          const indoor = parseTemp(zone.temperature_display ?? zone.temperature, parseTemp(widget.dataset.indoor, 68));
+          widget.dataset.indoor = String(indoor);
+          updateThermoWidget(widget);
+        }
         syncFanControl(card, zone);
       }
 
@@ -1221,13 +1340,24 @@ function dashboardContent() {
         }
       }
 
+      function renderThermoScale() {
+        return [90, 80, 70, 60].map((temp) =>
+          '<div class="thermo-tick thermo-tick-major"><span class="thermo-tick-label">' + temp + '</span><span class="thermo-tick-mark"></span></div>'
+        ).join("");
+      }
+
+      function renderThermoInnerTicks() {
+        return [60, 70, 80, 90].map((temp) =>
+          '<span class="thermo-inner-tick" style="bottom:' + tempToBottom(temp) + '%"></span>'
+        ).join("");
+      }
+
       function updateThermoWidget(widget) {
-        const track = widget.querySelector(".thermo-track");
         const heatHandle = widget.querySelector(".thermo-handle-heat");
         const coolHandle = widget.querySelector(".thermo-handle-cool");
-        const heatBand = widget.querySelector(".thermo-band-heat");
-        const coolBand = widget.querySelector(".thermo-band-cool");
-        const indoorMarker = widget.querySelector(".thermo-indoor-marker");
+        const fill = widget.querySelector(".thermo-fill");
+        const zoneHeat = widget.querySelector(".thermo-zone-heat");
+        const zoneCool = widget.querySelector(".thermo-zone-cool");
         const heat = parseTemp(heatHandle.dataset.value, 68);
         const cool = parseTemp(coolHandle.dataset.value, 74);
         const indoor = parseTemp(widget.dataset.indoor, heat);
@@ -1237,20 +1367,15 @@ function dashboardContent() {
 
         heatHandle.dataset.value = String(heat);
         coolHandle.dataset.value = String(cool);
-        const heatLabel = heatHandle.querySelector("span");
-        const coolLabel = coolHandle.querySelector("span");
+        const heatLabel = heatHandle.querySelector(".thermo-flag-label");
+        const coolLabel = coolHandle.querySelector(".thermo-flag-label");
         if (heatLabel) heatLabel.textContent = heat + "°";
         if (coolLabel) coolLabel.textContent = cool + "°";
         heatHandle.style.bottom = heatBottom + "%";
         coolHandle.style.bottom = coolBottom + "%";
-        indoorMarker.style.bottom = indoorBottom + "%";
-
-        if (heatBand) {
-          heatBand.style.height = heatBottom + "%";
-        }
-        if (coolBand) {
-          coolBand.style.height = (100 - coolBottom) + "%";
-        }
+        if (fill) fill.style.height = indoorBottom + "%";
+        if (zoneHeat) zoneHeat.style.height = heatBottom + "%";
+        if (zoneCool) zoneCool.style.height = (100 - coolBottom) + "%";
       }
 
       function nearestVisibleHandle(widget, temp) {
@@ -1290,7 +1415,7 @@ function dashboardContent() {
       function initThermoWidget(widget) {
         if (widget.dataset.initialized === "true") return;
         widget.dataset.initialized = "true";
-        const track = widget.querySelector(".thermo-track");
+        const track = widget.querySelector(".thermo-tube");
         const handles = widget.querySelectorAll(".thermo-handle");
         updateThermoWidget(widget);
 
@@ -1476,28 +1601,30 @@ function dashboardContent() {
             </div>
             <div class="zone-control-layout">
               <div>
-                <div class="section-title">\${ICONS.thermostat} Drag to set temperature</div>
+                <div class="section-title">\${ICONS.thermostat} Slide the flags to adjust</div>
                 <div
                   class="thermo-widget"
                   data-indoor="\${indoor}"
                   data-heat="\${heat}"
                   data-cool="\${cool}"
                 >
-                  <div class="thermo-scale" aria-hidden="true">
-                    <span>90°</span>
-                    <span>80°</span>
-                    <span>70°</span>
-                    <span>60°</span>
-                  </div>
-                  <div class="thermo-track">
-                    <div class="thermo-band thermo-band-heat"></div>
-                    <div class="thermo-band thermo-band-cool"></div>
-                    <div class="thermo-indoor-marker" title="Inside \${indoor}°F"></div>
-                    <button type="button" class="thermo-handle thermo-handle-heat" data-value="\${heat}" aria-label="Warmer, \${heat} degrees">\${ICONS.flame}<span>\${heat}°</span></button>
-                    <button type="button" class="thermo-handle thermo-handle-cool" data-value="\${cool}" aria-label="Cooler, \${cool} degrees">\${ICONS.snow}<span>\${cool}°</span></button>
+                  <div class="thermo-scale" aria-hidden="true">\${renderThermoScale()}</div>
+                  <div class="thermo-body">
+                    <div class="thermo-tube">
+                      <div class="thermo-glass">
+                        <div class="thermo-zone thermo-zone-heat"></div>
+                        <div class="thermo-zone thermo-zone-cool"></div>
+                        <div class="thermo-fill" title="Inside now: \${indoor}°F"><span class="thermo-fill-cap"></span></div>
+                        <div class="thermo-inner-ticks">\${renderThermoInnerTicks()}</div>
+                        <div class="thermo-shine"></div>
+                      </div>
+                      <button type="button" class="thermo-handle thermo-handle-heat" data-value="\${heat}" aria-label="Heat to \${heat} degrees"><span class="thermo-flag-stem"></span><span class="thermo-flag-label">\${heat}°</span></button>
+                      <button type="button" class="thermo-handle thermo-handle-cool" data-value="\${cool}" aria-label="Cool to \${cool} degrees"><span class="thermo-flag-stem"></span><span class="thermo-flag-label">\${cool}°</span></button>
+                    </div>
+                    <div class="thermo-bulb" aria-hidden="true"></div>
                   </div>
                 </div>
-                <div class="thermo-legend"><span>Warmer</span><span>Inside</span><span>Cooler</span></div>
+                <div class="thermo-legend"><span>Heat</span><span>Red = inside now</span><span>Cool</span></div>
               </div>
               <div class="zone-side-panel">
                 <div class="fan-control">
