@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.5";
+const APP_VERSION = "1.0.6";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -454,7 +454,7 @@ function buildScanSettingsXml(options: ScanOptions, maxWidth: number, maxHeight:
 </scan:ScanSettings>`;
 }
 
-async function waitForScannerIdle(host: string, timeoutMs = 120000): Promise<void> {
+async function waitForScannerIdle(host: string, timeoutMs = 30000): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const status = await getScannerStatus(host);
@@ -464,27 +464,42 @@ async function waitForScannerIdle(host: string, timeoutMs = 120000): Promise<voi
   throw new Error("Scanner did not become idle in time");
 }
 
-async function pollScanJob(jobUrl: string, timeoutMs = 180000): Promise<void> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const response = await fetch(jobUrl, { method: "GET" });
-    const xml = await response.text();
-    const state = (xmlTagValue(xml, "JobState") ?? xmlTagValue(xml, "State") ?? "").toLowerCase();
-    if (state === "completed" || state === "canceled") return;
-    if (state === "aborted" || state === "failed") {
-      throw new Error(`Scan job failed with state: ${state}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+async function cancelActiveScanJobs(host: string): Promise<void> {
+  const xml = await fetchPrinterText(host, "/eSCL/ScannerStatus");
+  const jobUris = [...new Set(xmlAllTagValues(xml, "JobUri"))];
+  await Promise.all(
+    jobUris.map(async (uri) => {
+      const jobUrl = uri.startsWith("http") ? uri : `${esclBaseUrl(host)}${uri.replace(/^\/eSCL/, "")}`;
+      try {
+        await fetch(jobUrl, { method: "DELETE" });
+      } catch {
+        // Ignore cleanup failures for stale jobs.
+      }
+    }),
+  );
+}
+
+async function ensureScannerReady(host: string): Promise<void> {
+  const status = await getScannerStatus(host);
+  if (status.state.toLowerCase() === "idle") return;
+  await cancelActiveScanJobs(host);
+  await waitForScannerIdle(host, 15000);
+}
+
+async function fetchNextDocument(jobUrl: string, timeoutMs = 180000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(`${jobUrl}/NextDocument`, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
-  throw new Error("Scan job timed out");
 }
 
 async function performScan(host: string, options: ScanOptions): Promise<{ buffers: Buffer[]; contentType: string }> {
   const capabilities = await getScannerCapabilities(host);
+  await ensureScannerReady(host);
   const status = await getScannerStatus(host);
-  if (status.state.toLowerCase() !== "idle") {
-    throw new Error(`Scanner is ${status.state}. Try again in a moment.`);
-  }
   if (options.source === "adf" && status.adf_state.toLowerCase().includes("empty")) {
     throw new Error("ADF is empty. Load documents in the feeder or switch to the flatbed.");
   }
@@ -499,31 +514,45 @@ async function performScan(host: string, options: ScanOptions): Promise<{ buffer
     body: settingsXml,
   });
 
-  let jobUrl = createResponse.headers.get("Location");
-  if (!jobUrl && (createResponse.status === 201 || createResponse.status === 200)) {
-    jobUrl = createResponse.headers.get("location");
-  }
-  if (!jobUrl) {
+  if (createResponse.status !== 201 && createResponse.status !== 200) {
     const body = await createResponse.text();
     throw new Error(`Failed to create scan job (HTTP ${createResponse.status}): ${body.slice(0, 200)}`);
+  }
+
+  let jobUrl = createResponse.headers.get("Location") ?? createResponse.headers.get("location");
+  if (!jobUrl) {
+    throw new Error("Failed to create scan job: printer did not return a job location.");
   }
 
   if (!jobUrl.startsWith("http")) {
     jobUrl = `${esclBaseUrl(host)}${jobUrl.startsWith("/") ? "" : "/"}${jobUrl}`;
   }
 
-  await pollScanJob(jobUrl);
-
   const buffers: Buffer[] = [];
   let contentType: string = options.format;
-  for (let page = 0; page < 50; page += 1) {
-    const docResponse = await fetch(`${jobUrl}/NextDocument`);
+  const maxPages = options.source === "platen" ? 1 : 50;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    let docResponse: Response;
+    try {
+      docResponse = await fetchNextDocument(jobUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("abort")) {
+        throw new Error("Scan timed out. Make sure the document is on the flatbed and try again.");
+      }
+      throw error;
+    }
+
     if (docResponse.status === 404 || docResponse.status === 410) break;
     if (!docResponse.ok) {
       const text = await docResponse.text();
-      if (page === 0) throw new Error(`Failed to fetch scanned document: ${text.slice(0, 200)}`);
+      if (page === 0) {
+        throw new Error(`Failed to fetch scanned document (HTTP ${docResponse.status}): ${text.slice(0, 200)}`);
+      }
       break;
     }
+
     const type = docResponse.headers.get("Content-Type");
     if (type) contentType = type.split(";")[0].trim();
     buffers.push(Buffer.from(await docResponse.arrayBuffer()));
@@ -1285,7 +1314,7 @@ function scanContent(): string {
         event.preventDefault();
         button.disabled = true;
         message.className = "message show";
-        message.textContent = "Scanning… place your document on the flatbed or in the ADF.";
+        message.textContent = "Scanning… keep the document on the flatbed. The scanner should start momentarily.";
         preview.hidden = true;
         try {
           const payload = Object.fromEntries(new FormData(form).entries());
