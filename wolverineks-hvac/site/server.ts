@@ -17,7 +17,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.1.1";
+const APP_VERSION = "2.2.0";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -759,20 +759,224 @@ function pageStyles(): string {
       opacity: 0.55;
       cursor: wait;
     }
-    .zone-readout {
+    .zone-hero {
       display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
       gap: 1rem;
       flex-wrap: wrap;
-      margin-bottom: 0.25rem;
+      margin-bottom: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
     }
-    .zone-readout .temp-display {
-      font-size: 2rem;
+    .zone-hero-temp {
+      text-align: right;
+    }
+    .zone-hero-temp .temp-display {
+      font-size: 3.25rem;
       margin: 0;
+      line-height: 1;
+    }
+    .temp-unit {
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-left: 0.1rem;
+    }
+    .temp-caption {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 0.2rem;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-top: 0.45rem;
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .status-badge .icon { width: 1rem; height: 1rem; }
+    .status-heating { background: #ffedd5; color: #c2410c; }
+    .status-cooling { background: #e0f2fe; color: #0369a1; }
+    .status-idle { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+    .status-fan { background: #ede9fe; color: #6d28d9; }
+    html[data-theme="dark"] .status-heating { background: #431407; color: #fdba74; }
+    html[data-theme="dark"] .status-cooling { background: #0c4a6e; color: #7dd3fc; }
+    html[data-theme="dark"] .status-fan { background: #2e1065; color: #c4b5fd; }
+    .stat-chips {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 1rem;
+    }
+    .stat-chip {
+      border: 1px solid var(--border);
+      border-radius: 0.85rem;
+      padding: 0.7rem 0.75rem;
+      background: var(--bg);
+      display: grid;
+      gap: 0.2rem;
+    }
+    .stat-chip .icon {
+      width: 1.1rem;
+      height: 1.1rem;
+      color: var(--accent);
+    }
+    .chip-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .chip-value {
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+    .mini-bar,
+    .filter-bar-track {
+      height: 5px;
+      border-radius: 999px;
+      background: var(--border);
+      overflow: hidden;
+      margin-top: 0.25rem;
+    }
+    .mini-bar > span,
+    .filter-bar-fill {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), #38bdf8);
+    }
+    .fan-bars {
+      display: flex;
+      gap: 0.2rem;
+      align-items: flex-end;
+      height: 1.1rem;
+      margin-top: 0.15rem;
+    }
+    .fan-bar {
+      flex: 1;
+      border-radius: 2px;
+      background: var(--border);
+      height: 35%;
+    }
+    .fan-bar:nth-child(2) { height: 55%; }
+    .fan-bar:nth-child(3) { height: 75%; }
+    .fan-bar:nth-child(4) { height: 100%; }
+    .fan-bar.active { background: var(--accent); }
+    .fan-bar.auto.active { opacity: 0.45; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 0.55rem;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .section-title .icon { width: 1rem; height: 1rem; }
+    .mode-tiles {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.55rem;
+      margin-top: 0.75rem;
+    }
+    .mode-tile {
+      display: grid;
+      justify-items: center;
+      gap: 0.3rem;
+      padding: 0.85rem 0.55rem;
+      border-radius: 0.85rem;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 0.88rem;
+    }
+    .mode-tile .icon { width: 1.45rem; height: 1.45rem; }
+    .mode-tile small {
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .mode-tile.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    .mode-tile.mode-tile-heat.active { border-color: #ea580c; background: #ffedd5; color: #c2410c; }
+    .mode-tile.mode-tile-cool.active { border-color: #0284c7; background: #e0f2fe; color: #0369a1; }
+    html[data-theme="dark"] .mode-tile.mode-tile-heat.active { background: #431407; color: #fdba74; }
+    html[data-theme="dark"] .mode-tile.mode-tile-cool.active { background: #0c4a6e; color: #7dd3fc; }
+    .weather-card {
+      display: grid;
+      gap: 0.35rem;
+    }
+    .weather-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .weather-icon-wrap {
+      width: 3rem;
+      height: 3rem;
+      border-radius: 0.85rem;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: #f59e0b;
+    }
+    .weather-icon-wrap .icon { width: 1.6rem; height: 1.6rem; }
+    .filter-life {
+      margin-top: 0.65rem;
+      padding-top: 0.65rem;
+      border-top: 1px solid var(--border);
+    }
+    .filter-life-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      margin-bottom: 0.35rem;
+    }
+    .preset-tile {
+      display: grid;
+      justify-items: center;
+      gap: 0.25rem;
+      padding: 0.65rem 0.4rem;
+    }
+    .preset-tile .icon { width: 1.2rem; height: 1.2rem; }
+    .thermo-handle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .thermo-handle .icon { width: 0.85rem; height: 0.85rem; }
+    .thermo-legend {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.68rem;
+      color: var(--muted);
+      margin-top: 0.35rem;
+      padding: 0 0.25rem;
+    }
+    .icon {
+      display: inline-block;
+      vertical-align: middle;
+      flex-shrink: 0;
     }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       .sidebar { position: static; height: auto; }
       .zone-control-layout { grid-template-columns: 1fr; }
+      .stat-chips { grid-template-columns: 1fr; }
     }
   `;
 }
@@ -927,7 +1131,7 @@ function setupContent(settings: PublicSettings): string {
 function dashboardContent(): string {
   return `
     <div class="toolbar">
-      <h2>Dashboard</h2>
+      <h2>Your home</h2>
       <span class="status-pill warning" id="connection-pill">Loading…</span>
     </div>
     <div class="grid" id="system-cards">
@@ -940,6 +1144,26 @@ function dashboardContent(): string {
       const THERMO_DEADBAND = 2;
       const FAN_LEVELS = ["auto", "low", "med", "high"];
       const FAN_LABELS = ["Auto", "Low", "Medium", "High"];
+      const ICONS = {
+        flame: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3c2 4 5 5.5 5 9a5 5 0 1 1-10 0c0-3.5 3-5 5-9z"/></svg>',
+        snow: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M4 7l16 10M4 17L20 7M2 12h20"/></svg>',
+        auto: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="4"/></svg>',
+        power: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M6.3 6.3a9 9 0 1 0 11.4 0"/></svg>',
+        fan: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg>',
+        droplet: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3c4 6 7 8.5 7 12a7 7 0 1 1-14 0c0-3.5 3-6 7-12z"/></svg>',
+        calendar: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>',
+        sun: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>',
+        home: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>',
+        away: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V6l8-3 8 3v14"/><path d="M9 20v-6h6v6"/></svg>',
+        sleep: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 14A8 8 0 0 0 11 6.5"/><path d="M3 14h9v7H3z"/></svg>',
+        wake: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M5 7l2 2M19 7l-2 2"/><path d="M5 17a7 7 0 0 1 14 0"/></svg>',
+        manual: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7l12-12 7 7-12 12z"/></svg>',
+        vacation: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 20h18"/><path d="M7 20V10l5-4 5 4v10"/><path d="M9 14h6"/></svg>',
+        resume: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>',
+        filter: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>',
+        thermostat: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a4 4 0 0 0-4 4v9a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><circle cx="12" cy="15" r="1.5" fill="currentColor"/></svg>',
+        pause: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>',
+      };
 
       function escapeHtml(value) {
         return String(value)
@@ -994,6 +1218,57 @@ function dashboardContent(): string {
         return zone.fan_display || FAN_LABELS[fanToIndex(zone.fan)] || "—";
       }
 
+      function scheduleLabel(activity) {
+        if (!activity) return "—";
+        const labels = {
+          manual: "Hold",
+          home: "Home",
+          away: "Away",
+          sleep: "Sleep",
+          wake: "Wake up",
+          vacation: "Away long-term",
+        };
+        return labels[activity] || activity.charAt(0).toUpperCase() + activity.slice(1);
+      }
+
+      function conditioningInfo(conditioning) {
+        const value = String(conditioning || "idle").toLowerCase();
+        if (value.includes("heat")) {
+          return { label: value.includes("prep") || value.includes("pending") ? "Getting ready to heat" : "Heating now", className: "status-heating", icon: ICONS.flame };
+        }
+        if (value.includes("cool")) {
+          return { label: value.includes("prep") || value.includes("pending") ? "Getting ready to cool" : "Cooling now", className: "status-cooling", icon: ICONS.snow };
+        }
+        if (value.includes("fan")) {
+          return { label: "Fan running", className: "status-fan", icon: ICONS.fan };
+        }
+        if (value === "idle" || value === "off") {
+          return { label: "Standing by", className: "status-idle", icon: ICONS.pause };
+        }
+        return {
+          label: value.replaceAll("_", " ").replace(/^\\w/, (c) => c.toUpperCase()),
+          className: "status-idle",
+          icon: ICONS.pause,
+        };
+      }
+
+      function presetIcon(preset) {
+        return ICONS[preset] || ICONS.home;
+      }
+
+      function presetLabel(preset) {
+        if (preset === "resume") return "Back to schedule";
+        return scheduleLabel(preset);
+      }
+
+      function syncFanBars(card, fanIndex) {
+        card.querySelectorAll(".fan-bar").forEach((bar, index) => {
+          const lit = fanIndex === 0 || index < (fanIndex === 1 ? 1 : fanIndex === 2 ? 2 : 4);
+          bar.classList.toggle("active", lit);
+          bar.classList.toggle("auto", fanIndex === 0);
+        });
+      }
+
       function syncFanControl(card, zone) {
         const fanIndex = fanToIndex(zone.fan);
         const fanText = fanDisplayText(zone);
@@ -1008,6 +1283,28 @@ function dashboardContent(): string {
         card.querySelectorAll(".fan-ticks span").forEach((tick, index) => {
           tick.classList.toggle("active", index === fanIndex);
         });
+        syncFanBars(card, fanIndex);
+      }
+
+      function syncZoneReadout(card, zone) {
+        const status = conditioningInfo(zone.conditioning);
+        const badge = card.querySelector("[data-status-badge]");
+        if (badge) {
+          badge.className = "status-badge " + status.className;
+          badge.innerHTML = status.icon + " " + escapeHtml(status.label);
+        }
+        const schedule = card.querySelector("[data-schedule-readout]");
+        if (schedule) schedule.textContent = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+        const humidityBar = card.querySelector("[data-humidity-bar]");
+        const humidityValue = card.querySelector("[data-humidity-value]");
+        const humidity = Number(zone.humidity);
+        if (humidityValue) {
+          humidityValue.textContent = Number.isFinite(humidity) ? humidity + "%" : "—";
+        }
+        if (humidityBar) {
+          humidityBar.style.width = Number.isFinite(humidity) ? Math.max(0, Math.min(100, humidity)) + "%" : "0%";
+        }
+        syncFanControl(card, zone);
       }
 
       function updateZoneCardsFromData(zones) {
@@ -1015,13 +1312,8 @@ function dashboardContent(): string {
         for (const zone of zones) {
           const card = zoneCards.querySelector('.zone-control-card[data-zone-id="' + CSS.escape(zone.id) + '"]');
           if (!card || card.dataset.dragging === "true") continue;
-          syncFanControl(card, zone);
+          syncZoneReadout(card, zone);
         }
-      }
-
-      function presetLabel(preset) {
-        if (preset === "resume") return "Resume";
-        return preset.charAt(0).toUpperCase() + preset.slice(1);
       }
 
       function updateThermoWidget(widget) {
@@ -1040,8 +1332,10 @@ function dashboardContent(): string {
 
         heatHandle.dataset.value = String(heat);
         coolHandle.dataset.value = String(cool);
-        heatHandle.textContent = heat + "°";
-        coolHandle.textContent = cool + "°";
+        const heatLabel = heatHandle.querySelector("span");
+        const coolLabel = coolHandle.querySelector("span");
+        if (heatLabel) heatLabel.textContent = heat + "°";
+        if (coolLabel) coolLabel.textContent = cool + "°";
         heatHandle.style.bottom = heatBottom + "%";
         coolHandle.style.bottom = coolBottom + "%";
         indoorMarker.style.bottom = indoorBottom + "%";
@@ -1179,6 +1473,7 @@ function dashboardContent(): string {
           card.querySelectorAll(".fan-ticks span").forEach((tick, tickIndex) => {
             tick.classList.toggle("active", tickIndex === index);
           });
+          syncFanBars(card, index);
         };
 
         slider.addEventListener("input", syncLabel);
@@ -1216,8 +1511,15 @@ function dashboardContent(): string {
         initPresetTiles(card);
       }
 
+      function renderFanBars(fanIndex) {
+        return [0, 1, 2, 3].map((index) => {
+          const lit = fanIndex === 0 || index < (fanIndex === 1 ? 1 : fanIndex === 2 ? 2 : 4);
+          const classes = "fan-bar" + (lit ? " active" : "") + (fanIndex === 0 && lit ? " auto" : "");
+          return '<span class="' + classes + '"></span>';
+        }).join("");
+      }
+
       function renderZoneCard(zone, systemMode) {
-        const unitLabel = "°F";
         const normalizedMode = normalizeMode(systemMode);
         const temp = zone.temperature_display ?? (zone.temperature ?? "—");
         const humidity = zone.humidity ?? "—";
@@ -1227,61 +1529,75 @@ function dashboardContent(): string {
         const fanIndex = fanToIndex(zone.fan);
         const fanText = fanDisplayText(zone);
         const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
+        const status = conditioningInfo(zone.conditioning);
+        const scheduleText = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+        const humidityWidth = Number.isFinite(Number(zone.humidity)) ? Math.max(0, Math.min(100, Number(zone.humidity))) : 0;
         const presetTiles = (zone.presets || []).map((preset) =>
-          '<button type="button" class="preset-tile' + (preset === activePreset ? " active" : "") + '" data-preset="' + escapeHtml(preset) + '">' + escapeHtml(presetLabel(preset)) + "</button>"
+          '<button type="button" class="preset-tile' + (preset === activePreset ? " active" : "") + '" data-preset="' + escapeHtml(preset) + '">' + presetIcon(preset) + '<span>' + escapeHtml(presetLabel(preset)) + "</span></button>"
         ).join("");
-        const heatLabel = normalizedMode === "cool" ? "" : heat + unitLabel;
-        const coolLabel = normalizedMode === "heat" ? "" : cool + unitLabel;
-        const targetSummary = normalizedMode === "heat"
-          ? "Heat " + heat + unitLabel
-          : normalizedMode === "cool"
-            ? "Cool " + cool + unitLabel
-            : "Heat " + heat + unitLabel + " / Cool " + cool + unitLabel;
 
         return \`
           <div class="card zone-control-card mode-\${escapeHtml(normalizedMode)}" data-zone-id="\${escapeHtml(zone.id)}" data-system-mode="\${escapeHtml(normalizedMode)}">
-            <h3>\${escapeHtml(zone.name)}</h3>
-            <div class="zone-readout">
+            <div class="zone-hero">
               <div>
-                <div class="temp-label">Indoor</div>
-                <div class="temp-display">\${temp}\${temp === "—" ? "" : unitLabel}</div>
+                <h3>\${escapeHtml(zone.name)}</h3>
+                <div class="status-badge \${status.className}" data-status-badge>\${status.icon} \${escapeHtml(status.label)}</div>
               </div>
-              <div>
-                <div class="stat-row"><span class="muted">Humidity</span><span>\${humidity}%</span></div>
-                <div class="stat-row"><span class="muted">Targets</span><span>\${targetSummary}</span></div>
-                <div class="stat-row"><span class="muted">Fan</span><span data-fan-readout>\${escapeHtml(fanText)}</span></div>
-                <div class="stat-row"><span class="muted">Activity</span><span>\${escapeHtml(zone.activity || "—")}</span></div>
-                <div class="stat-row"><span class="muted">Conditioning</span><span>\${escapeHtml(zone.conditioning || "idle")}</span></div>
+              <div class="zone-hero-temp">
+                <div>
+                  <span class="temp-display">\${temp}</span><span class="temp-unit">\${temp === "—" ? "" : "°F"}</span>
+                </div>
+                <span class="temp-caption">Inside right now</span>
+              </div>
+            </div>
+            <div class="stat-chips">
+              <div class="stat-chip">
+                \${ICONS.droplet}
+                <span class="chip-label">Humidity</span>
+                <span class="chip-value" data-humidity-value>\${humidity}\${humidity === "—" ? "" : "%"}</span>
+                <div class="mini-bar"><span data-humidity-bar style="width:\${humidityWidth}%"></span></div>
+              </div>
+              <div class="stat-chip">
+                \${ICONS.fan}
+                <span class="chip-label">Blower</span>
+                <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
+                <div class="fan-bars">\${renderFanBars(fanIndex)}</div>
+              </div>
+              <div class="stat-chip">
+                \${ICONS.calendar}
+                <span class="chip-label">Schedule</span>
+                <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
               </div>
             </div>
             <div class="zone-control-layout">
-              <div
-                class="thermo-widget"
-                data-indoor="\${indoor}"
-                data-heat="\${heat}"
-                data-cool="\${cool}"
-              >
-                <div class="thermo-scale" aria-hidden="true">
-                  <span>90°</span>
-                  <span>80°</span>
-                  <span>70°</span>
-                  <span>60°</span>
+              <div>
+                <div class="section-title">\${ICONS.thermostat} Drag to set temperature</div>
+                <div
+                  class="thermo-widget"
+                  data-indoor="\${indoor}"
+                  data-heat="\${heat}"
+                  data-cool="\${cool}"
+                >
+                  <div class="thermo-scale" aria-hidden="true">
+                    <span>90°</span>
+                    <span>80°</span>
+                    <span>70°</span>
+                    <span>60°</span>
+                  </div>
+                  <div class="thermo-track">
+                    <div class="thermo-band thermo-band-heat"></div>
+                    <div class="thermo-band thermo-band-cool"></div>
+                    <div class="thermo-indoor-marker" title="Inside \${indoor}°F"></div>
+                    <button type="button" class="thermo-handle thermo-handle-heat" data-value="\${heat}" aria-label="Warmer, \${heat} degrees">\${ICONS.flame}<span>\${heat}°</span></button>
+                    <button type="button" class="thermo-handle thermo-handle-cool" data-value="\${cool}" aria-label="Cooler, \${cool} degrees">\${ICONS.snow}<span>\${cool}°</span></button>
+                  </div>
                 </div>
-                <div class="thermo-track">
-                  <div class="thermo-band thermo-band-heat"></div>
-                  <div class="thermo-band thermo-band-cool"></div>
-                  <div class="thermo-indoor-marker" title="Indoor \${indoor}\${unitLabel}"></div>
-                  <button type="button" class="thermo-handle thermo-handle-heat" data-value="\${heat}" aria-label="Heat setpoint \${heatLabel}">\${heat}°</button>
-                  <button type="button" class="thermo-handle thermo-handle-cool" data-value="\${cool}" aria-label="Cool setpoint \${coolLabel}">\${cool}°</button>
-                </div>
+                <div class="thermo-legend"><span>Warmer</span><span>Inside</span><span>Cooler</span></div>
               </div>
               <div class="zone-side-panel">
                 <div class="fan-control">
-                  <div class="fan-label-row">
-                    <span>Fan</span>
-                    <span data-fan-label>\${escapeHtml(fanText)}</span>
-                  </div>
-                  <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Fan speed" />
+                  <div class="section-title">\${ICONS.fan} Blower speed <span data-fan-label style="margin-left:auto;color:var(--accent)">\${escapeHtml(fanText)}</span></div>
+                  <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Blower speed" />
                   <div class="fan-ticks">
                     <span class="\${fanIndex === 0 ? "active" : ""}">Auto</span>
                     <span class="\${fanIndex === 1 ? "active" : ""}">Low</span>
@@ -1290,7 +1606,7 @@ function dashboardContent(): string {
                   </div>
                 </div>
                 <div>
-                  <div class="temp-label">Preset</div>
+                  <div class="section-title">\${ICONS.home} Quick settings</div>
                   <div class="preset-tiles">\${presetTiles}</div>
                 </div>
                 <div class="message zone-message"></div>
@@ -1298,6 +1614,20 @@ function dashboardContent(): string {
             </div>
           </div>
         \`;
+      }
+
+      function renderModeTiles(currentMode) {
+        const active = normalizeMode(currentMode);
+        const modes = [
+          { id: "heat", label: "Heat", hint: "Warm up", icon: ICONS.flame },
+          { id: "cool", label: "Cool", hint: "Cool down", icon: ICONS.snow },
+          { id: "auto", label: "Auto", hint: "Picks for you", icon: ICONS.auto },
+          { id: "off", label: "Off", hint: "Paused", icon: ICONS.power },
+        ];
+        return modes.map((mode) =>
+          '<button type="button" class="mode-tile mode-tile-' + mode.id + (active === mode.id ? " active" : "") + '" data-mode="' + mode.id + '">' +
+            mode.icon + "<span>" + mode.label + '</span><small>' + mode.hint + "</small></button>"
+        ).join("");
       }
 
       async function loadDashboard(options = {}) {
@@ -1329,24 +1659,29 @@ function dashboardContent(): string {
           const outdoor = data.system.outdoor_temp_display ?? data.system.outdoor_temp ?? "—";
           const filter = data.system.filter_remaining ?? "—";
           if (!options.soft) {
+            const filterWidth = Number.isFinite(Number(filter)) ? Math.max(0, Math.min(100, Number(filter))) : 0;
             systemCards.innerHTML = \`
               <div class="card">
-                <h3>System mode</h3>
-                <div class="temp-display" style="font-size:1.5rem">\${escapeHtml(modeLabel(mode))}</div>
-                <div class="control-row" style="margin-top:1rem">
-                  <button type="button" data-mode="heat">Heat</button>
-                  <button type="button" data-mode="cool">Cool</button>
-                  <button type="button" data-mode="auto">Auto</button>
-                  <button type="button" class="secondary" data-mode="off">Off</button>
-                </div>
+                <h3>What should it do?</h3>
+                <p class="muted" style="margin:0.35rem 0 0;font-size:0.88rem">Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
+                <div class="mode-tiles">\${renderModeTiles(mode)}</div>
                 <div class="message" id="mode-message"></div>
               </div>
-              <div class="card">
-                <h3>Outdoor</h3>
-                <div class="temp-label">Outside</div>
-                <div class="temp-display">\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
-                <div class="stat-row"><span class="muted">Filter remaining</span><span>\${filter}%</span></div>
-                <div class="stat-row"><span class="muted">Firmware</span><span>\${escapeHtml(data.system.firmware || "—")}</span></div>
+              <div class="card weather-card">
+                <div class="weather-row">
+                  <div class="weather-icon-wrap">\${ICONS.sun}</div>
+                  <div>
+                    <div class="temp-label">Outside</div>
+                    <div class="temp-display" style="font-size:2rem;margin:0">\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
+                  </div>
+                </div>
+                <div class="filter-life">
+                  <div class="filter-life-row">
+                    <span>\${ICONS.filter} Air filter</span>
+                    <span>\${filter === "—" ? "—" : filter + "% left"}</span>
+                  </div>
+                  <div class="filter-bar-track"><span class="filter-bar-fill" style="width:\${filterWidth}%"></span></div>
+                </div>
               </div>
             \`;
             systemCards.querySelectorAll("[data-mode]").forEach((button) => {
@@ -1359,7 +1694,7 @@ function dashboardContent(): string {
                 });
                 const modeData = await modeRes.json();
                 message.className = "message " + (modeRes.ok ? "success" : "error");
-                message.textContent = modeRes.ok ? "Mode updated." : (modeData.error || "Mode update failed.");
+                message.textContent = modeRes.ok ? "Updated." : (modeData.error || "Could not change mode.");
                 if (modeRes.ok) loadDashboard();
               });
             });
