@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.0.1";
+const APP_VERSION = "2.0.2";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -247,12 +247,22 @@ function pageStyles() {
       min-height: 100vh;
     }
     .sidebar {
+      display: flex;
+      flex-direction: column;
       background: var(--panel);
       border-right: 1px solid var(--border);
       padding: 1.5rem 1rem;
       position: sticky;
       top: 0;
       height: 100vh;
+    }
+    .sidebar nav { flex: 1; }
+    .sidebar-version {
+      margin-top: auto;
+      padding: 0.75rem 0.85rem 0;
+      font-size: 0.7rem;
+      color: var(--muted);
+      opacity: 0.65;
     }
     .brand {
       display: flex;
@@ -409,6 +419,7 @@ function renderPage(active, content) {
         </div>
       </div>
       <nav>${navHtml}</nav>
+      <p class="sidebar-version">v${escapeHtml(APP_VERSION)}</p>
     </aside>
     <main class="main">${content}</main>
   </div>
