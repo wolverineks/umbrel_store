@@ -7,7 +7,7 @@ const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.0.4";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const INFINITUDE_URLS = Array.from(new Set([
@@ -514,10 +514,11 @@ function setupContent(settings) {
       <h3>Configure thermostat proxy</h3>
       <p class="muted">On your thermostat touchscreen:</p>
       <div class="steps">
-        <div class="step"><strong>1.</strong> Open <em>Menu → Settings → Wireless → Advanced</em> on the thermostat touchscreen</div>
-        <div class="step"><strong>2.</strong> Set <em>Proxy Server</em> to <code>${proxyHost}</code> (IP only, no port suffix)</div>
-        <div class="step"><strong>3.</strong> Set <em>Proxy Port</em> to <code>${proxyPort}</code> (or <code>4036</code> if your docs mention port 3000)</div>
-        <div class="step"><strong>4.</strong> Save, then reboot the thermostat if data does not appear within 2 minutes</div>
+        <div class="step"><strong>Bryant Evolution Connex:</strong> tap <em>Menu</em> (bottom-right) → down arrow → <em>Wireless</em> → <em>Advanced Settings</em> → <em>Manage Proxy</em></div>
+        <div class="step"><strong>Carrier Infinity Touch:</strong> <em>Menu → Settings → Wireless → Advanced</em></div>
+        <div class="step">Set <em>Proxy Server</em> to <code>${proxyHost}</code> (IP only, no port suffix)</div>
+        <div class="step">Set <em>Proxy Port</em> to <code>${proxyPort}</code> (or <code>4036</code> if your docs mention port 3000)</div>
+        <div class="step">Save, then reboot the thermostat if data does not appear within 2 minutes</div>
       </div>
       ${proxyTestUrl ? `<p class="muted">From a phone on the same WiFi, open <a href="${proxyTestUrl}" target="_blank" rel="noopener">${proxyTestUrl}</a>. You should see the Infinitude page.</p>` : ""}
       <p class="muted">
@@ -528,9 +529,9 @@ function setupContent(settings) {
     <div class="card" style="margin-top:1rem">
       <h3>If thermostat traffic stays at none</h3>
       <div class="steps">
-        <div class="step"><strong>Check firmware.</strong> On the thermostat open <em>Menu → Settings → About</em> and note the version. Local proxy often stops working at firmware <strong>4.17+</strong> (MQTT cloud update).</div>
+        <div class="step"><strong>Check software version.</strong> Bryant Connex: <em>Menu → down arrow → Service → Model/Serial Numbers → Wall Control</em>. Carrier: <em>Menu → Settings → About</em>. Newer Connex software (Series B/C) may not support local proxy.</div>
+        <div class="step"><strong>No proxy menu?</strong> If <em>Wireless → Advanced Settings → Manage Proxy</em> is missing, your software may have removed local proxy support. Reply with your wall control software version.</div>
         <div class="step"><strong>Clear and re-save proxy.</strong> Blank out proxy server/port, save, reboot, then enter IP <code>${proxyHost}</code> and port <code>${proxyPort}</code> again.</div>
-        <div class="step"><strong>Try alternate menus.</strong> Some models use <em>Settings → Network → Advanced</em> or <em>Dealer Settings → Wireless → Proxy</em> instead.</div>
         <div class="step"><strong>Confirm the phone app still works.</strong> If the Carrier/Bryant app is offline too, fix WiFi on the thermostat first.</div>
         <div class="step"><strong>Leave proxy port blank?</strong> Some installs default to port 80. We do not expose 80 on Umbrel, so the port field must be <code>${proxyPort}</code> or <code>4036</code>, not empty.</div>
       </div>

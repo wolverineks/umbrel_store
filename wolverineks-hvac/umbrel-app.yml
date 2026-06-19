@@ -4,7 +4,7 @@ name: Bryant/Carrier HVAC
 tagline: Local web UI for Bryant Evolution and Carrier Infinity heat pumps
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-hvac/icon.svg
 category: automation
-version: "1.0.3"
+version: "1.0.4"
 port: 4040
 description: >-
   Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel.
@@ -23,8 +23,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Add alternate proxy port 4036, firmware troubleshooting guidance, and clearer
-  steps when thermostat traffic is not detected.
+  Add Bryant Evolution Connex-specific menu paths for proxy setup and software
+  version lookup.
 dependencies: []
 path: ""
 defaultUsername: ""
