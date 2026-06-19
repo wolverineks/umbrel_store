@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="HVAC thermostat">
+  <rect width="128" height="128" rx="24" fill="#0f766e"/>
+  <rect x="28" y="24" width="72" height="80" rx="12" fill="#ecfeff"/>
+  <rect x="36" y="32" width="56" height="28" rx="6" fill="#134e4a"/>
+  <text x="64" y="52" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" font-weight="700" fill="#ecfeff">72°</text>
+  <circle cx="44" cy="78" r="6" fill="#f97316"/>
+  <circle cx="64" cy="78" r="6" fill="#38bdf8"/>
+  <circle cx="84" cy="78" r="6" fill="#22c55e"/>
+  <rect x="40" y="96" width="48" height="8" rx="4" fill="#99f6e4"/>
+</svg>

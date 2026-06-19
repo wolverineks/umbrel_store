@@ -10,6 +10,7 @@ Add this repo to your Umbrel: `https://github.com/wolverineks/umbrel_store`
 - Storich — minimal self-hosted drive
 - Recipes — self-hosted recipe library
 - Brother Print & Scan — web interface for Brother MFC-J1360DW
+- Bryant/Carrier HVAC — local UI for Infinity/Evolution heat pumps
 
 ## How to contribute / add more apps
 

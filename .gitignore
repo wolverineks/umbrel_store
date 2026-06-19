@@ -7,3 +7,8 @@ wolverineks-recipes/data/*
 !wolverineks-recipes/data/.gitkeep
 wolverineks-brother-printer/data/*
 !wolverineks-brother-printer/data/.gitkeep
+wolverineks-hvac/data/*
+!wolverineks-hvac/data/.gitkeep
+!wolverineks-hvac/data/state/.gitkeep
+wolverineks-hvac/site/node_modules/
+wolverineks-hvac/site/dist/
