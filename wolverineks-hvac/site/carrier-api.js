@@ -25,6 +25,211 @@ class CarrierApiError extends Error {
     }
 }
 exports.CarrierApiError = CarrierApiError;
+const FULL_INFINITY_SYSTEMS_QUERY = `query getInfinitySystems($userName: String!) {
+  infinitySystems(userName: $userName) {
+    profile {
+      serial
+      name
+      firmware
+      model
+      brand
+      indoorModel
+      indoorSerial
+      idutype
+      idusource
+      outdoorModel
+      outdoorSerial
+      odutype
+    }
+    status {
+      localTime
+      localTimeOffset
+      utcTime
+      wcTime
+      isDisconnected
+      cfgem
+      mode
+      vacatrunning
+      oat
+      odu {
+        type
+        opstat
+        iducfm
+      }
+      filtrlvl
+      idu {
+        type
+        opstat
+        cfm
+        statpress
+        blwrpm
+        pwmblower
+      }
+      vent
+      ventlvl
+      humid
+      humlvl
+      uvlvl
+      zones {
+        id
+        rt
+        rh
+        fan
+        htsp
+        clsp
+        hold
+        enabled
+        currentActivity
+        zoneconditioning
+        occupancy
+        damperposition
+        otmr
+      }
+    }
+    config {
+      etag
+      mode
+      cfgem
+      cfgdead
+      cfgvent
+      cfghumid
+      cfguv
+      cfgfan
+      heatsource
+      vacat
+      vacstart
+      vacend
+      vacmint
+      vacmaxt
+      vacfan
+      fueltype
+      gasunit
+      filtertype
+      filterinterval
+      humidityVacation {
+        rclgovercool
+        ventspdclg
+        ventclg
+        rhtg
+        humidifier
+        humid
+        venthtg
+        rclg
+        ventspdhtg
+      }
+      zones {
+        id
+        name
+        enabled
+        hold
+        holdActivity
+        otmr
+        occEnabled
+        program {
+          id
+          day {
+            id
+            zoneId
+            period {
+              id
+              zoneId
+              dayId
+              activity
+              time
+              enabled
+            }
+          }
+        }
+        activities {
+          id
+          zoneId
+          type
+          fan
+          htsp
+          clsp
+        }
+      }
+      humidityAway {
+        humid
+        humidifier
+        rhtg
+        rclg
+        rclgovercool
+      }
+      humidityHome {
+        humid
+        humidifier
+        rhtg
+        rclg
+        rclgovercool
+      }
+    }
+  }
+}`;
+const FULL_GET_USER_QUERY = `query getUser($userName: String!) {
+  user(userName: $userName) {
+    username
+    identityId
+    first
+    last
+    email
+    emailVerified
+    postal
+    locations {
+      locationId
+      name
+      systems {
+        config {
+          zones {
+            id
+            enabled
+          }
+        }
+        profile {
+          serial
+          name
+        }
+        status {
+          isDisconnected
+        }
+      }
+      devices {
+        deviceId
+        type
+        thingName
+        name
+        connectionStatus
+      }
+    }
+  }
+}`;
+const GET_INFINITY_ENERGY_QUERY = `query getInfinityEnergy($serial: String!) {
+  infinityEnergy(serial: $serial) {
+    energyConfig {
+      cooling { display enabled }
+      eheat { display enabled }
+      fan { display enabled }
+      fangas { display enabled }
+      gas { display enabled }
+      hpheat { display enabled }
+      looppump { display enabled }
+      reheat { display enabled }
+      hspf
+      seer
+    }
+    energyPeriods {
+      energyPeriodType
+      eHeatKwh
+      coolingKwh
+      fanGasKwh
+      fanKwh
+      hPHeatKwh
+      loopPumpKwh
+      gasKwh
+      reheatKwh
+    }
+  }
+}`;
 class CarrierApiClient {
     username;
     password;
@@ -42,8 +247,65 @@ class CarrierApiClient {
     }
     async loadSystems() {
         await this.ensureLoggedIn();
-        const rawSystems = await this.getSystems();
+        const rawSystems = await this.fetchRawSystems();
         return rawSystems.map((system) => this.normalizeSystem(system));
+    }
+    async fetchRawSystems() {
+        await this.ensureLoggedIn();
+        const result = await this.authedGraphql("getInfinitySystems", FULL_INFINITY_SYSTEMS_QUERY, { userName: this.username });
+        return Array.isArray(result.infinitySystems) ? result.infinitySystems : [];
+    }
+    async fetchUserProfile() {
+        await this.ensureLoggedIn();
+        const result = await this.authedGraphql("getUser", FULL_GET_USER_QUERY, { userName: this.username });
+        return result.user ?? {};
+    }
+    async fetchEnergy(serial) {
+        await this.ensureLoggedIn();
+        const result = await this.authedGraphql("getInfinityEnergy", GET_INFINITY_ENERGY_QUERY, { serial });
+        return result.infinityEnergy ?? null;
+    }
+    async loadExplorerBundle() {
+        const errors = {
+            getUser: null,
+            getInfinitySystems: null,
+            getInfinityEnergy: null,
+        };
+        let getUser = null;
+        let getInfinitySystems = [];
+        const getInfinityEnergy = {};
+        try {
+            getUser = await this.fetchUserProfile();
+        }
+        catch (error) {
+            errors.getUser = error instanceof Error ? error.message : String(error);
+        }
+        try {
+            getInfinitySystems = await this.fetchRawSystems();
+        }
+        catch (error) {
+            errors.getInfinitySystems = error instanceof Error ? error.message : String(error);
+        }
+        for (const system of getInfinitySystems) {
+            const profile = system.profile ?? {};
+            const serial = asString(profile.serial);
+            if (!serial)
+                continue;
+            try {
+                getInfinityEnergy[serial] = await this.fetchEnergy(serial);
+            }
+            catch (error) {
+                getInfinityEnergy[serial] = null;
+                errors[`getInfinityEnergy.${serial}`] = error instanceof Error ? error.message : String(error);
+            }
+        }
+        return {
+            fetched_at: new Date().toISOString(),
+            errors,
+            getUser,
+            getInfinitySystems,
+            getInfinityEnergy,
+        };
     }
     async getAccessToken() {
         await this.ensureLoggedIn();
@@ -181,61 +443,7 @@ class CarrierApiClient {
         return result.user ?? {};
     }
     async getSystems() {
-        const result = await this.authedGraphql("getInfinitySystems", `query getInfinitySystems($userName: String!) {
-        infinitySystems(userName: $userName) {
-          profile {
-            serial
-            name
-            firmware
-            model
-            brand
-          }
-          status {
-            isDisconnected
-            mode
-            cfgem
-            oat
-            filtrlvl
-            zones {
-              id
-              rt
-              rh
-              fan
-              htsp
-              clsp
-              hold
-              currentActivity
-              zoneconditioning
-              enabled
-            }
-            idu {
-              blwrpm
-              cfm
-              pwmblower
-            }
-          }
-          config {
-            etag
-            mode
-            zones {
-              id
-              name
-              enabled
-              hold
-              holdActivity
-              otmr
-              activities {
-                id
-                type
-                fan
-                htsp
-                clsp
-              }
-            }
-          }
-        }
-      }`, { userName: this.username });
-        return Array.isArray(result.infinitySystems) ? result.infinitySystems : [];
+        return this.fetchRawSystems();
     }
     async mutate(operationName, query, variables) {
         await this.ensureLoggedIn();
@@ -293,8 +501,15 @@ class CarrierApiClient {
                 cfgem: nullableString(status.cfgem),
                 oat: asNumber(status.oat),
                 filtrlvl: asNumber(status.filtrlvl),
+                vacatrunning: nullableString(status.vacatrunning),
+                vent: nullableString(status.vent),
+                ventlvl: asNumber(status.ventlvl),
+                humid: nullableString(status.humid),
+                humlvl: asNumber(status.humlvl),
+                uvlvl: asNumber(status.uvlvl),
                 zones: normalizeStatusZones(status.zones),
                 idu: normalizeIduStatus(status.idu),
+                odu: normalizeOduStatus(status.odu),
             },
             config: {
                 etag: nullableString(config.etag),
@@ -310,9 +525,22 @@ function normalizeIduStatus(value) {
         return null;
     const record = value;
     return {
+        type: nullableString(record.type),
+        opstat: nullableString(record.opstat),
+        statpress: asNumber(record.statpress),
         blwrpm: asNumber(record.blwrpm),
         cfm: asNumber(record.cfm),
         pwmblower: asNumber(record.pwmblower),
+    };
+}
+function normalizeOduStatus(value) {
+    if (!value || typeof value !== "object")
+        return null;
+    const record = value;
+    return {
+        type: nullableString(record.type),
+        opstat: nullableString(record.opstat),
+        iducfm: asNumber(record.iducfm),
     };
 }
 function normalizeStatusZones(value) {
@@ -443,14 +671,53 @@ function applyInfinityStatusMessage(systems, rawMessage) {
     if (idu && typeof idu === "object") {
         const record = idu;
         if (!system.status.idu) {
-            system.status.idu = { blwrpm: null, cfm: null, pwmblower: null };
+            system.status.idu = {
+                type: null,
+                opstat: null,
+                statpress: null,
+                blwrpm: null,
+                cfm: null,
+                pwmblower: null,
+            };
         }
+        if (record.type !== undefined)
+            system.status.idu.type = nullableString(record.type);
+        if (record.opstat !== undefined)
+            system.status.idu.opstat = nullableString(record.opstat);
+        if (record.statpress !== undefined)
+            system.status.idu.statpress = asNumber(record.statpress);
         if (record.blwrpm !== undefined)
             system.status.idu.blwrpm = asNumber(record.blwrpm);
         if (record.cfm !== undefined)
             system.status.idu.cfm = asNumber(record.cfm);
         if (record.pwmblower !== undefined)
             system.status.idu.pwmblower = asNumber(record.pwmblower);
+    }
+    const odu = parsed.odu;
+    if (odu && typeof odu === "object") {
+        const record = odu;
+        if (!system.status.odu) {
+            system.status.odu = { type: null, opstat: null, iducfm: null };
+        }
+        if (record.type !== undefined)
+            system.status.odu.type = nullableString(record.type);
+        if (record.opstat !== undefined)
+            system.status.odu.opstat = nullableString(record.opstat);
+        if (record.iducfm !== undefined)
+            system.status.odu.iducfm = asNumber(record.iducfm);
+    }
+    if (parsed.vent !== undefined)
+        system.status.vent = nullableString(parsed.vent);
+    if (parsed.ventlvl !== undefined)
+        system.status.ventlvl = asNumber(parsed.ventlvl);
+    if (parsed.humid !== undefined)
+        system.status.humid = nullableString(parsed.humid);
+    if (parsed.humlvl !== undefined)
+        system.status.humlvl = asNumber(parsed.humlvl);
+    if (parsed.uvlvl !== undefined)
+        system.status.uvlvl = asNumber(parsed.uvlvl);
+    if (parsed.vacatrunning !== undefined) {
+        system.status.vacatrunning = nullableString(parsed.vacatrunning);
     }
     return true;
 }

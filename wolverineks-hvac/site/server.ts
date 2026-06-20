@@ -12,12 +12,13 @@ import {
   toFahrenheit,
   zoneIdsMatch,
   type ActivityType,
+  type CarrierExplorerBundle,
   type CarrierSystem,
   type FanMode,
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.3.6";
+const APP_VERSION = "2.4.0";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -92,6 +93,8 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 let cachedSystems: CarrierSystem[] = [];
+let cachedExplorerBundle: CarrierExplorerBundle | null = null;
+let lastExplorerFetchAt: Date | null = null;
 let lastSyncAt: Date | null = null;
 let lastLiveUpdateAt: Date | null = null;
 let lastError: string | null = null;
@@ -389,6 +392,106 @@ async function refreshCloudData(settings: Settings, force = false): Promise<Stat
 
   return buildSnapshot(settings);
 }
+
+async function refreshExplorerData(settings: Settings, force = false): Promise<CarrierExplorerBundle | null> {
+  if (!isConfigured(settings)) {
+    cachedExplorerBundle = null;
+    lastExplorerFetchAt = null;
+    return null;
+  }
+  if (!force && cachedExplorerBundle && lastExplorerFetchAt && Date.now() - lastExplorerFetchAt.getTime() < STATUS_CACHE_MS) {
+    return cachedExplorerBundle;
+  }
+  try {
+    const client = getClient(settings);
+    cachedExplorerBundle = await client.loadExplorerBundle();
+    lastExplorerFetchAt = new Date();
+    return cachedExplorerBundle;
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    return cachedExplorerBundle;
+  }
+}
+
+const API_CATALOG = {
+  app_rest: [
+    {
+      method: "GET",
+      path: "/api/status",
+      query: "?refresh=1 forces Carrier cloud sync",
+      description: "Dashboard snapshot: connection state, selected system, zone summaries, system list.",
+    },
+    {
+      method: "GET",
+      path: "/api/explorer",
+      query: "?refresh=1 forces full Carrier GraphQL fetch",
+      description: "Full Carrier cloud payloads (user, all systems, energy) plus this API catalog.",
+    },
+    {
+      method: "GET",
+      path: "/api/settings",
+      description: "Public app settings (no password).",
+    },
+    {
+      method: "PUT",
+      path: "/api/settings",
+      description: "Save credentials, validate account, select system serial.",
+    },
+    {
+      method: "DELETE",
+      path: "/api/settings",
+      description: "Clear saved credentials.",
+    },
+    {
+      method: "POST",
+      path: "/api/mode",
+      body: '{ "mode": "heat|cool|auto|off|fanonly" }',
+      description: "Set system operating mode on the selected thermostat.",
+    },
+    {
+      method: "POST",
+      path: "/api/zone/:zoneId",
+      body: '{ "heat_setpoint", "cool_setpoint", "fan", "preset" }',
+      description: "Update zone setpoints, fan, or schedule preset on the selected system.",
+    },
+    {
+      method: "GET",
+      path: "/health",
+      description: "Plain-text liveness probe.",
+    },
+  ],
+  carrier_graphql_queries: [
+    { name: "assistedLogin", used: true, description: "OAuth login via username/password." },
+    { name: "getUser", used: true, description: "Account profile, locations, devices." },
+    { name: "getInfinitySystems", used: true, description: "All systems: profile, status, config, schedules." },
+    { name: "getInfinityEnergy", used: true, description: "Per-system energy config and usage periods." },
+    { name: "infinityConfig", used: false, description: "Single-system config query (available in schema)." },
+    { name: "infinityStatus", used: false, description: "Single-system status query (available in schema)." },
+    { name: "infinityDealer", used: false, description: "Dealer information." },
+    { name: "infinityNotifications", used: false, description: "System notifications." },
+  ],
+  carrier_graphql_mutations: [
+    { name: "updateInfinityConfig", used: true, description: "System mode, humidity, vent, vacation, and other whole-house config." },
+    { name: "updateInfinityZoneActivity", used: true, description: "Per-activity setpoints and fan for a zone." },
+    { name: "updateInfinityZoneConfig", used: true, description: "Zone hold, hold activity, timed hold (otmr)." },
+    { name: "updateInfinityProgramDay", used: false, description: "Edit weekly schedule day/periods." },
+    { name: "updateInfinityWholeHouseActivity", used: false, description: "Whole-house activity changes." },
+    { name: "updateInfinityZoneStatus", used: false, description: "Direct zone status overrides." },
+    { name: "updateInfinityProfile", used: false, description: "Rename system profile fields." },
+    { name: "updateInfinityTime", used: false, description: "Thermostat clock/time settings." },
+    { name: "updateInfinityNotificationPrefs", used: false, description: "Notification preferences." },
+  ],
+  carrier_websocket: [
+    { messageType: "InfinityStatus", used: true, description: "Live status updates (zones, oat, idu, odu, humid, vent, etc.)." },
+    { messageType: "InfinityConfig", used: false, description: "Live config/schedule/activity updates." },
+  ],
+  carrier_endpoints: [
+    { url: "https://dataservice.infinity.iot.carrier.com/graphql-no-auth", description: "Unauthenticated GraphQL (login)." },
+    { url: "https://dataservice.infinity.iot.carrier.com/graphql", description: "Authenticated GraphQL queries and mutations." },
+    { url: "https://sso.carrier.com/oauth2/default/v1/token", description: "OAuth token refresh." },
+    { url: "wss://realtime.infinity.iot.carrier.com/", description: "Realtime InfinityStatus / InfinityConfig stream." },
+  ],
+};
 
 function ensurePolling(settings: Settings): void {
   if (!isConfigured(settings)) {
@@ -1275,12 +1378,83 @@ function pageStyles(): string {
       .zone-control-layout { grid-template-columns: 1fr; }
       .stat-chips { grid-template-columns: 1fr; }
     }
+    .api-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .api-toolbar .muted { flex: 1; min-width: 12rem; }
+    .api-section { margin-top: 1.25rem; }
+    .api-section h2 {
+      font-size: 1.05rem;
+      margin: 0 0 0.75rem;
+    }
+    .api-section h3 {
+      font-size: 0.92rem;
+      margin: 1rem 0 0.5rem;
+      color: var(--muted);
+    }
+    .api-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .api-table th,
+    .api-table td {
+      border: 1px solid var(--border);
+      padding: 0.55rem 0.65rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    .api-table th {
+      background: var(--bg);
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .api-method {
+      display: inline-block;
+      min-width: 3.2rem;
+      font-weight: 700;
+      font-size: 0.72rem;
+      letter-spacing: 0.03em;
+    }
+    .api-used-yes { color: var(--success); font-weight: 700; }
+    .api-used-no { color: var(--muted); }
+    .json-panel {
+      margin-top: 0.5rem;
+    }
+    .json-panel summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.88rem;
+      padding: 0.45rem 0;
+    }
+    .json-panel pre {
+      margin: 0.35rem 0 0;
+      padding: 0.85rem;
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      overflow: auto;
+      max-height: 28rem;
+      font-size: 0.72rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .json-panel.error pre {
+      border-color: #fecaca;
+      color: var(--danger);
+    }
   `;
 }
 
 function renderPage(active: string, content: string): string {
   const nav = [
     { id: "dashboard", label: "Dashboard", href: "/" },
+    { id: "api", label: "API Explorer", href: "/api" },
     { id: "setup", label: "Setup", href: "/setup" },
     { id: "settings", label: "Settings", href: "/settings" },
   ];
@@ -2256,6 +2430,177 @@ function dashboardContent(): string {
   `;
 }
 
+function renderApiCatalogTable(
+  rows: Array<Record<string, string | boolean>>,
+  columns: Array<{ key: string; label: string }>,
+): string {
+  const header = columns.map((col) => "<th>" + escapeHtml(col.label) + "</th>").join("");
+  const body = rows
+    .map((row) => {
+      const cells = columns
+        .map((col) => {
+          const value = row[col.key];
+          if (col.key === "used") {
+            const yes = value === true;
+            return (
+              '<td><span class="' +
+              (yes ? "api-used-yes" : "api-used-no") +
+              '">' +
+              (yes ? "Yes" : "No") +
+              "</span></td>"
+            );
+          }
+          return "<td>" + escapeHtml(value == null ? "—" : String(value)) + "</td>";
+        })
+        .join("");
+      return "<tr>" + cells + "</tr>";
+    })
+    .join("");
+  return '<table class="api-table"><thead><tr>' + header + "</tr></thead><tbody>" + body + "</tbody></table>";
+}
+
+function apiExplorerContent(): string {
+  const restRows = API_CATALOG.app_rest.map((row) => ({
+    method: row.method,
+    path: row.path,
+    query: ("query" in row ? row.query : undefined) || ("body" in row ? row.body : undefined) || "—",
+    description: row.description,
+  }));
+  const restTable = renderApiCatalogTable(restRows, [
+    { key: "method", label: "Method" },
+    { key: "path", label: "Path" },
+    { key: "query", label: "Query / Body" },
+    { key: "description", label: "Description" },
+  ]);
+  const queryTable = renderApiCatalogTable(API_CATALOG.carrier_graphql_queries, [
+    { key: "name", label: "Query" },
+    { key: "used", label: "Used" },
+    { key: "description", label: "Description" },
+  ]);
+  const mutationTable = renderApiCatalogTable(API_CATALOG.carrier_graphql_mutations, [
+    { key: "name", label: "Mutation" },
+    { key: "used", label: "Used" },
+    { key: "description", label: "Description" },
+  ]);
+  const wsTable = renderApiCatalogTable(API_CATALOG.carrier_websocket, [
+    { key: "messageType", label: "Message" },
+    { key: "used", label: "Used" },
+    { key: "description", label: "Description" },
+  ]);
+  const endpointTable = renderApiCatalogTable(API_CATALOG.carrier_endpoints, [
+    { key: "url", label: "URL" },
+    { key: "description", label: "Description" },
+  ]);
+
+  return `
+    <div class="toolbar">
+      <div>
+        <h2>API Explorer</h2>
+        <p class="toolbar-meta">Live responses from every app endpoint and full Carrier cloud payloads.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="api-toolbar">
+        <button type="button" id="api-refresh-all">Refresh all data</button>
+        <span class="muted" id="api-fetched-at">Not loaded yet</span>
+      </div>
+      <p class="muted" style="margin:0">Passwords are never shown. Carrier responses include every field returned by the cloud GraphQL API.</p>
+    </div>
+
+    <div class="card api-section">
+      <h2>Live app endpoint responses</h2>
+      <details class="json-panel" open><summary>GET /api/status</summary><pre id="api-data-status">Loading…</pre></details>
+      <details class="json-panel" open><summary>GET /api/settings</summary><pre id="api-data-settings">Loading…</pre></details>
+      <details class="json-panel"><summary>GET /health</summary><pre id="api-data-health">Loading…</pre></details>
+      <details class="json-panel" open><summary>GET /api/explorer</summary><pre id="api-data-explorer">Loading…</pre></details>
+    </div>
+
+    <div class="card api-section">
+      <h2>Carrier cloud data</h2>
+      <details class="json-panel" open><summary>getUser</summary><pre id="api-data-user">Loading…</pre></details>
+      <details class="json-panel" open><summary>getInfinitySystems (all fields)</summary><pre id="api-data-systems">Loading…</pre></details>
+      <details class="json-panel" open><summary>getInfinityEnergy (per system)</summary><pre id="api-data-energy">Loading…</pre></details>
+    </div>
+
+    <div class="card api-section">
+      <h2>App REST API reference</h2>
+      ${restTable}
+    </div>
+
+    <div class="card api-section">
+      <h2>Carrier GraphQL API reference</h2>
+      <h3>Queries</h3>
+      ${queryTable}
+      <h3>Mutations</h3>
+      ${mutationTable}
+      <h3>Realtime WebSocket messages</h3>
+      ${wsTable}
+      <h3>Cloud endpoints</h3>
+      ${endpointTable}
+    </div>
+
+    <script>
+      function prettyJson(value) {
+        try {
+          return JSON.stringify(value, null, 2);
+        } catch {
+          return String(value);
+        }
+      }
+
+      async function fetchPanel(url, options) {
+        const res = await fetch(url, options);
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const data = await res.json();
+          return { ok: res.ok, status: res.status, body: data };
+        }
+        const text = await res.text();
+        return { ok: res.ok, status: res.status, body: text };
+      }
+
+      function setPanel(id, payload, isError) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const panel = el.closest(".json-panel");
+        if (panel) panel.classList.toggle("error", Boolean(isError));
+        el.textContent = typeof payload === "string" ? payload : prettyJson(payload);
+      }
+
+      async function loadApiExplorer(force) {
+        const suffix = force ? "?refresh=1" : "";
+        const fetchedAt = document.getElementById("api-fetched-at");
+        if (fetchedAt) fetchedAt.textContent = "Loading…";
+
+        const [status, settings, health, explorer] = await Promise.all([
+          fetchPanel("/api/status" + suffix),
+          fetchPanel("/api/settings"),
+          fetchPanel("/health"),
+          fetchPanel("/api/explorer" + suffix),
+        ]);
+
+        setPanel("api-data-status", { status: status.status, ok: status.ok, body: status.body }, !status.ok);
+        setPanel("api-data-settings", { status: settings.status, ok: settings.ok, body: settings.body }, !settings.ok);
+        setPanel("api-data-health", health.body, !health.ok);
+        setPanel("api-data-explorer", { status: explorer.status, ok: explorer.ok, body: explorer.body }, !explorer.ok);
+
+        const carrier = explorer.ok && explorer.body && explorer.body.carrier ? explorer.body.carrier : null;
+        setPanel("api-data-user", carrier ? carrier.getUser : explorer.body?.errors?.getUser || "No data", carrier ? false : true);
+        setPanel("api-data-systems", carrier ? carrier.getInfinitySystems : explorer.body?.errors?.getInfinitySystems || "No data", carrier ? false : true);
+        setPanel("api-data-energy", carrier ? carrier.getInfinityEnergy : explorer.body?.errors?.getInfinityEnergy || "No data", carrier ? false : true);
+
+        if (fetchedAt) {
+          const stamp = explorer.body?.fetched_at || explorer.body?.carrier?.fetched_at || new Date().toISOString();
+          fetchedAt.textContent = "Last fetched " + new Date(stamp).toLocaleString();
+        }
+      }
+
+      document.getElementById("api-refresh-all")?.addEventListener("click", () => loadApiExplorer(true));
+      loadApiExplorer(false);
+    </script>
+  `;
+}
+
 function settingsContent(settings: PublicSettings): string {
   return `
     <div class="toolbar"><h2>Settings</h2></div>
@@ -2371,6 +2716,29 @@ async function handleApi(
   res: ServerResponse,
   settings: Settings,
 ): Promise<void> {
+  if (route === "/api/explorer" && req.method === "GET") {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const forceRefresh = url.searchParams.get("refresh") === "1";
+    const snapshot = buildSnapshot(settings);
+    const carrier = await refreshExplorerData(settings, forceRefresh);
+    sendJson(res, 200, {
+      fetched_at: carrier?.fetched_at ?? lastExplorerFetchAt?.toISOString() ?? null,
+      configured: isConfigured(settings),
+      error: lastError,
+      catalog: API_CATALOG,
+      app_snapshot: snapshot,
+      carrier,
+      local_endpoints: {
+        status: "GET /api/status",
+        settings: "GET /api/settings",
+        health: "GET /health",
+        mode: "POST /api/mode",
+        zone: "POST /api/zone/:zoneId",
+      },
+    });
+    return;
+  }
+
   if (route === "/api/status" && req.method === "GET") {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const forceRefresh = url.searchParams.get("refresh") === "1";
@@ -2397,6 +2765,8 @@ async function handleApi(
     resetCloudConnections();
     await saveSettings(cleared);
     cachedSystems = [];
+    cachedExplorerBundle = null;
+    lastExplorerFetchAt = null;
     lastSyncAt = null;
     lastLiveUpdateAt = null;
     lastError = null;
@@ -2599,6 +2969,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   if (route === "/settings") {
     sendText(res, 200, "text/html; charset=utf-8", renderPage("settings", settingsContent(publicView)));
+    return;
+  }
+
+  if (route === "/api") {
+    sendText(res, 200, "text/html; charset=utf-8", renderPage("api", apiExplorerContent()));
     return;
   }
 
