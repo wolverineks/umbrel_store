@@ -17,7 +17,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.3.1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -505,6 +505,29 @@ function pageStyles(): string {
       color: var(--accent);
     }
     .main { padding: 1.5rem; }
+    .mobile-header,
+    .sidebar-backdrop {
+      display: none;
+    }
+    .menu-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 0.65rem;
+      padding: 0.45rem 0.55rem;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .menu-toggle .icon {
+      width: 1.25rem;
+      height: 1.25rem;
+    }
+    .mobile-header-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
     .toolbar {
       display: flex;
       justify-content: space-between;
@@ -1119,8 +1142,60 @@ function pageStyles(): string {
       flex-shrink: 0;
     }
     @media (max-width: 900px) {
-      .layout { grid-template-columns: 1fr; }
-      .sidebar { position: static; height: auto; }
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .mobile-header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.85rem 1rem;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.45);
+        z-index: 35;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+      }
+      html[data-theme="dark"] .sidebar-backdrop {
+        background: rgba(0, 0, 0, 0.55);
+      }
+      .sidebar-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(280px, 86vw);
+        height: 100vh;
+        z-index: 40;
+        transform: translateX(-105%);
+        transition: transform 0.22s ease;
+        box-shadow: var(--shadow);
+      }
+      .sidebar.open {
+        transform: translateX(0);
+      }
+      .main {
+        padding: 1rem;
+        grid-column: 1;
+        grid-row: 2;
+      }
       .zone-control-layout { grid-template-columns: 1fr; }
       .stat-chips { grid-template-columns: 1fr; }
     }
@@ -1150,7 +1225,16 @@ function renderPage(active: string, content: string): string {
 </head>
 <body>
   <div class="layout">
-    <aside class="sidebar">
+    <header class="mobile-header">
+      <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <span class="mobile-header-title">Bryant/Carrier HVAC</span>
+    </header>
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <img src="/icon.svg" alt="" />
         <div>
@@ -1163,6 +1247,43 @@ function renderPage(active: string, content: string): string {
     </aside>
     <main class="main">${content}</main>
   </div>
+  <script>
+    (function () {
+      const toggle = document.getElementById("menu-toggle");
+      const sidebar = document.getElementById("sidebar");
+      const backdrop = document.getElementById("sidebar-backdrop");
+      if (!toggle || !sidebar || !backdrop) return;
+
+      const mq = window.matchMedia("(max-width: 900px)");
+
+      function setOpen(open) {
+        sidebar.classList.toggle("open", open);
+        backdrop.classList.toggle("open", open);
+        backdrop.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        toggle.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+        document.body.style.overflow = open && mq.matches ? "hidden" : "";
+      }
+
+      function closeSidebar() {
+        setOpen(false);
+      }
+
+      toggle.addEventListener("click", () => {
+        setOpen(!sidebar.classList.contains("open"));
+      });
+      backdrop.addEventListener("click", closeSidebar);
+      sidebar.querySelectorAll(".nav-link").forEach((link) => {
+        link.addEventListener("click", closeSidebar);
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeSidebar();
+      });
+      mq.addEventListener("change", () => {
+        if (!mq.matches) closeSidebar();
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
