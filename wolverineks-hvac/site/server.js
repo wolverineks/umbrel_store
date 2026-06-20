@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.3.2";
+const APP_VERSION = "2.3.3";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -1410,6 +1410,33 @@ function dashboardContent() {
         return FAN_LABELS[index] || "Auto";
       }
 
+      function fanValuesMatch(a, b) {
+        return fanToIndex(a || "auto") === fanToIndex(b || "auto");
+      }
+
+      function fanPendingValue(card) {
+        return card.dataset.fanPending || null;
+      }
+
+      function setFanPending(card, fan) {
+        card.dataset.fanPending = fan || "auto";
+      }
+
+      function clearFanPending(card) {
+        delete card.dataset.fanPending;
+      }
+
+      function applyFanSettingUi(card, fan) {
+        const fanIndex = fanToIndex(fan);
+        const label = card.querySelector("[data-fan-label]");
+        const slider = card.querySelector('[data-field="fan"]');
+        if (label) label.textContent = FAN_LABELS[fanIndex] || "Auto";
+        if (slider) slider.value = String(fanIndex);
+        card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, index) => {
+          tick.classList.toggle("active", index === fanIndex);
+        });
+      }
+
       function fanDisplayText(zone) {
         return zone.fan_display || "—";
       }
@@ -1473,16 +1500,17 @@ function dashboardContent() {
       }
 
       function syncFanSetting(card, zone) {
-        const fanIndex = fanToIndex(zone.fan);
-        const label = card.querySelector("[data-fan-label]");
-        const slider = card.querySelector('[data-field="fan"]');
-        if (label) label.textContent = fanSettingLabel(zone);
-        if (slider && document.activeElement !== slider) {
-          slider.value = String(fanIndex);
+        const pending = fanPendingValue(card);
+        if (pending) {
+          if (fanValuesMatch(zone.fan, pending)) {
+            clearFanPending(card);
+          } else {
+            return;
+          }
         }
-        card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, index) => {
-          tick.classList.toggle("active", index === fanIndex);
-        });
+        const slider = card.querySelector('[data-field="fan"]');
+        if (slider && document.activeElement === slider) return;
+        applyFanSettingUi(card, zone.fan || "auto");
       }
 
       function syncFanControl(card, zone) {
@@ -1655,6 +1683,9 @@ function dashboardContent() {
         message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
         if (res.ok) {
           setTimeout(() => loadDashboard({ soft: true }), 600);
+        } else if ("fan" in payload) {
+          clearFanPending(card);
+          loadDashboard({ soft: true });
         }
         return res.ok;
       }
@@ -1676,21 +1707,26 @@ function dashboardContent() {
 
       function initFanSlider(card) {
         const slider = card.querySelector('[data-field="fan"]');
-        const label = card.querySelector("[data-fan-label]");
         if (!slider || slider.dataset.initialized === "true") return;
         slider.dataset.initialized = "true";
 
+        const fanFromSlider = () => FAN_LEVELS[Number.parseInt(slider.value, 10)] || "auto";
+
         const syncLabel = () => {
-          const index = Number.parseInt(slider.value, 10);
-          label.textContent = FAN_LABELS[index] || "Auto";
-          card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, tickIndex) => {
-            tick.classList.toggle("active", tickIndex === index);
-          });
+          applyFanSettingUi(card, fanFromSlider());
         };
 
-        slider.addEventListener("input", syncLabel);
+        const markFanPending = () => {
+          setFanPending(card, fanFromSlider());
+          syncLabel();
+        };
+
+        slider.addEventListener("pointerdown", markFanPending);
+        slider.addEventListener("input", markFanPending);
         slider.addEventListener("change", async () => {
-          const fan = FAN_LEVELS[Number.parseInt(slider.value, 10)] || "auto";
+          const fan = fanFromSlider();
+          setFanPending(card, fan);
+          syncLabel();
           await postZoneUpdate(card, { fan });
         });
         syncLabel();
@@ -1866,6 +1902,7 @@ function dashboardContent() {
         const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
         const zoneDragging = Boolean(zoneCards.querySelector('[data-dragging="true"]'));
+        const zoneFanPending = Boolean(zoneCards.querySelector("[data-fan-pending]"));
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
@@ -1934,7 +1971,7 @@ function dashboardContent() {
           if (!zoneDragging) {
             if (options.soft && zoneCards.querySelector(".zone-control-card")) {
               updateZoneCardsFromData(data.zones);
-            } else {
+            } else if (!zoneFanPending) {
               zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode)).join("");
               zoneCards.querySelectorAll(".zone-control-card").forEach(initZoneCard);
             }
