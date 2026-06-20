@@ -4,7 +4,7 @@ name: Bryant/Carrier HVAC
 tagline: Cloud web UI for Bryant Evolution and Carrier Infinity heat pumps
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-hvac/icon.svg
 category: automation
-version: "2.2.2"
+version: "2.3.0"
 port: 4040
 description: >-
   Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel
@@ -23,8 +23,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  When blower is on Auto, show the live running speed (Low/Med/High/Off)
-  instead of the word Auto in the fan readout and bars.
+  Choose which Carrier/Bryant system to control when multiple thermostats are
+  on one account, with the active system shown on the dashboard.
 dependencies: []
 path: ""
 defaultUsername: ""

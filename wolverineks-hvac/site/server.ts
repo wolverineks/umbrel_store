@@ -17,7 +17,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.2.2";
+const APP_VERSION = "2.3.0";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -80,7 +80,7 @@ type StatusSnapshot = {
     outdoor_temp_display: string | null;
   } | null;
   zones: ZoneView[];
-  systems: Array<{ serial: string; name: string }>;
+  systems: Array<{ serial: string; name: string; model: string | null }>;
   last_live_update: string | null;
 };
 
@@ -196,8 +196,7 @@ function ensureRealtime(settings: Settings): void {
 function selectSystem(settings: Settings, systems: CarrierSystem[]): CarrierSystem | null {
   if (!systems.length) return null;
   if (settings.system_serial) {
-    const selected = systems.find((system) => system.profile.serial === settings.system_serial);
-    if (selected) return selected;
+    return systems.find((system) => system.profile.serial === settings.system_serial) ?? null;
   }
   return systems[0] ?? null;
 }
@@ -340,6 +339,7 @@ function buildSnapshot(settings: Settings): StatusSnapshot {
     systems: cachedSystems.map((item) => ({
       serial: item.profile.serial,
       name: item.profile.name,
+      model: item.profile.model,
     })),
     last_live_update: lastLiveUpdateAt?.toISOString() ?? null,
   };
@@ -514,6 +514,12 @@ function pageStyles(): string {
       flex-wrap: wrap;
     }
     .toolbar h2 { margin: 0; font-size: 1.5rem; }
+    .toolbar-meta {
+      font-size: 0.88rem;
+      color: var(--muted);
+      margin: 0.2rem 0 0;
+    }
+    .toolbar-meta strong { color: var(--text); }
     .grid {
       display: grid;
       gap: 1rem;
@@ -1271,7 +1277,10 @@ function setupContent(settings: PublicSettings): string {
 function dashboardContent(): string {
   return `
     <div class="toolbar">
-      <h2>Your home</h2>
+      <div>
+        <h2>Your home</h2>
+        <p class="toolbar-meta" id="active-system-label">Loading system…</p>
+      </div>
       <span class="status-pill warning" id="connection-pill">Loading…</span>
     </div>
     <div class="grid" id="system-cards">
@@ -1803,6 +1812,21 @@ function dashboardContent(): string {
         ).join("");
       }
 
+      function updateActiveSystemLabel(data) {
+        const label = document.getElementById("active-system-label");
+        if (!label) return;
+        if (!data.system) {
+          label.textContent = "";
+          return;
+        }
+        const match = (data.systems || []).find((item) => item.serial === data.system.serial);
+        const carrierName = match?.name || data.system.name;
+        const model = match?.model || data.system.model;
+        label.innerHTML = "Controlling <strong>" + escapeHtml(carrierName) + "</strong>" +
+          (model ? " · " + escapeHtml(model) : "") +
+          " · <span class=\\"muted\\">" + escapeHtml(data.system.serial) + "</span>";
+      }
+
       async function loadDashboard(options = {}) {
         const pill = document.getElementById("connection-pill");
         const systemCards = document.getElementById("system-cards");
@@ -1811,6 +1835,7 @@ function dashboardContent(): string {
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
+          updateActiveSystemLabel(data);
           if (!data.configured) {
             pill.className = "status-pill warning";
             pill.textContent = "Setup required";
@@ -1901,9 +1926,21 @@ function settingsContent(settings: PublicSettings): string {
     <div class="card">
       <form id="settings-form">
         <label>
-          System name
+          Thermostat to control
+          <select id="system_serial" name="system_serial">
+            <option value="">Loading systems…</option>
+          </select>
+        </label>
+        <p class="muted" style="margin:-0.35rem 0 0.85rem;font-size:0.85rem">
+          Pick which Carrier/Bryant system this app connects to. Names come from your Carrier account.
+        </p>
+        <label>
+          Dashboard label
           <input id="system_name" name="system_name" value="${escapeHtml(settings.system_name)}" />
         </label>
+        <p class="muted" style="margin:-0.35rem 0 0.85rem;font-size:0.85rem">
+          Optional nickname shown on the dashboard only. It does not change which thermostat is controlled.
+        </p>
         <label>
           Bryant/Carrier username
           <input id="username" name="username" value="${escapeHtml(settings.username)}" autocomplete="username" />
@@ -1918,6 +1955,38 @@ function settingsContent(settings: PublicSettings): string {
       </form>
     </div>
     <script>
+      const savedSystemSerial = ${JSON.stringify(settings.system_serial)};
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      async function loadSystemPicker() {
+        const select = document.getElementById("system_serial");
+        try {
+          const res = await fetch("/api/status");
+          const data = await res.json();
+          const systems = data.systems || [];
+          if (!systems.length) {
+            select.innerHTML = '<option value="">No systems found on this account</option>';
+            return;
+          }
+          select.innerHTML = systems.map((system) => {
+            const label = system.name + " · " + system.serial + (system.model ? " · " + system.model : "");
+            const selected = system.serial === savedSystemSerial ? " selected" : "";
+            return '<option value="' + escapeHtml(system.serial) + '"' + selected + ">" + escapeHtml(label) + "</option>";
+          }).join("");
+        } catch (error) {
+          select.innerHTML = '<option value="">Could not load systems</option>';
+        }
+      }
+
+      loadSystemPicker();
+
       document.getElementById("settings-form").addEventListener("submit", async (event) => {
         event.preventDefault();
         const message = document.getElementById("settings-message");
@@ -1927,6 +1996,7 @@ function settingsContent(settings: PublicSettings): string {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             system_name: form.system_name.value.trim(),
+            system_serial: form.system_serial.value.trim(),
             username: form.username.value.trim(),
             password: form.password.value,
           }),
@@ -2018,12 +2088,18 @@ async function handleApi(
         sendJson(res, 400, { error: "No HVAC systems found on this Carrier account" });
         return;
       }
+      const systems = await client.loadSystems();
+      if (next.system_serial && !systems.some((system) => system.profile.serial === next.system_serial)) {
+        sendJson(res, 400, { error: "Selected thermostat was not found on your Carrier account" });
+        return;
+      }
       resetCloudConnections();
       await saveSettings(next);
-      cachedSystems = [];
-      lastSyncAt = null;
+      cachedSystems = systems;
+      lastSyncAt = new Date();
       lastLiveUpdateAt = null;
-      await refreshCloudData(next, true);
+      lastError = null;
+      ensureRealtime(next);
       ensurePolling(next);
       sendJson(res, 200, { settings: publicSettings(next) });
     } catch (error) {
