@@ -17,7 +17,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.3.4";
+const APP_VERSION = "2.3.5";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -999,10 +999,53 @@ function pageStyles(): string {
       display: grid;
       gap: 0.2rem;
     }
+    .chip-header {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .chip-header .chip-label {
+      flex: 1;
+      min-width: 0;
+    }
     .stat-chip .icon {
       width: 1.1rem;
       height: 1.1rem;
       color: var(--accent);
+      flex-shrink: 0;
+    }
+    .tile-refresh {
+      margin-left: auto;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0.15rem;
+      border-radius: 0.35rem;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .tile-refresh .icon {
+      width: 0.95rem;
+      height: 0.95rem;
+    }
+    .tile-refresh:hover:not(:disabled) {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .tile-refresh:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    .tile-refresh.spinning .icon {
+      animation: tile-refresh-spin 0.8s linear infinite;
+    }
+    @keyframes tile-refresh-spin {
+      to { transform: rotate(360deg); }
+    }
+    .section-title .tile-refresh {
+      margin-left: auto;
     }
     .chip-label {
       font-size: 0.72rem;
@@ -1440,7 +1483,12 @@ function dashboardContent(): string {
         filter: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>',
         thermostat: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a4 4 0 0 0-4 4v9a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><circle cx="12" cy="15" r="1.5" fill="currentColor"/></svg>',
         pause: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>',
+        refresh: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
       };
+
+      function renderTileRefresh(metric, label) {
+        return '<button type="button" class="tile-refresh" data-refresh="' + metric + '" aria-label="Refresh ' + escapeHtml(label) + '">' + ICONS.refresh + "</button>";
+      }
 
       function escapeHtml(value) {
         return String(value)
@@ -1580,15 +1628,7 @@ function dashboardContent(): string {
         syncFanBars(card, zone);
       }
 
-      function syncZoneReadout(card, zone) {
-        const status = conditioningInfo(zone.conditioning);
-        const badge = card.querySelector("[data-status-badge]");
-        if (badge) {
-          badge.className = "status-badge " + status.className;
-          badge.innerHTML = status.icon + " " + escapeHtml(status.label);
-        }
-        const schedule = card.querySelector("[data-schedule-readout]");
-        if (schedule) schedule.textContent = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+      function syncHumidityTile(card, zone) {
         const humidityBar = card.querySelector("[data-humidity-bar]");
         const humidityValue = card.querySelector("[data-humidity-value]");
         const humidity = Number(zone.humidity);
@@ -1598,12 +1638,60 @@ function dashboardContent(): string {
         if (humidityBar) {
           humidityBar.style.width = Number.isFinite(humidity) ? Math.max(0, Math.min(100, humidity)) + "%" : "0%";
         }
+      }
+
+      function syncThermoTile(card, zone) {
+        const temp = zone.temperature_display ?? zone.temperature ?? "—";
+        const display = card.querySelector(".zone-hero-temp .temp-display");
+        const unit = card.querySelector(".zone-hero-temp .temp-unit");
+        if (display) display.textContent = temp;
+        if (unit) unit.textContent = temp === "—" ? "" : "°F";
         const widget = card.querySelector(".thermo-widget");
-        if (widget) {
+        if (widget && card.dataset.dragging !== "true") {
           const indoor = parseTemp(zone.temperature_display ?? zone.temperature, parseTemp(widget.dataset.indoor, 68));
           widget.dataset.indoor = String(indoor);
           updateThermoWidget(widget);
         }
+      }
+
+      async function refreshZoneMetric(card, metric, button) {
+        button.disabled = true;
+        button.classList.add("spinning");
+        try {
+          const res = await fetch("/api/status?refresh=1");
+          const data = await res.json();
+          const zone = (data.zones || []).find((item) => item.id === card.dataset.zoneId);
+          if (!zone) return;
+          if (metric === "humidity") syncHumidityTile(card, zone);
+          else if (metric === "blower") syncFanTile(card, zone);
+          else if (metric === "thermo") syncThermoTile(card, zone);
+        } finally {
+          button.disabled = false;
+          button.classList.remove("spinning");
+        }
+      }
+
+      function initTileRefreshButtons(card) {
+        card.querySelectorAll("[data-refresh]").forEach((button) => {
+          if (button.dataset.initialized === "true") return;
+          button.dataset.initialized = "true";
+          button.addEventListener("click", async () => {
+            await refreshZoneMetric(card, button.dataset.refresh, button);
+          });
+        });
+      }
+
+      function syncZoneReadout(card, zone) {
+        const status = conditioningInfo(zone.conditioning);
+        const badge = card.querySelector("[data-status-badge]");
+        if (badge) {
+          badge.className = "status-badge " + status.className;
+          badge.innerHTML = status.icon + " " + escapeHtml(status.label);
+        }
+        const schedule = card.querySelector("[data-schedule-readout]");
+        if (schedule) schedule.textContent = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+        syncHumidityTile(card, zone);
+        syncThermoTile(card, zone);
         syncFanTile(card, zone);
       }
 
@@ -1808,6 +1896,7 @@ function dashboardContent(): string {
         initThermoWidget(card.querySelector(".thermo-widget"));
         initFanSlider(card);
         initPresetTiles(card);
+        initTileRefreshButtons(card);
       }
 
       function renderFanBars(zone) {
@@ -1853,14 +1942,20 @@ function dashboardContent(): string {
             </div>
             <div class="stat-chips">
               <div class="stat-chip">
-                \${ICONS.droplet}
-                <span class="chip-label">Humidity</span>
+                <div class="chip-header">
+                  \${ICONS.droplet}
+                  <span class="chip-label">Humidity</span>
+                  \${renderTileRefresh("humidity", "humidity")}
+                </div>
                 <span class="chip-value" data-humidity-value>\${humidity}\${humidity === "—" ? "" : "%"}</span>
                 <div class="mini-bar"><span data-humidity-bar style="width:\${humidityWidth}%"></span></div>
               </div>
               <div class="stat-chip">
-                \${ICONS.fan}
-                <span class="chip-label">Blower</span>
+                <div class="chip-header">
+                  \${ICONS.fan}
+                  <span class="chip-label">Blower</span>
+                  \${renderTileRefresh("blower", "blower speed")}
+                </div>
                 <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
                 <div class="fan-bars">\${renderFanBars(zone)}</div>
               </div>
@@ -1872,7 +1967,7 @@ function dashboardContent(): string {
             </div>
             <div class="zone-control-layout">
               <div>
-                <div class="section-title">\${ICONS.thermostat} Slide the flags to adjust</div>
+                <div class="section-title">\${ICONS.thermostat} Slide the flags to adjust \${renderTileRefresh("thermo", "temperature")}</div>
                 <div
                   class="thermo-widget"
                   data-indoor="\${indoor}"
@@ -2158,7 +2253,10 @@ async function handleApi(
   settings: Settings,
 ): Promise<void> {
   if (route === "/api/status" && req.method === "GET") {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const forceRefresh = url.searchParams.get("refresh") === "1";
     const needsRefresh =
+      forceRefresh ||
       !lastSyncAt ||
       Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS ||
       (!lastLiveUpdateAt && Date.now() - (lastSyncAt?.getTime() ?? 0) > 5_000);
