@@ -17,7 +17,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.3.5";
+const APP_VERSION = "2.3.6";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -1047,6 +1047,32 @@ function pageStyles(): string {
     .section-title .tile-refresh {
       margin-left: auto;
     }
+    .card-header-row,
+    .tile-header-row,
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .card-header-row h3 {
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+    }
+    .tile-header-row {
+      justify-content: space-between;
+    }
+    .status-row {
+      flex-wrap: wrap;
+      gap: 0.45rem;
+    }
+    .status-row .status-badge {
+      flex: 1;
+      min-width: 0;
+    }
+    .filter-life-row .tile-refresh {
+      margin-left: 0.35rem;
+    }
     .chip-label {
       font-size: 0.72rem;
       color: var(--muted);
@@ -1654,21 +1680,93 @@ function dashboardContent(): string {
         }
       }
 
-      async function refreshZoneMetric(card, metric, button) {
+      function syncScheduleTile(card, zone) {
+        const schedule = card.querySelector("[data-schedule-readout]");
+        if (schedule) schedule.textContent = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+      }
+
+      function syncStatusTile(card, zone) {
+        const status = conditioningInfo(zone.conditioning);
+        const badge = card.querySelector("[data-status-badge]");
+        if (badge) {
+          badge.className = "status-badge " + status.className;
+          badge.innerHTML = status.icon + " " + escapeHtml(status.label);
+        }
+      }
+
+      function syncPresetsTile(card, zone) {
+        const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
+        card.querySelectorAll("[data-preset]").forEach((tile) => {
+          tile.classList.toggle("active", tile.dataset.preset === activePreset);
+        });
+      }
+
+      function syncModeTile(mode) {
+        const normalized = normalizeMode(mode || "auto");
+        const readout = document.querySelector("[data-mode-readout]");
+        if (readout) {
+          readout.innerHTML = "Now: <strong>" + escapeHtml(modeLabel(mode)) + "</strong>";
+        }
+        document.querySelectorAll("[data-mode]").forEach((button) => {
+          const active = normalizeMode(button.dataset.mode) === normalized;
+          button.className = "mode-tile mode-tile-" + button.dataset.mode + (active ? " active" : "");
+        });
+      }
+
+      function syncOutdoorTile(system) {
+        const outdoor = system.outdoor_temp_display ?? system.outdoor_temp ?? "—";
+        const display = document.querySelector("[data-outdoor-value]");
+        if (display) display.textContent = outdoor + (outdoor === "—" ? "" : "°F");
+      }
+
+      function syncFilterTile(system) {
+        const filter = system.filter_remaining ?? "—";
+        const value = document.querySelector("[data-filter-value]");
+        const bar = document.querySelector("[data-filter-bar]");
+        if (value) value.textContent = filter === "—" ? "—" : filter + "% left";
+        if (bar) {
+          const width = Number.isFinite(Number(filter)) ? Math.max(0, Math.min(100, Number(filter))) : 0;
+          bar.style.width = width + "%";
+        }
+      }
+
+      async function fetchFreshStatus() {
+        const res = await fetch("/api/status?refresh=1");
+        return res.json();
+      }
+
+      async function refreshWithButton(button, apply) {
         button.disabled = true;
         button.classList.add("spinning");
         try {
-          const res = await fetch("/api/status?refresh=1");
-          const data = await res.json();
+          const data = await fetchFreshStatus();
+          await apply(data);
+        } finally {
+          button.disabled = false;
+          button.classList.remove("spinning");
+        }
+      }
+
+      async function refreshZoneMetric(card, metric, button) {
+        await refreshWithButton(button, (data) => {
           const zone = (data.zones || []).find((item) => item.id === card.dataset.zoneId);
           if (!zone) return;
           if (metric === "humidity") syncHumidityTile(card, zone);
           else if (metric === "blower") syncFanTile(card, zone);
           else if (metric === "thermo") syncThermoTile(card, zone);
-        } finally {
-          button.disabled = false;
-          button.classList.remove("spinning");
-        }
+          else if (metric === "schedule") syncScheduleTile(card, zone);
+          else if (metric === "status") syncStatusTile(card, zone);
+          else if (metric === "presets") syncPresetsTile(card, zone);
+        });
+      }
+
+      async function refreshSystemMetric(metric, button) {
+        await refreshWithButton(button, (data) => {
+          if (!data.system) return;
+          if (metric === "mode") syncModeTile(data.system.mode || "auto");
+          else if (metric === "outdoor") syncOutdoorTile(data.system);
+          else if (metric === "filter") syncFilterTile(data.system);
+        });
       }
 
       function initTileRefreshButtons(card) {
@@ -1681,18 +1779,25 @@ function dashboardContent(): string {
         });
       }
 
+      function initSystemRefreshButtons() {
+        const systemCards = document.getElementById("system-cards");
+        if (!systemCards) return;
+        systemCards.querySelectorAll("[data-refresh]").forEach((button) => {
+          if (button.dataset.initialized === "true") return;
+          button.dataset.initialized = "true";
+          button.addEventListener("click", async () => {
+            await refreshSystemMetric(button.dataset.refresh, button);
+          });
+        });
+      }
+
       function syncZoneReadout(card, zone) {
-        const status = conditioningInfo(zone.conditioning);
-        const badge = card.querySelector("[data-status-badge]");
-        if (badge) {
-          badge.className = "status-badge " + status.className;
-          badge.innerHTML = status.icon + " " + escapeHtml(status.label);
-        }
-        const schedule = card.querySelector("[data-schedule-readout]");
-        if (schedule) schedule.textContent = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+        syncStatusTile(card, zone);
+        syncScheduleTile(card, zone);
         syncHumidityTile(card, zone);
         syncThermoTile(card, zone);
         syncFanTile(card, zone);
+        syncPresetsTile(card, zone);
       }
 
       function updateZoneCardsFromData(zones) {
@@ -1931,7 +2036,10 @@ function dashboardContent(): string {
             <div class="zone-hero">
               <div>
                 <h3>\${escapeHtml(zone.name)}</h3>
-                <div class="status-badge \${status.className}" data-status-badge>\${status.icon} \${escapeHtml(status.label)}</div>
+                <div class="status-row">
+                  <div class="status-badge \${status.className}" data-status-badge>\${status.icon} \${escapeHtml(status.label)}</div>
+                  \${renderTileRefresh("status", "status")}
+                </div>
               </div>
               <div class="zone-hero-temp">
                 <div>
@@ -1960,8 +2068,11 @@ function dashboardContent(): string {
                 <div class="fan-bars">\${renderFanBars(zone)}</div>
               </div>
               <div class="stat-chip">
-                \${ICONS.calendar}
-                <span class="chip-label">Schedule</span>
+                <div class="chip-header">
+                  \${ICONS.calendar}
+                  <span class="chip-label">Schedule</span>
+                  \${renderTileRefresh("schedule", "schedule")}
+                </div>
                 <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
               </div>
             </div>
@@ -2004,7 +2115,7 @@ function dashboardContent(): string {
                   </div>
                 </div>
                 <div>
-                  <div class="section-title">\${ICONS.home} Quick settings</div>
+                  <div class="section-title">\${ICONS.home} Quick settings \${renderTileRefresh("presets", "active preset")}</div>
                   <div class="preset-tiles">\${presetTiles}</div>
                 </div>
                 <div class="message zone-message"></div>
@@ -2076,28 +2187,36 @@ function dashboardContent(): string {
             const filterWidth = Number.isFinite(Number(filter)) ? Math.max(0, Math.min(100, Number(filter))) : 0;
             systemCards.innerHTML = \`
               <div class="card">
-                <h3>What should it do?</h3>
-                <p class="muted" style="margin:0.35rem 0 0;font-size:0.88rem">Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
+                <div class="card-header-row">
+                  <h3>What should it do?</h3>
+                  \${renderTileRefresh("mode", "system mode")}
+                </div>
+                <p class="muted" style="margin:0.35rem 0 0;font-size:0.88rem" data-mode-readout>Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
                 <div class="mode-tiles">\${renderModeTiles(mode)}</div>
                 <div class="message" id="mode-message"></div>
               </div>
               <div class="card weather-card">
                 <div class="weather-row">
                   <div class="weather-icon-wrap">\${ICONS.sun}</div>
-                  <div>
-                    <div class="temp-label">Outside</div>
-                    <div class="temp-display" style="font-size:2rem;margin:0">\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
+                  <div style="flex:1;min-width:0">
+                    <div class="tile-header-row">
+                      <div class="temp-label">Outside</div>
+                      \${renderTileRefresh("outdoor", "outdoor temperature")}
+                    </div>
+                    <div class="temp-display" style="font-size:2rem;margin:0" data-outdoor-value>\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
                   </div>
                 </div>
                 <div class="filter-life">
                   <div class="filter-life-row">
                     <span>\${ICONS.filter} Air filter</span>
-                    <span>\${filter === "—" ? "—" : filter + "% left"}</span>
+                    <span data-filter-value>\${filter === "—" ? "—" : filter + "% left"}</span>
+                    \${renderTileRefresh("filter", "filter life")}
                   </div>
-                  <div class="filter-bar-track"><span class="filter-bar-fill" style="width:\${filterWidth}%"></span></div>
+                  <div class="filter-bar-track"><span class="filter-bar-fill" data-filter-bar style="width:\${filterWidth}%"></span></div>
                 </div>
               </div>
             \`;
+            initSystemRefreshButtons();
             systemCards.querySelectorAll("[data-mode]").forEach((button) => {
               button.addEventListener("click", async () => {
                 const message = document.getElementById("mode-message");
