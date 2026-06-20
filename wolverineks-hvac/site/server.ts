@@ -17,7 +17,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.3.1";
+const APP_VERSION = "2.3.2";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
@@ -233,12 +233,19 @@ function formatFanSpeedLabel(speed: string | null | undefined): string | null {
   return speed.charAt(0).toUpperCase() + speed.slice(1);
 }
 
-function formatFanDisplayForZone(setting: string | null, speed: string | null): string | null {
-  const normalizedSetting = setting ?? "auto";
-  if (normalizedSetting === "auto") {
-    return formatFanSpeedLabel(speed);
+function formatBlowerLiveDisplay(
+  idu: CarrierSystem["status"]["idu"],
+  fanSpeed: string | null,
+): string | null {
+  const rpm = idu?.blwrpm;
+  const cfm = idu?.cfm;
+  if (rpm != null && rpm > 0) {
+    return `${Math.round(rpm)} RPM`;
   }
-  return formatFanSettingLabel(normalizedSetting);
+  if (cfm != null && cfm > 0) {
+    return `${Math.round(cfm)} CFM`;
+  }
+  return formatFanSpeedLabel(fanSpeed);
 }
 
 function resolveFanSetting(
@@ -300,7 +307,7 @@ function mapZones(system: CarrierSystem): ZoneView[] {
       sensor_rt: indoorTemp,
       fan,
       fan_speed: fanSpeed,
-      fan_display: formatFanDisplayForZone(fan, fanSpeed),
+      fan_display: formatBlowerLiveDisplay(system.status.idu, fanSpeed),
       activity: statusZone?.currentActivity ?? null,
       conditioning: statusZone?.zoneconditioning ?? "idle",
       hold: configZone?.hold === "on",
@@ -1492,9 +1499,12 @@ function dashboardContent(): string {
       }
 
       function fanBarsIndex(zone) {
-        const settingIndex = fanToIndex(zone.fan);
-        if (settingIndex === 0) return fanSpeedToIndex(zone.fan_speed);
-        return settingIndex;
+        return fanSpeedToIndex(zone.fan_speed);
+      }
+
+      function fanSettingLabel(zone) {
+        const index = fanToIndex(zone.fan);
+        return FAN_LABELS[index] || "Auto";
       }
 
       function fanDisplayText(zone) {
@@ -1546,28 +1556,35 @@ function dashboardContent(): string {
 
       function syncFanBars(card, zone) {
         const barsIndex = fanBarsIndex(zone);
-        card.querySelectorAll(".fan-bar").forEach((bar, index) => {
+        card.querySelectorAll(".stat-chip .fan-bar").forEach((bar, index) => {
           const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
           bar.classList.toggle("active", lit);
           bar.classList.toggle("auto", false);
         });
       }
 
-      function syncFanControl(card, zone) {
-        const fanIndex = fanToIndex(zone.fan);
-        const fanText = fanDisplayText(zone);
+      function syncFanTile(card, zone) {
         const readout = card.querySelector("[data-fan-readout]");
+        if (readout) readout.textContent = fanDisplayText(zone);
+        syncFanBars(card, zone);
+      }
+
+      function syncFanSetting(card, zone) {
+        const fanIndex = fanToIndex(zone.fan);
         const label = card.querySelector("[data-fan-label]");
         const slider = card.querySelector('[data-field="fan"]');
-        if (readout) readout.textContent = fanText;
-        if (label) label.textContent = fanText;
+        if (label) label.textContent = fanSettingLabel(zone);
         if (slider && document.activeElement !== slider) {
           slider.value = String(fanIndex);
         }
-        card.querySelectorAll(".fan-ticks span").forEach((tick, index) => {
+        card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, index) => {
           tick.classList.toggle("active", index === fanIndex);
         });
-        syncFanBars(card, zone);
+      }
+
+      function syncFanControl(card, zone) {
+        syncFanTile(card, zone);
+        syncFanSetting(card, zone);
       }
 
       function syncZoneReadout(card, zone) {
@@ -1762,18 +1779,10 @@ function dashboardContent(): string {
 
         const syncLabel = () => {
           const index = Number.parseInt(slider.value, 10);
-          const readout = card.querySelector("[data-fan-readout]");
-          const fanText = index === 0
-            ? (readout?.textContent?.trim() || "Off")
-            : (FAN_LABELS[index] || "Low");
-          label.textContent = fanText;
-          if (index !== 0 && readout) readout.textContent = fanText;
-          card.querySelectorAll(".fan-ticks span").forEach((tick, tickIndex) => {
+          label.textContent = FAN_LABELS[index] || "Auto";
+          card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, tickIndex) => {
             tick.classList.toggle("active", tickIndex === index);
           });
-          if (index !== 0) {
-            syncFanBars(card, { fan: FAN_LEVELS[index], fan_speed: FAN_LEVELS[index] });
-          }
         };
 
         slider.addEventListener("input", syncLabel);
@@ -1829,6 +1838,7 @@ function dashboardContent(): string {
         const indoor = parseTemp(zone.temperature_display ?? zone.temperature, heat);
         const fanIndex = fanToIndex(zone.fan);
         const fanText = fanDisplayText(zone);
+        const fanSettingText = fanSettingLabel(zone);
         const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
         const status = conditioningInfo(zone.conditioning);
         const scheduleText = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
@@ -1862,7 +1872,7 @@ function dashboardContent(): string {
                 \${ICONS.fan}
                 <span class="chip-label">Blower</span>
                 <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
-                <div class="fan-bars">\${renderFanBars({ fan: zone.fan || "auto", fan_speed: zone.fan_speed || "off" })}</div>
+                <div class="fan-bars">\${renderFanBars(zone)}</div>
               </div>
               <div class="stat-chip">
                 \${ICONS.calendar}
@@ -1899,7 +1909,7 @@ function dashboardContent(): string {
               </div>
               <div class="zone-side-panel">
                 <div class="fan-control">
-                  <div class="section-title">\${ICONS.fan} Blower speed <span data-fan-label style="margin-left:auto;color:var(--accent)">\${escapeHtml(fanText)}</span></div>
+                  <div class="section-title">\${ICONS.fan} Blower speed <span data-fan-label style="margin-left:auto;color:var(--accent)">\${escapeHtml(fanSettingText)}</span></div>
                   <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Blower speed" />
                   <div class="fan-ticks">
                     <span class="\${fanIndex === 0 ? "active" : ""}">Auto</span>

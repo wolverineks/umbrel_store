@@ -65,6 +65,12 @@ export type CarrierStatusZone = {
   enabled: string | null;
 };
 
+export type CarrierIduStatus = {
+  blwrpm: number | null;
+  cfm: number | null;
+  pwmblower: number | null;
+};
+
 export type CarrierSystem = {
   profile: {
     serial: string;
@@ -80,6 +86,7 @@ export type CarrierSystem = {
     oat: number | null;
     filtrlvl: number | null;
     zones: CarrierStatusZone[];
+    idu: CarrierIduStatus | null;
   };
   config: {
     etag: string | null;
@@ -357,6 +364,11 @@ export class CarrierApiClient {
               zoneconditioning
               enabled
             }
+            idu {
+              blwrpm
+              cfm
+              pwmblower
+            }
           }
           config {
             etag
@@ -467,6 +479,7 @@ export class CarrierApiClient {
         oat: asNumber(status.oat),
         filtrlvl: asNumber(status.filtrlvl),
         zones: normalizeStatusZones(status.zones),
+        idu: normalizeIduStatus(status.idu),
       },
       config: {
         etag: nullableString(config.etag),
@@ -475,6 +488,16 @@ export class CarrierApiClient {
       },
     };
   }
+}
+
+function normalizeIduStatus(value: unknown): CarrierIduStatus | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  return {
+    blwrpm: asNumber(record.blwrpm),
+    cfm: asNumber(record.cfm),
+    pwmblower: asNumber(record.pwmblower),
+  };
 }
 
 function normalizeStatusZones(value: unknown): CarrierStatusZone[] {
@@ -590,6 +613,17 @@ export function applyInfinityStatusMessage(systems: CarrierSystem[], rawMessage:
   if (parsed.filtrlvl !== undefined) system.status.filtrlvl = asNumber(parsed.filtrlvl);
   if (parsed.isDisconnected !== undefined) {
     system.status.isDisconnected = asBool(parsed.isDisconnected);
+  }
+
+  const idu = parsed.idu;
+  if (idu && typeof idu === "object") {
+    const record = idu as Record<string, unknown>;
+    if (!system.status.idu) {
+      system.status.idu = { blwrpm: null, cfm: null, pwmblower: null };
+    }
+    if (record.blwrpm !== undefined) system.status.idu.blwrpm = asNumber(record.blwrpm);
+    if (record.cfm !== undefined) system.status.idu.cfm = asNumber(record.cfm);
+    if (record.pwmblower !== undefined) system.status.idu.pwmblower = asNumber(record.pwmblower);
   }
 
   return true;

@@ -208,6 +208,11 @@ class CarrierApiClient {
               zoneconditioning
               enabled
             }
+            idu {
+              blwrpm
+              cfm
+              pwmblower
+            }
           }
           config {
             etag
@@ -289,6 +294,7 @@ class CarrierApiClient {
                 oat: asNumber(status.oat),
                 filtrlvl: asNumber(status.filtrlvl),
                 zones: normalizeStatusZones(status.zones),
+                idu: normalizeIduStatus(status.idu),
             },
             config: {
                 etag: nullableString(config.etag),
@@ -299,6 +305,16 @@ class CarrierApiClient {
     }
 }
 exports.CarrierApiClient = CarrierApiClient;
+function normalizeIduStatus(value) {
+    if (!value || typeof value !== "object")
+        return null;
+    const record = value;
+    return {
+        blwrpm: asNumber(record.blwrpm),
+        cfm: asNumber(record.cfm),
+        pwmblower: asNumber(record.pwmblower),
+    };
+}
 function normalizeStatusZones(value) {
     if (!Array.isArray(value))
         return [];
@@ -422,6 +438,19 @@ function applyInfinityStatusMessage(systems, rawMessage) {
         system.status.filtrlvl = asNumber(parsed.filtrlvl);
     if (parsed.isDisconnected !== undefined) {
         system.status.isDisconnected = asBool(parsed.isDisconnected);
+    }
+    const idu = parsed.idu;
+    if (idu && typeof idu === "object") {
+        const record = idu;
+        if (!system.status.idu) {
+            system.status.idu = { blwrpm: null, cfm: null, pwmblower: null };
+        }
+        if (record.blwrpm !== undefined)
+            system.status.idu.blwrpm = asNumber(record.blwrpm);
+        if (record.cfm !== undefined)
+            system.status.idu.cfm = asNumber(record.cfm);
+        if (record.pwmblower !== undefined)
+            system.status.idu.pwmblower = asNumber(record.pwmblower);
     }
     return true;
 }
