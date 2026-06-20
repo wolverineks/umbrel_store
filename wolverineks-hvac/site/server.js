@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.3.3";
+const APP_VERSION = "2.3.4";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
@@ -1410,22 +1410,6 @@ function dashboardContent() {
         return FAN_LABELS[index] || "Auto";
       }
 
-      function fanValuesMatch(a, b) {
-        return fanToIndex(a || "auto") === fanToIndex(b || "auto");
-      }
-
-      function fanPendingValue(card) {
-        return card.dataset.fanPending || null;
-      }
-
-      function setFanPending(card, fan) {
-        card.dataset.fanPending = fan || "auto";
-      }
-
-      function clearFanPending(card) {
-        delete card.dataset.fanPending;
-      }
-
       function applyFanSettingUi(card, fan) {
         const fanIndex = fanToIndex(fan);
         const label = card.querySelector("[data-fan-label]");
@@ -1499,25 +1483,6 @@ function dashboardContent() {
         syncFanBars(card, zone);
       }
 
-      function syncFanSetting(card, zone) {
-        const pending = fanPendingValue(card);
-        if (pending) {
-          if (fanValuesMatch(zone.fan, pending)) {
-            clearFanPending(card);
-          } else {
-            return;
-          }
-        }
-        const slider = card.querySelector('[data-field="fan"]');
-        if (slider && document.activeElement === slider) return;
-        applyFanSettingUi(card, zone.fan || "auto");
-      }
-
-      function syncFanControl(card, zone) {
-        syncFanTile(card, zone);
-        syncFanSetting(card, zone);
-      }
-
       function syncZoneReadout(card, zone) {
         const status = conditioningInfo(zone.conditioning);
         const badge = card.querySelector("[data-status-badge]");
@@ -1542,7 +1507,7 @@ function dashboardContent() {
           widget.dataset.indoor = String(indoor);
           updateThermoWidget(widget);
         }
-        syncFanControl(card, zone);
+        syncFanTile(card, zone);
       }
 
       function updateZoneCardsFromData(zones) {
@@ -1683,9 +1648,6 @@ function dashboardContent() {
         message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
         if (res.ok) {
           setTimeout(() => loadDashboard({ soft: true }), 600);
-        } else if ("fan" in payload) {
-          clearFanPending(card);
-          loadDashboard({ soft: true });
         }
         return res.ok;
       }
@@ -1716,18 +1678,10 @@ function dashboardContent() {
           applyFanSettingUi(card, fanFromSlider());
         };
 
-        const markFanPending = () => {
-          setFanPending(card, fanFromSlider());
-          syncLabel();
-        };
-
-        slider.addEventListener("pointerdown", markFanPending);
-        slider.addEventListener("input", markFanPending);
+        slider.addEventListener("input", syncLabel);
         slider.addEventListener("change", async () => {
-          const fan = fanFromSlider();
-          setFanPending(card, fan);
           syncLabel();
-          await postZoneUpdate(card, { fan });
+          await postZoneUpdate(card, { fan: fanFromSlider() });
         });
         syncLabel();
       }
@@ -1902,7 +1856,6 @@ function dashboardContent() {
         const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
         const zoneDragging = Boolean(zoneCards.querySelector('[data-dragging="true"]'));
-        const zoneFanPending = Boolean(zoneCards.querySelector("[data-fan-pending]"));
         try {
           const res = await fetch("/api/status");
           const data = await res.json();
@@ -1969,9 +1922,10 @@ function dashboardContent() {
             });
           }
           if (!zoneDragging) {
-            if (options.soft && zoneCards.querySelector(".zone-control-card")) {
+            const hasZoneCards = Boolean(zoneCards.querySelector(".zone-control-card"));
+            if (hasZoneCards) {
               updateZoneCardsFromData(data.zones);
-            } else if (!zoneFanPending) {
+            } else {
               zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode)).join("");
               zoneCards.querySelectorAll(".zone-control-card").forEach(initZoneCard);
             }
