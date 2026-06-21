@@ -18,7 +18,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.4.1";
+const APP_VERSION = "2.4.2";
 const IS_LOCAL_DEV = process.env.HVAC_DEV === "1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -424,6 +424,43 @@ async function waitForCloudZoneFan(
     await refreshCloudData(settings, true);
     const zone = buildSnapshot(settings).zones.find((item) => zoneIdsMatch(item.id, zoneId)) ?? null;
     if (zone && zoneFanReady(zone, expectedFan, beforeFan)) return zone;
+  }
+  return null;
+}
+
+function setpointDisplayMatches(
+  display: string | number | null | undefined,
+  expected: string | number | null | undefined,
+): boolean {
+  if (expected === null || expected === undefined || expected === "") return true;
+  const parsedExpected = Number.parseInt(String(expected), 10);
+  const parsedDisplay = Number.parseInt(String(display ?? ""), 10);
+  if (!Number.isFinite(parsedExpected)) return true;
+  return Number.isFinite(parsedDisplay) && parsedDisplay === parsedExpected;
+}
+
+function zoneSetpointsReady(
+  zone: ZoneView,
+  expectedHeat: string | null,
+  expectedCool: string | null,
+): boolean {
+  const heatOk = setpointDisplayMatches(zone.heat_setpoint_display ?? zone.heat_setpoint, expectedHeat);
+  const coolOk = setpointDisplayMatches(zone.cool_setpoint_display ?? zone.cool_setpoint, expectedCool);
+  return heatOk && coolOk;
+}
+
+async function waitForCloudZoneSetpoints(
+  settings: Settings,
+  zoneId: string,
+  expectedHeat: string | null,
+  expectedCool: string | null,
+): Promise<ZoneView | null> {
+  await sleep(2000);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) await sleep(1500);
+    await refreshCloudData(settings, true);
+    const zone = buildSnapshot(settings).zones.find((item) => zoneIdsMatch(item.id, zoneId)) ?? null;
+    if (zone && zoneSetpointsReady(zone, expectedHeat, expectedCool)) return zone;
   }
   return null;
 }
@@ -1565,6 +1602,10 @@ function pageStyles(): string {
     .dashboard-refresh {
       margin-left: 0;
     }
+    .mobile-dashboard-refresh {
+      display: none;
+      flex-shrink: 0;
+    }
     .card-header-row,
     .tile-header-row,
     .status-row {
@@ -1813,13 +1854,10 @@ function pageStyles(): string {
         grid-row: 1;
       }
       .dashboard-toolbar {
-        display: flex;
-        margin-bottom: 0.75rem;
-        justify-content: flex-end;
-      }
-      .dashboard-toolbar .toolbar-meta,
-      .dashboard-toolbar #connection-pill {
         display: none;
+      }
+      .mobile-dashboard-refresh {
+        display: grid;
       }
       .toolbar-connection-pill {
         display: none;
@@ -2125,6 +2163,7 @@ function renderPage(active: string, content: string): string {
         <span class="mobile-header-title" id="mobile-header-system">Bryant/Carrier HVAC</span>
         <span class="mobile-header-meta" id="mobile-header-meta">Loading…</span>
       </div>
+      ${active === "dashboard" ? '<button type="button" class="tile-refresh dashboard-refresh mobile-dashboard-refresh" id="mobile-dashboard-refresh" aria-label="Refresh dashboard"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>' : ""}
       <span class="status-pill status-pill-compact warning" id="mobile-connection-pill">Loading…</span>
     </header>
     <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
@@ -2421,13 +2460,19 @@ function dashboardContent(): string {
         dashboardQuietUntil = Date.now() + quietMs;
       }
 
-      function rememberZoneMutation(card, zone) {
-        if (!card || !zone) return;
+      function rememberZoneMutation(card, zone, expected = {}) {
+        if (!card) return;
         card.dataset.mutationPending = "true";
-        card.dataset.lastHold = String(Boolean(zone.hold));
-        if (zone.heat_setpoint_display) card.dataset.lastHeat = zone.heat_setpoint_display;
-        if (zone.cool_setpoint_display) card.dataset.lastCool = zone.cool_setpoint_display;
-        if (zone.fan) card.dataset.lastFan = zone.fan;
+        if (zone) {
+          card.dataset.lastHold = String(Boolean(zone.hold));
+          if (zone.fan) card.dataset.lastFan = zone.fan;
+        }
+        if (expected.hold != null) card.dataset.lastHold = String(Boolean(expected.hold));
+        if (expected.heat != null) card.dataset.lastHeat = String(expected.heat);
+        else if (zone?.heat_setpoint_display) card.dataset.lastHeat = zone.heat_setpoint_display;
+        if (expected.cool != null) card.dataset.lastCool = String(expected.cool);
+        else if (zone?.cool_setpoint_display) card.dataset.lastCool = zone.cool_setpoint_display;
+        if (expected.fan) card.dataset.lastFan = expected.fan;
         window.setTimeout(() => {
           delete card.dataset.mutationPending;
           delete card.dataset.lastHold;
@@ -2435,6 +2480,11 @@ function dashboardContent(): string {
           delete card.dataset.lastCool;
           delete card.dataset.lastFan;
         }, DASHBOARD_MUTATION_QUIET_MS);
+      }
+
+      function setpointDisplayMatches(display, expected) {
+        if (expected == null || expected === "") return true;
+        return String(parseTemp(display, NaN)) === String(parseTemp(expected, NaN));
       }
 
       function zoneSnapshotAcceptable(card, zone) {
@@ -2663,8 +2713,13 @@ function dashboardContent(): string {
           const coolHandle = widget.querySelector(".thermo-handle-cool");
           const heat = parseTemp(zone.heat_setpoint_display ?? zone.heat_setpoint, 68);
           const cool = parseTemp(zone.cool_setpoint_display ?? zone.cool_setpoint, 74);
-          if (heatHandle) heatHandle.dataset.value = String(heat);
-          if (coolHandle) coolHandle.dataset.value = String(cool);
+          const pending = card.dataset.mutationPending === "true";
+          if (heatHandle && (!pending || setpointDisplayMatches(zone.heat_setpoint_display ?? zone.heat_setpoint, card.dataset.lastHeat))) {
+            heatHandle.dataset.value = String(heat);
+          }
+          if (coolHandle && (!pending || setpointDisplayMatches(zone.cool_setpoint_display ?? zone.cool_setpoint, card.dataset.lastCool))) {
+            coolHandle.dataset.value = String(cool);
+          }
           const indoor = parseTemp(zone.temperature_display ?? zone.temperature, parseTemp(widget.dataset.indoor, 68));
           widget.dataset.indoor = String(indoor);
           updateThermoWidget(widget);
@@ -2790,11 +2845,12 @@ function dashboardContent(): string {
       }
 
       function initDashboardRefreshButton() {
-        const button = document.getElementById("dashboard-refresh");
-        if (!button || button.dataset.initialized === "true") return;
-        button.dataset.initialized = "true";
-        button.addEventListener("click", async () => {
-          await refreshDashboard(button);
+        document.querySelectorAll(".dashboard-refresh").forEach((button) => {
+          if (button.dataset.initialized === "true") return;
+          button.dataset.initialized = "true";
+          button.addEventListener("click", async () => {
+            await refreshDashboard(button);
+          });
         });
       }
 
@@ -2923,9 +2979,25 @@ function dashboardContent(): string {
         if (slider) slider.disabled = false;
       }
 
+      function clearSetpointMutation(card) {
+        delete card.dataset.mutationPending;
+        delete card.dataset.lastHold;
+        delete card.dataset.lastHeat;
+        delete card.dataset.lastCool;
+      }
+
       async function postZoneUpdate(card, payload) {
         const zoneId = card.dataset.zoneId;
         const message = card.querySelector(".zone-message");
+        const isSetpointMutation =
+          payload.heat_setpoint !== undefined || payload.cool_setpoint !== undefined;
+        if (isSetpointMutation) {
+          rememberZoneMutation(card, null, {
+            hold: true,
+            heat: payload.heat_setpoint,
+            cool: payload.cool_setpoint,
+          });
+        }
         if (payload.fan) {
           if (card.dataset.fanUpdateInFlight === "true") {
             card.dataset.fanPending = payload.fan;
@@ -2968,7 +3040,17 @@ function dashboardContent(): string {
           if (res.ok) {
             if (data.zone) {
               const zone = data.zone;
-              rememberZoneMutation(card, zone);
+              if (isSetpointMutation) {
+                rememberZoneMutation(card, zone, {
+                  hold: true,
+                  heat: payload.heat_setpoint,
+                  cool: payload.cool_setpoint,
+                });
+              } else if (payload.fan) {
+                rememberZoneMutation(card, zone, { fan: payload.fan });
+              } else {
+                rememberZoneMutation(card, zone);
+              }
               const zoneCards = document.getElementById("zone-cards");
               const systemMode = card.dataset.systemMode || "auto";
               const singleZone = zoneCards?.classList.contains("single-zone") ?? false;
@@ -2976,11 +3058,13 @@ function dashboardContent(): string {
               syncZoneReadout(card, zone);
             }
             if (!payload.fan) {
-              window.setTimeout(() => loadDashboard({ soft: true, refresh: true }), 600);
+              window.setTimeout(() => loadDashboard({ soft: true, refresh: true }), 1500);
             }
           } else if (payload.fan) {
             delete card.dataset.mutationPending;
             delete card.dataset.lastFan;
+          } else if (isSetpointMutation) {
+            clearSetpointMutation(card);
           }
         } catch (error) {
           if (message) {
@@ -2990,6 +3074,8 @@ function dashboardContent(): string {
           if (payload.fan) {
             delete card.dataset.mutationPending;
             delete card.dataset.lastFan;
+          } else if (isSetpointMutation) {
+            clearSetpointMutation(card);
           }
         } finally {
           if (payload.fan) {
@@ -4476,6 +4562,15 @@ async function handleApi(
 
         await client.setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode);
         await client.setHold(serial, zoneId, "manual", null);
+        const zone = await waitForCloudZoneSetpoints(settings, zoneId, heat, cool);
+        if (!zone) {
+          sendJson(res, 502, {
+            error: "Setpoint change did not reach the thermostat yet. Wait a few seconds and refresh.",
+          });
+          return;
+        }
+        sendJson(res, 200, { ok: true, zone });
+        return;
       } else if (fan) {
         await refreshCloudData(settings, true);
         const beforeZone =
@@ -4518,10 +4613,7 @@ async function handleApi(
         return;
       }
 
-      await refreshCloudData(settings, true);
-      const snapshot = buildSnapshot(settings);
-      const zone = snapshot.zones.find((item) => zoneIdsMatch(item.id, zoneId)) ?? null;
-      sendJson(res, 200, { ok: true, zone });
+      sendJson(res, 200, { ok: true });
     } catch (error) {
       sendJson(res, 502, {
         error: error instanceof Error ? error.message : "Zone update failed",
