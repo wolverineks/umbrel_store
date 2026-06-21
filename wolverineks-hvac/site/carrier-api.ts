@@ -42,6 +42,24 @@ export type CarrierZoneActivity = {
   clsp: number;
 };
 
+export type CarrierProgramPeriod = {
+  id: string;
+  dayId: number;
+  activity: string;
+  time: string;
+  enabled: boolean;
+};
+
+export type CarrierProgramDay = {
+  id: number;
+  periods: CarrierProgramPeriod[];
+};
+
+export type CarrierZoneProgram = {
+  id: string;
+  days: CarrierProgramDay[];
+};
+
 export type CarrierConfigZone = {
   id: string;
   name: string;
@@ -50,6 +68,7 @@ export type CarrierConfigZone = {
   holdActivity: string | null;
   otmr: string | null;
   activities: CarrierZoneActivity[];
+  program: CarrierZoneProgram | null;
 };
 
 export type CarrierStatusZone = {
@@ -323,6 +342,8 @@ export type CarrierSystem = {
   config: {
     etag: string | null;
     mode: string | null;
+    filterType: string | null;
+    filterInterval: number | null;
     zones: CarrierConfigZone[];
   };
 };
@@ -446,7 +467,8 @@ export class CarrierApiClient {
     heatSetpoint: string,
     coolSetpoint: string,
     fanMode?: FanMode,
-  ): Promise<void> {
+    etag?: string | null,
+  ): Promise<string | null> {
     const input: Record<string, string> = {
       serial,
       zoneId,
@@ -455,12 +477,13 @@ export class CarrierApiClient {
       clsp: coolSetpoint,
     };
     if (fanMode) input.fan = fanMode;
-    await this.mutate(
+    return this.mutateForEtag(
       "updateInfinityZoneActivity",
       `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
         updateInfinityZoneActivity(input: $input) { etag }
       }`,
       { input },
+      "updateInfinityZoneActivity",
     );
   }
 
@@ -469,39 +492,40 @@ export class CarrierApiClient {
     zoneId: string,
     activityType: ActivityType,
     holdUntil: string | null = null,
-  ): Promise<void> {
-    await this.mutate(
+    etag?: string | null,
+  ): Promise<string | null> {
+    const input: Record<string, string | null> = {
+      serial,
+      zoneId,
+      hold: "on",
+      holdActivity: activityType,
+      otmr: holdUntil,
+    };
+    return this.mutateForEtag(
       "updateInfinityZoneConfig",
       `mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
         updateInfinityZoneConfig(input: $input) { etag }
       }`,
-      {
-        input: {
-          serial,
-          zoneId,
-          hold: "on",
-          holdActivity: activityType,
-          otmr: holdUntil,
-        },
-      },
+      { input },
+      "updateInfinityZoneConfig",
     );
   }
 
-  async resumeSchedule(serial: string, zoneId: string): Promise<void> {
-    await this.mutate(
+  async resumeSchedule(serial: string, zoneId: string, _etag?: string | null): Promise<string | null> {
+    const input: Record<string, string | null> = {
+      serial,
+      zoneId,
+      hold: "off",
+      holdActivity: null,
+      otmr: null,
+    };
+    return this.mutateForEtag(
       "updateInfinityZoneConfig",
       `mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
         updateInfinityZoneConfig(input: $input) { etag }
       }`,
-      {
-        input: {
-          serial,
-          zoneId,
-          hold: "off",
-          holdActivity: null,
-          otmr: null,
-        },
-      },
+      { input },
+      "updateInfinityZoneConfig",
     );
   }
 
@@ -510,20 +534,21 @@ export class CarrierApiClient {
     zoneId: string,
     activityType: ActivityType,
     fanMode: FanMode,
-  ): Promise<void> {
-    await this.mutate(
+    etag?: string | null,
+  ): Promise<string | null> {
+    const input: Record<string, string> = {
+      serial,
+      zoneId,
+      activityType,
+      fan: fanMode,
+    };
+    return this.mutateForEtag(
       "updateInfinityZoneActivity",
       `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
         updateInfinityZoneActivity(input: $input) { etag }
       }`,
-      {
-        input: {
-          serial,
-          zoneId,
-          activityType,
-          fan: fanMode,
-        },
-      },
+      { input },
+      "updateInfinityZoneActivity",
     );
   }
 
@@ -648,6 +673,22 @@ export class CarrierApiClient {
     await this.authedGraphql(operationName, query, variables);
   }
 
+  private async mutateForEtag(
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>,
+    resultKey: string,
+  ): Promise<string | null> {
+    await this.ensureLoggedIn();
+    const data = await this.authedGraphql<Record<string, { etag?: string | null }>>(
+      operationName,
+      query,
+      variables,
+    );
+    const etag = data[resultKey]?.etag;
+    return typeof etag === "string" && etag.length ? etag : null;
+  }
+
   private async authedGraphql<T>(
     operationName: string,
     query: string,
@@ -734,6 +775,8 @@ export class CarrierApiClient {
       config: {
         etag: nullableString(config.etag),
         mode: nullableString(config.mode),
+        filterType: nullableString(config.filtertype),
+        filterInterval: asNumber(config.filterinterval),
         zones: normalizeConfigZones(config.zones),
       },
     };
@@ -806,8 +849,39 @@ function normalizeConfigZones(value: unknown): CarrierConfigZone[] {
       holdActivity: nullableString(record.holdActivity),
       otmr: nullableString(record.otmr),
       activities,
+      program: normalizeZoneProgram(record.program),
     };
   });
+}
+
+function normalizeZoneProgram(value: unknown): CarrierZoneProgram | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const days = Array.isArray(record.day)
+    ? record.day.map((day) => {
+        const dayRecord = day as Record<string, unknown>;
+        const periods = Array.isArray(dayRecord.period)
+          ? dayRecord.period.map((period) => {
+              const periodRecord = period as Record<string, unknown>;
+              return {
+                id: asString(periodRecord.id),
+                dayId: asNumber(periodRecord.dayId) ?? 0,
+                activity: asString(periodRecord.activity),
+                time: asString(periodRecord.time),
+                enabled: nullableString(periodRecord.enabled) === "on",
+              };
+            })
+          : [];
+        return {
+          id: asNumber(dayRecord.id) ?? 0,
+          periods,
+        };
+      })
+    : [];
+  return {
+    id: asString(record.id),
+    days,
+  };
 }
 
 export function zoneIdsMatch(

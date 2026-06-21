@@ -18,12 +18,14 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.4.1";
+const IS_LOCAL_DEV = process.env.HVAC_DEV === "1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
+const MAINTENANCE_PATH = path.join(DATA_ROOT, "maintenance.json");
 const ICON_PATH = path.join(__dirname, "icon.svg");
-const POLL_INTERVAL_MS = 30_000;
-const STATUS_CACHE_MS = 15_000;
+const POLL_INTERVAL_MS = IS_LOCAL_DEV ? 10_000 : 30_000;
+const STATUS_CACHE_MS = IS_LOCAL_DEV ? 3_000 : 15_000;
 
 type Settings = {
   system_name: string;
@@ -76,6 +78,8 @@ type StatusSnapshot = {
     mode: string;
     outdoor_temp: number | null;
     filter_remaining: number | null;
+    filter_type: string | null;
+    filter_interval: number | null;
     disconnected: boolean;
     temperature_unit: "F" | "C";
     outdoor_temp_display: string | null;
@@ -83,6 +87,71 @@ type StatusSnapshot = {
   zones: ZoneView[];
   systems: Array<{ serial: string; name: string; model: string | null }>;
   last_live_update: string | null;
+};
+
+const SCHEDULE_DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+type SchedulePeriodView = {
+  time: string;
+  time_minutes: number;
+  activity: string;
+  activity_label: string;
+  heat_setpoint_display: string | null;
+  cool_setpoint_display: string | null;
+  fan: string | null;
+};
+
+type ScheduleDayView = {
+  day_id: number;
+  day_name: string;
+  periods: SchedulePeriodView[];
+};
+
+type ScheduleZoneView = {
+  id: string;
+  name: string;
+  hold: boolean;
+  hold_activity: string | null;
+  current_activity: string | null;
+  current_activity_label: string | null;
+  days: ScheduleDayView[];
+};
+
+type ScheduleSnapshot = {
+  connected: boolean;
+  configured: boolean;
+  error: string | null;
+  last_sync: string | null;
+  system: StatusSnapshot["system"];
+  zones: ScheduleZoneView[];
+};
+
+const CONDENSATE_INTERVAL_DAYS = 30;
+
+type MaintenanceRecord = {
+  condensate_cleared_at: string | null;
+};
+
+type MaintenanceStore = {
+  systems: Record<string, MaintenanceRecord>;
+};
+
+type CondensateMaintenanceView = {
+  interval_days: number;
+  last_cleared_at: string | null;
+  next_due_at: string | null;
+  days_remaining: number | null;
+  days_overdue: number;
+  status: "ok" | "due_soon" | "overdue" | "unknown";
+};
+
+type MaintenanceSnapshot = {
+  configured: boolean;
+  connected: boolean;
+  error: string | null;
+  last_sync: string | null;
+  system: StatusSnapshot["system"];
+  condensate: CondensateMaintenanceView;
 };
 
 const DEFAULT_SETTINGS: Settings = {
@@ -147,6 +216,105 @@ async function loadSettings(): Promise<Settings> {
 async function saveSettings(settings: Settings): Promise<void> {
   await mkdir(DATA_ROOT, { recursive: true });
   await writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
+}
+
+async function loadMaintenanceStore(): Promise<MaintenanceStore> {
+  if (!existsSync(MAINTENANCE_PATH)) {
+    return { systems: {} };
+  }
+  try {
+    const raw = await readFile(MAINTENANCE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<MaintenanceStore>;
+    return {
+      systems: parsed.systems && typeof parsed.systems === "object" ? parsed.systems : {},
+    };
+  } catch {
+    return { systems: {} };
+  }
+}
+
+async function saveMaintenanceStore(store: MaintenanceStore): Promise<void> {
+  await mkdir(DATA_ROOT, { recursive: true });
+  await writeFile(MAINTENANCE_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
+}
+
+function buildCondensateView(serial: string, store: MaintenanceStore): CondensateMaintenanceView {
+  const record = store.systems[serial];
+  const lastClearedAt = record?.condensate_cleared_at ?? null;
+  if (!lastClearedAt) {
+    return {
+      interval_days: CONDENSATE_INTERVAL_DAYS,
+      last_cleared_at: null,
+      next_due_at: null,
+      days_remaining: null,
+      days_overdue: 0,
+      status: "unknown",
+    };
+  }
+
+  const lastCleared = new Date(lastClearedAt);
+  if (Number.isNaN(lastCleared.getTime())) {
+    return {
+      interval_days: CONDENSATE_INTERVAL_DAYS,
+      last_cleared_at: null,
+      next_due_at: null,
+      days_remaining: null,
+      days_overdue: 0,
+      status: "unknown",
+    };
+  }
+
+  const nextDue = new Date(lastCleared.getTime() + CONDENSATE_INTERVAL_DAYS * 86_400_000);
+  const daysRemaining = Math.ceil((nextDue.getTime() - Date.now()) / 86_400_000);
+  if (daysRemaining <= 0) {
+    return {
+      interval_days: CONDENSATE_INTERVAL_DAYS,
+      last_cleared_at: lastClearedAt,
+      next_due_at: nextDue.toISOString(),
+      days_remaining: 0,
+      days_overdue: Math.abs(daysRemaining),
+      status: "overdue",
+    };
+  }
+
+  return {
+    interval_days: CONDENSATE_INTERVAL_DAYS,
+    last_cleared_at: lastClearedAt,
+    next_due_at: nextDue.toISOString(),
+    days_remaining: daysRemaining,
+    days_overdue: 0,
+    status: daysRemaining <= 7 ? "due_soon" : "ok",
+  };
+}
+
+async function buildMaintenanceSnapshot(settings: Settings): Promise<MaintenanceSnapshot> {
+  const system = selectSystem(settings, cachedSystems);
+  const store = await loadMaintenanceStore();
+  const serial = system?.profile.serial ?? settings.system_serial;
+  return {
+    configured: isConfigured(settings),
+    connected: Boolean(system && !system.status.isDisconnected),
+    error: lastError,
+    last_sync: lastSyncAt?.toISOString() ?? null,
+    system: system
+      ? {
+          serial: system.profile.serial,
+          name: settings.system_name || system.profile.name,
+          brand: system.profile.brand,
+          model: system.profile.model,
+          firmware: system.profile.firmware,
+          mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
+          outdoor_temp: toFahrenheit(system.status.oat, system.status.cfgem),
+          filter_remaining: system.status.filtrlvl,
+          filter_type: system.config.filterType,
+          filter_interval: system.config.filterInterval,
+          disconnected: Boolean(system.status.isDisconnected),
+          temperature_unit: "F",
+          outdoor_temp_display: formatFahrenheit(system.status.oat, system.status.cfgem),
+        }
+      : null,
+    condensate: serial ? buildCondensateView(serial, store) : buildCondensateView("", { systems: {} }),
+  };
 }
 
 function getClient(settings: Settings): CarrierApiClient {
@@ -216,6 +384,50 @@ function normalizeFanMode(fan: string | null | undefined): string | null {
   return value;
 }
 
+function formatCarrierSetpoint(value: number | string | null | undefined, fallback: number): string {
+  const parsed = Number(value);
+  const resolved = Number.isFinite(parsed) ? parsed : fallback;
+  return resolved.toFixed(1);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function zoneFanRuntimeMatches(zone: ZoneView, expectedFan: string): boolean {
+  const normalized = normalizeFanMode(expectedFan) ?? expectedFan;
+  if (normalized === "auto") {
+    return zone.fan_speed === "off" || zone.fan_speed == null;
+  }
+  if (normalized === "low") {
+    return zone.fan_speed === "low" || zone.fan_speed === "on";
+  }
+  return zone.fan_speed === normalized;
+}
+
+function zoneFanReady(zone: ZoneView, expectedFan: string, beforeFan: string | null): boolean {
+  const normalized = normalizeFanMode(expectedFan) ?? expectedFan;
+  if (zone.fan !== normalized) return false;
+  if (beforeFan !== normalized) return true;
+  return zoneFanRuntimeMatches(zone, expectedFan);
+}
+
+async function waitForCloudZoneFan(
+  settings: Settings,
+  zoneId: string,
+  expectedFan: string,
+  beforeFan: string | null,
+): Promise<ZoneView | null> {
+  await sleep(2000);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) await sleep(1500);
+    await refreshCloudData(settings, true);
+    const zone = buildSnapshot(settings).zones.find((item) => zoneIdsMatch(item.id, zoneId)) ?? null;
+    if (zone && zoneFanReady(zone, expectedFan, beforeFan)) return zone;
+  }
+  return null;
+}
+
 function formatFanSettingLabel(fan: string | null | undefined): string | null {
   const normalized = normalizeFanMode(fan);
   if (!normalized) return null;
@@ -255,12 +467,36 @@ function resolveFanSetting(
   statusZone: CarrierSystem["status"]["zones"][number] | undefined,
   configZone: CarrierSystem["config"]["zones"][number] | undefined,
 ): string {
+  if (!configZone) return "auto";
+
+  const onHold = configZone.hold === "on" || statusZone?.hold === "on";
+  const heldActivity = configZone.holdActivity ?? (onHold ? statusZone?.currentActivity : null);
   const activityType =
-    statusZone?.currentActivity ?? configZone?.holdActivity ?? configZone?.activities[0]?.type ?? null;
-  if (!activityType || !configZone) return "auto";
+    onHold && heldActivity
+      ? heldActivity
+      : statusZone?.currentActivity ?? configZone.activities[0]?.type ?? null;
+  if (!activityType) return "auto";
 
   const activity = configZone.activities.find((item) => item.type === activityType);
   return normalizeFanMode(activity?.fan) ?? "auto";
+}
+
+function resolveZoneSetpoints(
+  statusZone: CarrierSystem["status"]["zones"][number] | undefined,
+  configZone: CarrierSystem["config"]["zones"][number] | undefined,
+): { heat: number | null; cool: number | null } {
+  let heat = statusZone?.htsp ?? null;
+  let cool = statusZone?.clsp ?? null;
+  const onHold = configZone?.hold === "on" || statusZone?.hold === "on";
+  const heldActivity = configZone?.holdActivity ?? (onHold ? statusZone?.currentActivity : null);
+  if (onHold && heldActivity && configZone) {
+    const activity = configZone.activities.find((item) => item.type === heldActivity);
+    if (activity) {
+      heat = activity.htsp;
+      cool = activity.clsp;
+    }
+  }
+  return { heat, cool };
 }
 
 function resolveFanSpeed(
@@ -297,29 +533,137 @@ function mapZones(system: CarrierSystem): ZoneView[] {
     const indoorTemp = statusZone?.rt ?? null;
     const fan = resolveFanSetting(statusZone, configZone);
     const fanSpeed = resolveFanSpeed(statusZone);
+    const setpoints = resolveZoneSetpoints(statusZone, configZone);
+    const onHold = configZone?.hold === "on" || statusZone?.hold === "on";
     zones.push({
       id: zoneId,
       name: configZone?.name ?? `Zone ${zoneId}`,
       temperature: toFahrenheit(indoorTemp, cfgem),
       temperature_display: formatFahrenheit(indoorTemp, cfgem),
-      heat_setpoint_display: formatFahrenheit(statusZone?.htsp ?? null, cfgem),
-      cool_setpoint_display: formatFahrenheit(statusZone?.clsp ?? null, cfgem),
+      heat_setpoint_display: formatFahrenheit(setpoints.heat, cfgem),
+      cool_setpoint_display: formatFahrenheit(setpoints.cool, cfgem),
       humidity: statusZone?.rh ?? null,
-      heat_setpoint: toFahrenheit(statusZone?.htsp ?? null, cfgem),
-      cool_setpoint: toFahrenheit(statusZone?.clsp ?? null, cfgem),
+      heat_setpoint: toFahrenheit(setpoints.heat, cfgem),
+      cool_setpoint: toFahrenheit(setpoints.cool, cfgem),
       sensor_rt: indoorTemp,
       fan,
       fan_speed: fanSpeed,
       fan_display: formatBlowerLiveDisplay(system.status.idu, fanSpeed),
-      activity: statusZone?.currentActivity ?? null,
+      activity: onHold
+        ? (configZone?.holdActivity ?? statusZone?.currentActivity ?? null)
+        : (statusZone?.currentActivity ?? null),
       conditioning: statusZone?.zoneconditioning ?? "idle",
-      hold: configZone?.hold === "on",
-      hold_activity: configZone?.holdActivity ?? null,
+      hold: onHold,
+      hold_activity: configZone?.holdActivity ?? (onHold ? statusZone?.currentActivity ?? null : null),
       hold_until: configZone?.otmr ?? null,
       presets,
     });
   }
   return zones;
+}
+
+function formatActivityLabel(activity: string | null | undefined): string {
+  if (!activity) return "—";
+  const labels: Record<string, string> = {
+    manual: "Hold",
+    home: "Home",
+    away: "Away",
+    sleep: "Sleep",
+    wake: "Wake up",
+    vacation: "Away long-term",
+  };
+  return labels[activity] ?? activity.charAt(0).toUpperCase() + activity.slice(1);
+}
+
+function parseTimeMinutes(time: string): number {
+  const [hours, minutes] = time.split(":").map((part) => Number.parseInt(part, 10));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0;
+  return hours * 60 + minutes;
+}
+
+function mapScheduleZones(system: CarrierSystem): ScheduleZoneView[] {
+  const cfgem = system.status.cfgem;
+  const zones: ScheduleZoneView[] = [];
+
+  for (const configZone of system.config.zones) {
+    const statusZone = findStatusZone(system, configZone.id);
+    if (!isZoneEnabled(configZone, statusZone)) continue;
+
+    const activityByType = new Map(configZone.activities.map((activity) => [activity.type, activity]));
+    const programDays = configZone.program?.days ?? [];
+    const days: ScheduleDayView[] = [];
+
+    for (let dayId = 0; dayId < 7; dayId += 1) {
+      const programDay =
+        programDays.find((day) => day.id === dayId) ??
+        programDays.find((day) => day.periods.some((period) => period.dayId === dayId));
+
+      const periods = (programDay?.periods ?? [])
+        .filter((period) => period.enabled && period.dayId === dayId)
+        .sort((left, right) => parseTimeMinutes(left.time) - parseTimeMinutes(right.time))
+        .map((period) => {
+          const activity = activityByType.get(period.activity);
+          return {
+            time: period.time,
+            time_minutes: parseTimeMinutes(period.time),
+            activity: period.activity,
+            activity_label: formatActivityLabel(period.activity),
+            heat_setpoint_display: formatFahrenheit(activity?.htsp ?? null, cfgem),
+            cool_setpoint_display: formatFahrenheit(activity?.clsp ?? null, cfgem),
+            fan: activity?.fan ?? null,
+          };
+        });
+
+      days.push({
+        day_id: dayId,
+        day_name: SCHEDULE_DAY_NAMES[dayId] ?? `Day ${dayId}`,
+        periods,
+      });
+    }
+
+    const currentActivity = statusZone?.currentActivity ?? null;
+    zones.push({
+      id: configZone.id,
+      name: configZone.name,
+      hold: configZone.hold === "on",
+      hold_activity: configZone.holdActivity,
+      current_activity: currentActivity,
+      current_activity_label: formatActivityLabel(
+        configZone.hold === "on" ? configZone.holdActivity : currentActivity,
+      ),
+      days,
+    });
+  }
+
+  return zones;
+}
+
+function buildScheduleSnapshot(settings: Settings): ScheduleSnapshot {
+  const system = selectSystem(settings, cachedSystems);
+  return {
+    connected: Boolean(system && !system.status.isDisconnected),
+    configured: isConfigured(settings),
+    error: lastError,
+    last_sync: lastSyncAt?.toISOString() ?? null,
+    system: system
+      ? {
+          serial: system.profile.serial,
+          name: settings.system_name || system.profile.name,
+          brand: system.profile.brand,
+          model: system.profile.model,
+          firmware: system.profile.firmware,
+          mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
+          outdoor_temp: toFahrenheit(system.status.oat, system.status.cfgem),
+          filter_remaining: system.status.filtrlvl,
+          filter_type: system.config.filterType,
+          filter_interval: system.config.filterInterval,
+          disconnected: Boolean(system.status.isDisconnected),
+          temperature_unit: "F",
+          outdoor_temp_display: formatFahrenheit(system.status.oat, system.status.cfgem),
+        }
+      : null,
+    zones: system ? mapScheduleZones(system) : [],
+  };
 }
 
 function buildSnapshot(settings: Settings): StatusSnapshot {
@@ -340,6 +684,8 @@ function buildSnapshot(settings: Settings): StatusSnapshot {
           mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
           outdoor_temp: toFahrenheit(system.status.oat, system.status.cfgem),
           filter_remaining: system.status.filtrlvl,
+          filter_type: system.config.filterType,
+          filter_interval: system.config.filterInterval,
           disconnected: Boolean(system.status.isDisconnected),
           temperature_unit: "F",
           outdoor_temp_display: formatFahrenheit(system.status.oat, system.status.cfgem),
@@ -420,6 +766,24 @@ const API_CATALOG = {
       path: "/api/status",
       query: "?refresh=1 forces Carrier cloud sync",
       description: "Dashboard snapshot: connection state, selected system, zone summaries, system list.",
+    },
+    {
+      method: "GET",
+      path: "/api/schedule",
+      query: "?refresh=1 forces Carrier cloud sync",
+      description: "Weekly zone schedules with activity setpoints for the selected system.",
+    },
+    {
+      method: "GET",
+      path: "/api/maintenance",
+      query: "?refresh=1 forces Carrier cloud sync",
+      description: "Maintenance snapshot: air filter life plus local condensate line tracking.",
+    },
+    {
+      method: "POST",
+      path: "/api/maintenance/condensate",
+      body: '{ "cleared_at": "optional ISO timestamp, defaults to now" }',
+      description: "Log condensate line clearing and restart the 30-day maintenance timer.",
     },
     {
       method: "GET",
@@ -634,9 +998,30 @@ function pageStyles(): string {
       width: 1.25rem;
       height: 1.25rem;
     }
+    .mobile-header-copy {
+      flex: 1;
+      min-width: 0;
+      display: grid;
+      gap: 0.1rem;
+    }
     .mobile-header-title {
       font-size: 0.95rem;
       font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mobile-header-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status-pill-compact {
+      font-size: 0.72rem;
+      padding: 0.28rem 0.55rem;
+      flex-shrink: 0;
     }
     .toolbar {
       display: flex;
@@ -731,6 +1116,25 @@ function pageStyles(): string {
       color: var(--text);
       border-color: var(--border);
     }
+    button:disabled {
+      cursor: wait;
+      opacity: 0.72;
+    }
+    button.busy {
+      opacity: 0.85;
+    }
+    button.success-flash {
+      background: var(--success) !important;
+      border-color: var(--success) !important;
+      color: #fff !important;
+      opacity: 1;
+    }
+    button.error-flash {
+      background: var(--danger) !important;
+      border-color: var(--danger) !important;
+      color: #fff !important;
+      opacity: 1;
+    }
     .steps { display: grid; gap: 0.75rem; margin: 1rem 0; }
     .step {
       border: 1px solid var(--border);
@@ -753,8 +1157,14 @@ function pageStyles(): string {
     #zone-cards {
       grid-template-columns: minmax(0, 1fr);
     }
+    #zone-cards.single-zone {
+      margin-top: 0;
+    }
     .zone-control-card {
       overflow: hidden;
+    }
+    .zone-control-card.single-zone .zone-name {
+      display: none;
     }
     .zone-control-layout {
       display: grid;
@@ -1031,11 +1441,6 @@ function pageStyles(): string {
       border-color: var(--accent);
       color: var(--accent);
     }
-    .preset-tile.active {
-      background: var(--accent-soft);
-      border-color: var(--accent);
-      color: var(--accent);
-    }
     .preset-tile:disabled {
       opacity: 0.55;
       cursor: wait;
@@ -1149,6 +1554,16 @@ function pageStyles(): string {
     }
     .section-title .tile-refresh {
       margin-left: auto;
+    }
+    .dashboard-toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .dashboard-refresh {
+      margin-left: 0;
     }
     .card-header-row,
     .tile-header-row,
@@ -1265,34 +1680,93 @@ function pageStyles(): string {
     .mode-tile.mode-tile-cool.active { border-color: #0284c7; background: #e0f2fe; color: #0369a1; }
     html[data-theme="dark"] .mode-tile.mode-tile-heat.active { background: #431407; color: #fdba74; }
     html[data-theme="dark"] .mode-tile.mode-tile-cool.active { background: #0c4a6e; color: #7dd3fc; }
-    .weather-card {
+    .weather-grid {
       display: grid;
-      gap: 0.35rem;
+      gap: 1rem;
+      max-width: 36rem;
     }
-    .weather-row {
+    .weather-hero-card .weather-row {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 1rem;
     }
     .weather-icon-wrap {
-      width: 3rem;
-      height: 3rem;
-      border-radius: 0.85rem;
+      width: 4rem;
+      height: 4rem;
+      border-radius: 1rem;
       display: grid;
       place-items: center;
       background: var(--bg);
       border: 1px solid var(--border);
       color: #f59e0b;
+      flex-shrink: 0;
     }
-    .weather-icon-wrap .icon { width: 1.6rem; height: 1.6rem; }
-    .filter-life {
-      margin-top: 0.65rem;
-      padding-top: 0.65rem;
-      border-top: 1px solid var(--border);
+    .weather-icon-wrap .icon { width: 2rem; height: 2rem; }
+    .weather-hero-card .temp-display {
+      font-size: 3.5rem;
+      margin: 0;
+      line-height: 1;
+    }
+    .weather-caption {
+      display: block;
+      margin-top: 0.25rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .maintenance-grid {
+      display: grid;
+      gap: 1rem;
+      max-width: 36rem;
+    }
+    .maintenance-item-header {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-bottom: 0.65rem;
+    }
+    .maintenance-item-header .icon {
+      width: 1.2rem;
+      height: 1.2rem;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+    .maintenance-item-header h3 {
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+      font-size: 1rem;
+    }
+    .maintenance-value {
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 0.35rem;
+    }
+    .maintenance-value.low {
+      color: #b45309;
+    }
+    .maintenance-value.critical {
+      color: var(--danger);
+    }
+    .maintenance-detail {
+      margin: 0.5rem 0 0;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .maintenance-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      margin-top: 0.85rem;
+    }
+    .maintenance-actions button.secondary {
+      font-size: 0.85rem;
+      padding: 0.55rem 0.8rem;
     }
     .filter-life-row {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       font-size: 0.82rem;
       margin-bottom: 0.35rem;
     }
@@ -1328,7 +1802,7 @@ function pageStyles(): string {
       .mobile-header {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
+        gap: 0.65rem;
         padding: 0.85rem 1rem;
         background: var(--panel);
         border-bottom: 1px solid var(--border);
@@ -1337,6 +1811,18 @@ function pageStyles(): string {
         z-index: 30;
         grid-column: 1;
         grid-row: 1;
+      }
+      .dashboard-toolbar {
+        display: flex;
+        margin-bottom: 0.75rem;
+        justify-content: flex-end;
+      }
+      .dashboard-toolbar .toolbar-meta,
+      .dashboard-toolbar #connection-pill {
+        display: none;
+      }
+      .toolbar-connection-pill {
+        display: none;
       }
       .sidebar-backdrop {
         display: block;
@@ -1448,12 +1934,165 @@ function pageStyles(): string {
       border-color: #fecaca;
       color: var(--danger);
     }
+    .dev-banner {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.55rem 1rem;
+      background: #fef3c7;
+      color: #92400e;
+      border-bottom: 1px solid #fcd34d;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    html[data-theme="dark"] .dev-banner {
+      background: #422006;
+      color: #fcd34d;
+      border-bottom-color: #854d0e;
+    }
+    .dev-banner code {
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+    .schedule-grid {
+      display: grid;
+      gap: 1rem;
+    }
+    .schedule-zone-card h3 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+    .schedule-zone-card.single-zone h3 {
+      display: none;
+    }
+    .schedule-zone-card.single-zone .schedule-zone-meta {
+      margin-top: 0;
+    }
+    .schedule-zone-meta {
+      margin: 0.35rem 0 0.85rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .schedule-zone-meta strong {
+      color: var(--text);
+    }
+    .schedule-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+    .schedule-table th,
+    .schedule-table td {
+      border-bottom: 1px solid var(--border);
+      padding: 0.7rem 0.55rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    .schedule-table th {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 700;
+    }
+    .schedule-table tr.today td {
+      background: var(--accent-soft);
+    }
+    .schedule-table tr.today td:first-child {
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .schedule-day-name {
+      white-space: nowrap;
+      width: 6.5rem;
+    }
+    .schedule-periods {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+    }
+    .schedule-period-pill {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.4rem 0.6rem;
+      border-radius: 0.65rem;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      line-height: 1.3;
+    }
+    .schedule-period-pill.current {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .schedule-period-time {
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .schedule-period-activity {
+      font-weight: 600;
+    }
+    .schedule-period-setpoints {
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .schedule-period-pill.activity-home .schedule-period-activity { color: #0f766e; }
+    .schedule-period-pill.activity-away .schedule-period-activity { color: #64748b; }
+    .schedule-period-pill.activity-sleep .schedule-period-activity { color: #6d28d9; }
+    .schedule-period-pill.activity-wake .schedule-period-activity { color: #c2410c; }
+    .schedule-period-pill.activity-manual .schedule-period-activity { color: #0369a1; }
+    .schedule-period-pill.activity-vacation .schedule-period-activity { color: #b45309; }
+    html[data-theme="dark"] .schedule-period-pill.activity-home .schedule-period-activity { color: #2dd4bf; }
+    html[data-theme="dark"] .schedule-period-pill.activity-away .schedule-period-activity { color: #94a3b8; }
+    html[data-theme="dark"] .schedule-period-pill.activity-sleep .schedule-period-activity { color: #c4b5fd; }
+    html[data-theme="dark"] .schedule-period-pill.activity-wake .schedule-period-activity { color: #fdba74; }
+    html[data-theme="dark"] .schedule-period-pill.activity-manual .schedule-period-activity { color: #7dd3fc; }
+    html[data-theme="dark"] .schedule-period-pill.activity-vacation .schedule-period-activity { color: #fcd34d; }
+    .schedule-empty {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .schedule-chip-link {
+      display: inline-block;
+      margin-top: 0.15rem;
+      font-size: 0.72rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .schedule-chip-link:hover {
+      text-decoration: underline;
+    }
   `;
+}
+
+function devBannerHtml(): string {
+  if (!IS_LOCAL_DEV) return "";
+  const port = process.env.PORT ?? "3000";
+  return (
+    '<div class="dev-banner">' +
+    "<span>Local dev mode — changes to <code>server.ts</code> reload automatically</span>" +
+    "<span>Data: <code>" +
+    escapeHtml(DATA_ROOT) +
+    "</code> · <code>http://localhost:" +
+    escapeHtml(String(port)) +
+    "</code></span>" +
+    "</div>"
+  );
 }
 
 function renderPage(active: string, content: string): string {
   const nav = [
     { id: "dashboard", label: "Dashboard", href: "/" },
+    { id: "weather", label: "Weather", href: "/weather" },
+    { id: "schedule", label: "Schedule", href: "/schedule" },
+    { id: "maintenance", label: "Maintenance", href: "/maintenance" },
     { id: "api", label: "API Explorer", href: "/api" },
     { id: "setup", label: "Setup", href: "/setup" },
     { id: "settings", label: "Settings", href: "/settings" },
@@ -1474,6 +2113,7 @@ function renderPage(active: string, content: string): string {
   <style>${pageStyles()}</style>
 </head>
 <body>
+  ${devBannerHtml()}
   <div class="layout">
     <header class="mobile-header">
       <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">
@@ -1481,7 +2121,11 @@ function renderPage(active: string, content: string): string {
           <path d="M4 7h16M4 12h16M4 17h16"/>
         </svg>
       </button>
-      <span class="mobile-header-title">Bryant/Carrier HVAC</span>
+      <div class="mobile-header-copy">
+        <span class="mobile-header-title" id="mobile-header-system">Bryant/Carrier HVAC</span>
+        <span class="mobile-header-meta" id="mobile-header-meta">Loading…</span>
+      </div>
+      <span class="status-pill status-pill-compact warning" id="mobile-connection-pill">Loading…</span>
     </header>
     <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
     <aside class="sidebar" id="sidebar">
@@ -1498,6 +2142,45 @@ function renderPage(active: string, content: string): string {
     <main class="main">${content}</main>
   </div>
   <script>
+    window.hvacSetButtonPending = function(button, label) {
+      if (!button || button.dataset.busy === "true") return false;
+      if (!button.dataset.originalLabel) button.dataset.originalLabel = button.textContent;
+      button.dataset.busy = "true";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.classList.remove("success-flash", "error-flash");
+      button.classList.add("busy");
+      button.textContent = label;
+      return true;
+    };
+    window.hvacSetButtonSuccess = function(button, label) {
+      if (!button) return;
+      button.classList.remove("busy", "error-flash");
+      button.classList.add("success-flash");
+      button.textContent = label;
+    };
+    window.hvacSetButtonError = function(button, label) {
+      if (!button) return;
+      button.disabled = false;
+      button.dataset.busy = "false";
+      button.removeAttribute("aria-busy");
+      button.classList.remove("busy", "success-flash");
+      button.classList.add("error-flash");
+      button.textContent = label;
+      window.setTimeout(function() {
+        window.hvacResetButton(button);
+      }, 1600);
+    };
+    window.hvacResetButton = function(button) {
+      if (!button) return;
+      button.disabled = false;
+      button.dataset.busy = "false";
+      button.removeAttribute("aria-busy");
+      button.classList.remove("busy", "success-flash", "error-flash");
+      if (button.dataset.originalLabel) {
+        button.textContent = button.dataset.originalLabel;
+      }
+    };
     (function () {
       const toggle = document.getElementById("menu-toggle");
       const sidebar = document.getElementById("sidebar");
@@ -1533,6 +2216,55 @@ function renderPage(active: string, content: string): string {
         if (!mq.matches) closeSidebar();
       });
     })();
+    window.hvacUpdateMobileHeader = function (data) {
+      const systemEl = document.getElementById("mobile-header-system");
+      const metaEl = document.getElementById("mobile-header-meta");
+      const pill = document.getElementById("mobile-connection-pill");
+      if (!systemEl || !pill) return;
+      const settingsName = data?.settings?.system_name || "Bryant/Carrier HVAC";
+      if (!data?.configured) {
+        systemEl.textContent = settingsName;
+        if (metaEl) metaEl.textContent = "Setup required";
+        pill.className = "status-pill status-pill-compact warning";
+        pill.textContent = "Setup required";
+        return;
+      }
+      if (!data.system || !data.connected) {
+        systemEl.textContent = data?.system?.name || settingsName;
+        if (metaEl) metaEl.textContent = data?.error || "Waiting for Carrier cloud";
+        pill.className = "status-pill status-pill-compact warning";
+        pill.textContent = data?.error ? "Connection issue" : "Syncing";
+        return;
+      }
+      const match = (data.systems || []).find((item) => item.serial === data.system.serial);
+      const carrierName = match?.name || data.system.name || settingsName;
+      const model = match?.model || data.system.model;
+      systemEl.textContent = carrierName;
+      if (metaEl) metaEl.textContent = model || data.system.serial || "";
+      pill.className = "status-pill status-pill-compact success";
+      pill.textContent = "Connected";
+    };
+    (function () {
+      async function refreshMobileHeader() {
+        try {
+          const res = await fetch("/api/status");
+          const data = await res.json();
+          window.hvacUpdateMobileHeader(data);
+        } catch (error) {
+          const systemEl = document.getElementById("mobile-header-system");
+          const metaEl = document.getElementById("mobile-header-meta");
+          const pill = document.getElementById("mobile-connection-pill");
+          if (systemEl) systemEl.textContent = "Bryant/Carrier HVAC";
+          if (metaEl) metaEl.textContent = String(error);
+          if (pill) {
+            pill.className = "status-pill status-pill-compact error";
+            pill.textContent = "Error";
+          }
+        }
+      }
+      refreshMobileHeader();
+      setInterval(refreshMobileHeader, 15000);
+    })();
   </script>
 </body>
 </html>`;
@@ -1542,7 +2274,7 @@ function setupContent(settings: PublicSettings): string {
   return `
     <div class="toolbar">
       <h2>Setup</h2>
-      <span class="status-pill warning" id="connection-pill">Checking…</span>
+      <span class="status-pill toolbar-connection-pill warning" id="connection-pill">Checking…</span>
     </div>
     <div class="card">
       <h3>Sign in with your Bryant/Carrier account</h3>
@@ -1626,18 +2358,35 @@ function setupContent(settings: PublicSettings): string {
         event.preventDefault();
         const message = document.getElementById("setup-message");
         const form = event.target;
-        const res = await fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: form.username.value.trim(),
-            password: form.password.value,
-          }),
-        });
-        const data = await res.json();
-        message.className = "message " + (res.ok ? "success" : "error");
-        message.textContent = res.ok ? "Connected. Redirecting…" : (data.error || "Could not save credentials.");
-        if (res.ok) window.location.href = "/";
+        const button = form.querySelector('button[type="submit"]');
+        if (!hvacSetButtonPending(button, "Connecting…")) return;
+        message.className = "message";
+        message.textContent = "Checking credentials with Carrier…";
+        try {
+          const res = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: form.username.value.trim(),
+              password: form.password.value,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            hvacSetButtonSuccess(button, "Connected!");
+            message.className = "message success";
+            message.textContent = "Connected. Redirecting…";
+            window.setTimeout(() => { window.location.href = "/"; }, 700);
+            return;
+          }
+          hvacSetButtonError(button, "Try again");
+          message.className = "message error";
+          message.textContent = data.error || "Could not save credentials.";
+        } catch (error) {
+          hvacSetButtonError(button, "Try again");
+          message.className = "message error";
+          message.textContent = String(error);
+        }
       });
       refreshConnection();
       setInterval(refreshConnection, 5000);
@@ -1647,12 +2396,14 @@ function setupContent(settings: PublicSettings): string {
 
 function dashboardContent(): string {
   return `
-    <div class="toolbar">
-      <div>
-        <h2>Your home</h2>
-        <p class="toolbar-meta" id="active-system-label">Loading system…</p>
+    <div class="toolbar dashboard-toolbar">
+      <p class="toolbar-meta" id="active-system-label">Loading system…</p>
+      <div class="dashboard-toolbar-actions">
+        <button type="button" class="tile-refresh dashboard-refresh" id="dashboard-refresh" aria-label="Refresh dashboard">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        </button>
+        <span class="status-pill warning" id="connection-pill">Loading…</span>
       </div>
-      <span class="status-pill warning" id="connection-pill">Loading…</span>
     </div>
     <div class="grid" id="system-cards">
       <div class="card"><p class="muted">Loading system status…</p></div>
@@ -1662,6 +2413,49 @@ function dashboardContent(): string {
       const THERMO_MIN = 60;
       const THERMO_MAX = 90;
       const THERMO_DEADBAND = 2;
+      const DASHBOARD_MUTATION_QUIET_MS = 12_000;
+      let dashboardQuietUntil = 0;
+      let dashboardFetchInFlight = false;
+
+      function markDashboardMutation(quietMs = DASHBOARD_MUTATION_QUIET_MS) {
+        dashboardQuietUntil = Date.now() + quietMs;
+      }
+
+      function rememberZoneMutation(card, zone) {
+        if (!card || !zone) return;
+        card.dataset.mutationPending = "true";
+        card.dataset.lastHold = String(Boolean(zone.hold));
+        if (zone.heat_setpoint_display) card.dataset.lastHeat = zone.heat_setpoint_display;
+        if (zone.cool_setpoint_display) card.dataset.lastCool = zone.cool_setpoint_display;
+        if (zone.fan) card.dataset.lastFan = zone.fan;
+        window.setTimeout(() => {
+          delete card.dataset.mutationPending;
+          delete card.dataset.lastHold;
+          delete card.dataset.lastHeat;
+          delete card.dataset.lastCool;
+          delete card.dataset.lastFan;
+        }, DASHBOARD_MUTATION_QUIET_MS);
+      }
+
+      function zoneSnapshotAcceptable(card, zone) {
+        if (card.dataset.mutationPending !== "true") return true;
+        if (card.dataset.lastHold === "true" && !zone.hold) return false;
+        if (card.dataset.lastHeat && zone.heat_setpoint_display && zone.heat_setpoint_display !== card.dataset.lastHeat) {
+          return false;
+        }
+        if (card.dataset.lastCool && zone.cool_setpoint_display && zone.cool_setpoint_display !== card.dataset.lastCool) {
+          return false;
+        }
+        if (card.dataset.lastFan && (!zone.fan || zone.fan !== card.dataset.lastFan)) {
+          return false;
+        }
+        delete card.dataset.mutationPending;
+        delete card.dataset.lastHold;
+        delete card.dataset.lastHeat;
+        delete card.dataset.lastCool;
+        delete card.dataset.lastFan;
+        return true;
+      }
       const FAN_LEVELS = ["auto", "low", "med", "high"];
       const FAN_LABELS = ["Auto", "Low", "Medium", "High"];
       const ICONS = {
@@ -1685,10 +2479,6 @@ function dashboardContent(): string {
         pause: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>',
         refresh: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
       };
-
-      function renderTileRefresh(metric, label) {
-        return '<button type="button" class="tile-refresh" data-refresh="' + metric + '" aria-label="Refresh ' + escapeHtml(label) + '">' + ICONS.refresh + "</button>";
-      }
 
       function escapeHtml(value) {
         return String(value)
@@ -1783,6 +2573,20 @@ function dashboardContent(): string {
         return labels[activity] || activity.charAt(0).toUpperCase() + activity.slice(1);
       }
 
+      function chipActivityLabel(zone) {
+        const activity = zone.hold ? (zone.hold_activity || zone.activity) : zone.activity;
+        if (!activity) return "—";
+        const labels = {
+          manual: "Manual",
+          home: "Home",
+          away: "Away",
+          sleep: "Sleep",
+          wake: "Wake up",
+          vacation: "Away long-term",
+        };
+        return labels[activity] || activity.charAt(0).toUpperCase() + activity.slice(1);
+      }
+
       function conditioningInfo(conditioning) {
         const value = String(conditioning || "idle").toLowerCase();
         if (value.includes("heat")) {
@@ -1826,6 +2630,13 @@ function dashboardContent(): string {
         const readout = card.querySelector("[data-fan-readout]");
         if (readout) readout.textContent = fanDisplayText(zone);
         syncFanBars(card, zone);
+        if (card.dataset.fanEditing === "true") return;
+        if (card.dataset.fanUpdateInFlight === "true") return;
+        if (card.dataset.mutationPending === "true" && card.dataset.lastFan) {
+          applyFanSettingUi(card, card.dataset.lastFan);
+          return;
+        }
+        applyFanSettingUi(card, zone.fan || "auto");
       }
 
       function syncHumidityTile(card, zone) {
@@ -1848,6 +2659,12 @@ function dashboardContent(): string {
         if (unit) unit.textContent = temp === "—" ? "" : "°F";
         const widget = card.querySelector(".thermo-widget");
         if (widget && card.dataset.dragging !== "true") {
+          const heatHandle = widget.querySelector(".thermo-handle-heat");
+          const coolHandle = widget.querySelector(".thermo-handle-cool");
+          const heat = parseTemp(zone.heat_setpoint_display ?? zone.heat_setpoint, 68);
+          const cool = parseTemp(zone.cool_setpoint_display ?? zone.cool_setpoint, 74);
+          if (heatHandle) heatHandle.dataset.value = String(heat);
+          if (coolHandle) coolHandle.dataset.value = String(cool);
           const indoor = parseTemp(zone.temperature_display ?? zone.temperature, parseTemp(widget.dataset.indoor, 68));
           widget.dataset.indoor = String(indoor);
           updateThermoWidget(widget);
@@ -1856,7 +2673,9 @@ function dashboardContent(): string {
 
       function syncScheduleTile(card, zone) {
         const schedule = card.querySelector("[data-schedule-readout]");
-        if (schedule) schedule.textContent = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+        const label = card.querySelector("[data-schedule-label]");
+        if (schedule) schedule.textContent = chipActivityLabel(zone);
+        if (label) label.textContent = zone.hold ? "Hold" : "Schedule";
       }
 
       function syncStatusTile(card, zone) {
@@ -1866,13 +2685,6 @@ function dashboardContent(): string {
           badge.className = "status-badge " + status.className;
           badge.innerHTML = status.icon + " " + escapeHtml(status.label);
         }
-      }
-
-      function syncPresetsTile(card, zone) {
-        const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
-        card.querySelectorAll("[data-preset]").forEach((tile) => {
-          tile.classList.toggle("active", tile.dataset.preset === activePreset);
-        });
       }
 
       function syncModeTile(mode) {
@@ -1887,82 +2699,17 @@ function dashboardContent(): string {
         });
       }
 
-      function syncOutdoorTile(system) {
-        const outdoor = system.outdoor_temp_display ?? system.outdoor_temp ?? "—";
-        const display = document.querySelector("[data-outdoor-value]");
-        if (display) display.textContent = outdoor + (outdoor === "—" ? "" : "°F");
-      }
-
-      function syncFilterTile(system) {
-        const filter = system.filter_remaining ?? "—";
-        const value = document.querySelector("[data-filter-value]");
-        const bar = document.querySelector("[data-filter-bar]");
-        if (value) value.textContent = filter === "—" ? "—" : filter + "% left";
-        if (bar) {
-          const width = Number.isFinite(Number(filter)) ? Math.max(0, Math.min(100, Number(filter))) : 0;
-          bar.style.width = width + "%";
-        }
-      }
-
       async function fetchFreshStatus() {
         const res = await fetch("/api/status?refresh=1");
         return res.json();
       }
 
-      async function refreshWithButton(button, apply) {
-        button.disabled = true;
-        button.classList.add("spinning");
-        try {
-          const data = await fetchFreshStatus();
-          await apply(data);
-        } finally {
-          button.disabled = false;
-          button.classList.remove("spinning");
-        }
-      }
-
-      async function refreshZoneMetric(card, metric, button) {
-        await refreshWithButton(button, (data) => {
-          const zone = (data.zones || []).find((item) => item.id === card.dataset.zoneId);
-          if (!zone) return;
-          if (metric === "humidity") syncHumidityTile(card, zone);
-          else if (metric === "blower") syncFanTile(card, zone);
-          else if (metric === "thermo") syncThermoTile(card, zone);
-          else if (metric === "schedule") syncScheduleTile(card, zone);
-          else if (metric === "status") syncStatusTile(card, zone);
-          else if (metric === "presets") syncPresetsTile(card, zone);
-        });
-      }
-
-      async function refreshSystemMetric(metric, button) {
-        await refreshWithButton(button, (data) => {
-          if (!data.system) return;
-          if (metric === "mode") syncModeTile(data.system.mode || "auto");
-          else if (metric === "outdoor") syncOutdoorTile(data.system);
-          else if (metric === "filter") syncFilterTile(data.system);
-        });
-      }
-
-      function initTileRefreshButtons(card) {
-        card.querySelectorAll("[data-refresh]").forEach((button) => {
-          if (button.dataset.initialized === "true") return;
-          button.dataset.initialized = "true";
-          button.addEventListener("click", async () => {
-            await refreshZoneMetric(card, button.dataset.refresh, button);
-          });
-        });
-      }
-
-      function initSystemRefreshButtons() {
-        const systemCards = document.getElementById("system-cards");
-        if (!systemCards) return;
-        systemCards.querySelectorAll("[data-refresh]").forEach((button) => {
-          if (button.dataset.initialized === "true") return;
-          button.dataset.initialized = "true";
-          button.addEventListener("click", async () => {
-            await refreshSystemMetric(button.dataset.refresh, button);
-          });
-        });
+      function syncZoneCardShell(card, zone, systemMode, singleZone) {
+        const normalizedMode = normalizeMode(systemMode || "auto");
+        card.dataset.systemMode = normalizedMode;
+        card.className = "card zone-control-card" + (singleZone ? " single-zone" : "") + " mode-" + normalizedMode;
+        const name = card.querySelector(".zone-name");
+        if (name) name.textContent = zone.name;
       }
 
       function syncZoneReadout(card, zone) {
@@ -1971,16 +2718,84 @@ function dashboardContent(): string {
         syncHumidityTile(card, zone);
         syncThermoTile(card, zone);
         syncFanTile(card, zone);
-        syncPresetsTile(card, zone);
       }
 
-      function updateZoneCardsFromData(zones) {
+      function applyDashboardSnapshot(data, options = {}) {
+        const preserveLayout = options.preserveLayout === true;
+        const pill = document.getElementById("connection-pill");
+        const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
-        for (const zone of zones) {
-          const card = zoneCards.querySelector('.zone-control-card[data-zone-id="' + CSS.escape(zone.id) + '"]');
-          if (!card || card.dataset.dragging === "true") continue;
-          syncZoneReadout(card, zone);
+        const zoneDragging = Boolean(zoneCards?.querySelector('[data-dragging="true"]'));
+
+        updateActiveSystemLabel(data);
+        if (window.hvacUpdateMobileHeader) window.hvacUpdateMobileHeader(data);
+
+        if (!data.configured) {
+          if (pill) {
+            pill.className = "status-pill warning";
+            pill.textContent = "Setup required";
+          }
+          if (!preserveLayout && systemCards && zoneCards) {
+            systemCards.innerHTML = '<div class="card"><h3>Sign in required</h3><p class="muted">Connect your Bryant/Carrier account on the <a href="/setup">Setup page</a>.</p></div>';
+            zoneCards.innerHTML = "";
+          }
+          return;
         }
+
+        if (!data.connected) {
+          if (pill) {
+            pill.className = "status-pill warning";
+            pill.textContent = data.error ? "Connection issue" : "Syncing";
+          }
+          if (!preserveLayout && systemCards && zoneCards) {
+            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + escapeHtml(data.error || "Waiting for data from Carrier cloud. Check your internet connection.") + '</p></div>';
+            zoneCards.innerHTML = "";
+          }
+          return;
+        }
+
+        if (pill) {
+          pill.className = "status-pill success";
+          pill.textContent = "Connected";
+        }
+
+        const mode = data.system?.mode || "auto";
+        if (systemCards?.querySelector("[data-mode]")) {
+          syncModeTile(mode);
+        }
+
+        if (!zoneDragging && zoneCards && Array.isArray(data.zones) && data.zones.length) {
+          const singleZone = data.zones.length === 1;
+          zoneCards.classList.toggle("single-zone", singleZone);
+          for (const zone of data.zones) {
+            const card = zoneCards.querySelector('.zone-control-card[data-zone-id="' + CSS.escape(zone.id) + '"]');
+            if (!card || card.dataset.dragging === "true") continue;
+            if (!zoneSnapshotAcceptable(card, zone)) continue;
+            syncZoneCardShell(card, zone, mode, singleZone);
+            syncZoneReadout(card, zone);
+          }
+        }
+      }
+
+      async function refreshDashboard(button) {
+        button.disabled = true;
+        button.classList.add("spinning");
+        try {
+          const data = await fetchFreshStatus();
+          applyDashboardSnapshot(data, { preserveLayout: true });
+        } finally {
+          button.disabled = false;
+          button.classList.remove("spinning");
+        }
+      }
+
+      function initDashboardRefreshButton() {
+        const button = document.getElementById("dashboard-refresh");
+        if (!button || button.dataset.initialized === "true") return;
+        button.dataset.initialized = "true";
+        button.addEventListener("click", async () => {
+          await refreshDashboard(button);
+        });
       }
 
       function renderThermoScale() {
@@ -2091,50 +2906,123 @@ function dashboardContent(): string {
           if (event.target.closest(".thermo-handle")) return;
           const handle = nearestVisibleHandle(widget, tempFromPointer(track, event.clientY));
           if (!handle) return;
-          setHandleTemp(widget, handle, tempFromPointer(track, event.clientY));
           const card = widget.closest(".zone-control-card");
-          applyZoneSetpoints(card);
+          setHandleTemp(widget, handle, tempFromPointer(track, event.clientY));
+          void applyZoneSetpoints(card);
         });
+      }
+
+      function releaseFanUpdateLock(card) {
+        delete card.dataset.fanUpdateInFlight;
+        const timer = card.dataset.fanUpdateLockTimer;
+        if (timer) {
+          window.clearTimeout(Number(timer));
+          delete card.dataset.fanUpdateLockTimer;
+        }
+        const slider = card.querySelector('[data-field="fan"]');
+        if (slider) slider.disabled = false;
       }
 
       async function postZoneUpdate(card, payload) {
         const zoneId = card.dataset.zoneId;
         const message = card.querySelector(".zone-message");
-        message.className = "message";
-        message.textContent = "Updating…";
-        const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        message.className = "message " + (res.ok ? "success" : "error");
-        message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
-        if (res.ok) {
-          setTimeout(() => loadDashboard({ soft: true }), 600);
+        if (payload.fan) {
+          if (card.dataset.fanUpdateInFlight === "true") {
+            card.dataset.fanPending = payload.fan;
+            if (message) {
+              message.className = "message";
+              message.textContent = "Updating blower speed…";
+            }
+            return false;
+          }
+          card.dataset.fanUpdateInFlight = "true";
+          card.dataset.fanUpdateLockTimer = String(
+            window.setTimeout(() => {
+              releaseFanUpdateLock(card);
+            }, 45_000),
+          );
         }
-        return res.ok;
+        if (message) {
+          message.className = "message";
+          message.textContent = payload.fan ? "Updating blower speed…" : "Updating…";
+        }
+        markDashboardMutation();
+        if (payload.fan) {
+          card.dataset.mutationPending = "true";
+          card.dataset.lastFan = payload.fan;
+          applyFanSettingUi(card, payload.fan);
+        }
+        let ok = false;
+        try {
+          const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          ok = res.ok;
+          if (message) {
+            message.className = "message " + (res.ok ? "success" : "error");
+            message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
+          }
+          if (res.ok) {
+            if (data.zone) {
+              const zone = data.zone;
+              rememberZoneMutation(card, zone);
+              const zoneCards = document.getElementById("zone-cards");
+              const systemMode = card.dataset.systemMode || "auto";
+              const singleZone = zoneCards?.classList.contains("single-zone") ?? false;
+              syncZoneCardShell(card, zone, systemMode, singleZone);
+              syncZoneReadout(card, zone);
+            }
+            if (!payload.fan) {
+              window.setTimeout(() => loadDashboard({ soft: true, refresh: true }), 600);
+            }
+          } else if (payload.fan) {
+            delete card.dataset.mutationPending;
+            delete card.dataset.lastFan;
+          }
+        } catch (error) {
+          if (message) {
+            message.className = "message error";
+            message.textContent = String(error);
+          }
+          if (payload.fan) {
+            delete card.dataset.mutationPending;
+            delete card.dataset.lastFan;
+          }
+        } finally {
+          if (payload.fan) {
+            releaseFanUpdateLock(card);
+            const pending = card.dataset.fanPending;
+            delete card.dataset.fanPending;
+            if (pending) {
+              window.setTimeout(() => {
+                void postZoneUpdate(card, { fan: pending });
+              }, 0);
+            }
+          }
+        }
+        return ok;
       }
 
       async function applyZoneSetpoints(card) {
         const widget = card.querySelector(".thermo-widget");
+        if (!widget) return false;
         const heatHandle = widget.querySelector(".thermo-handle-heat");
         const coolHandle = widget.querySelector(".thermo-handle-cool");
-        const payload = {};
-        if (heatHandle.offsetParent !== null) {
-          payload.heat_setpoint = heatHandle.dataset.value;
-        }
-        if (coolHandle.offsetParent !== null) {
-          payload.cool_setpoint = coolHandle.dataset.value;
-        }
-        if (!Object.keys(payload).length) return false;
-        return postZoneUpdate(card, payload);
+        if (!heatHandle || !coolHandle) return false;
+        return postZoneUpdate(card, {
+          heat_setpoint: heatHandle.dataset.value,
+          cool_setpoint: coolHandle.dataset.value,
+        });
       }
 
       function initFanSlider(card) {
         const slider = card.querySelector('[data-field="fan"]');
         if (!slider || slider.dataset.initialized === "true") return;
         slider.dataset.initialized = "true";
+        releaseFanUpdateLock(card);
 
         const fanFromSlider = () => FAN_LEVELS[Number.parseInt(slider.value, 10)] || "auto";
 
@@ -2142,10 +3030,28 @@ function dashboardContent(): string {
           applyFanSettingUi(card, fanFromSlider());
         };
 
-        slider.addEventListener("input", syncLabel);
-        slider.addEventListener("change", async () => {
+        slider.addEventListener("input", () => {
+          card.dataset.fanEditing = "true";
+          const message = card.querySelector(".zone-message");
+          if (message) {
+            message.className = "message";
+            message.textContent = "";
+          }
           syncLabel();
-          await postZoneUpdate(card, { fan: fanFromSlider() });
+        });
+        slider.addEventListener("change", async () => {
+          const message = card.querySelector(".zone-message");
+          const fan = fanFromSlider();
+          try {
+            syncLabel();
+            if (message) {
+              message.className = "message";
+              message.textContent = "Updating blower speed…";
+            }
+            await postZoneUpdate(card, { fan });
+          } finally {
+            delete card.dataset.fanEditing;
+          }
         });
         syncLabel();
       }
@@ -2158,15 +3064,10 @@ function dashboardContent(): string {
             card.querySelectorAll("[data-preset]").forEach((item) => {
               item.disabled = true;
             });
-            const ok = await postZoneUpdate(card, { preset: tile.dataset.preset });
+            await postZoneUpdate(card, { preset: tile.dataset.preset });
             card.querySelectorAll("[data-preset]").forEach((item) => {
               item.disabled = false;
             });
-            if (ok) {
-              card.querySelectorAll("[data-preset]").forEach((item) => {
-                item.classList.toggle("active", item.dataset.preset === tile.dataset.preset);
-              });
-            }
           });
         });
       }
@@ -2175,7 +3076,6 @@ function dashboardContent(): string {
         initThermoWidget(card.querySelector(".thermo-widget"));
         initFanSlider(card);
         initPresetTiles(card);
-        initTileRefreshButtons(card);
       }
 
       function renderFanBars(zone) {
@@ -2187,7 +3087,7 @@ function dashboardContent(): string {
         }).join("");
       }
 
-      function renderZoneCard(zone, systemMode) {
+      function renderZoneCard(zone, systemMode, singleZone) {
         const normalizedMode = normalizeMode(systemMode);
         const temp = zone.temperature_display ?? (zone.temperature ?? "—");
         const humidity = zone.humidity ?? "—";
@@ -2197,22 +3097,21 @@ function dashboardContent(): string {
         const fanIndex = fanToIndex(zone.fan);
         const fanText = fanDisplayText(zone);
         const fanSettingText = fanSettingLabel(zone);
-        const activePreset = (zone.hold ? zone.hold_activity : zone.activity) || "";
         const status = conditioningInfo(zone.conditioning);
-        const scheduleText = scheduleLabel(zone.hold ? zone.hold_activity : zone.activity);
+        const scheduleText = chipActivityLabel(zone);
+        const scheduleChipLabel = zone.hold ? "Hold" : "Schedule";
         const humidityWidth = Number.isFinite(Number(zone.humidity)) ? Math.max(0, Math.min(100, Number(zone.humidity))) : 0;
         const presetTiles = (zone.presets || []).map((preset) =>
-          '<button type="button" class="preset-tile' + (preset === activePreset ? " active" : "") + '" data-preset="' + escapeHtml(preset) + '">' + presetIcon(preset) + '<span>' + escapeHtml(presetLabel(preset)) + "</span></button>"
+          '<button type="button" class="preset-tile" data-preset="' + escapeHtml(preset) + '">' + presetIcon(preset) + '<span>' + escapeHtml(presetLabel(preset)) + "</span></button>"
         ).join("");
 
         return \`
-          <div class="card zone-control-card mode-\${escapeHtml(normalizedMode)}" data-zone-id="\${escapeHtml(zone.id)}" data-system-mode="\${escapeHtml(normalizedMode)}">
+          <div class="card zone-control-card\${singleZone ? " single-zone" : ""} mode-\${escapeHtml(normalizedMode)}" data-zone-id="\${escapeHtml(zone.id)}" data-system-mode="\${escapeHtml(normalizedMode)}">
             <div class="zone-hero">
               <div>
-                <h3>\${escapeHtml(zone.name)}</h3>
+                <h3 class="zone-name">\${escapeHtml(zone.name)}</h3>
                 <div class="status-row">
                   <div class="status-badge \${status.className}" data-status-badge>\${status.icon} \${escapeHtml(status.label)}</div>
-                  \${renderTileRefresh("status", "status")}
                 </div>
               </div>
               <div class="zone-hero-temp">
@@ -2227,7 +3126,6 @@ function dashboardContent(): string {
                 <div class="chip-header">
                   \${ICONS.droplet}
                   <span class="chip-label">Humidity</span>
-                  \${renderTileRefresh("humidity", "humidity")}
                 </div>
                 <span class="chip-value" data-humidity-value>\${humidity}\${humidity === "—" ? "" : "%"}</span>
                 <div class="mini-bar"><span data-humidity-bar style="width:\${humidityWidth}%"></span></div>
@@ -2236,7 +3134,6 @@ function dashboardContent(): string {
                 <div class="chip-header">
                   \${ICONS.fan}
                   <span class="chip-label">Blower</span>
-                  \${renderTileRefresh("blower", "blower speed")}
                 </div>
                 <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
                 <div class="fan-bars">\${renderFanBars(zone)}</div>
@@ -2244,15 +3141,15 @@ function dashboardContent(): string {
               <div class="stat-chip">
                 <div class="chip-header">
                   \${ICONS.calendar}
-                  <span class="chip-label">Schedule</span>
-                  \${renderTileRefresh("schedule", "schedule")}
+                  <span class="chip-label" data-schedule-label>\${escapeHtml(scheduleChipLabel)}</span>
                 </div>
                 <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
+                <a class="schedule-chip-link" href="/schedule">View week</a>
               </div>
             </div>
             <div class="zone-control-layout">
               <div>
-                <div class="section-title">\${ICONS.thermostat} Slide the flags to adjust \${renderTileRefresh("thermo", "temperature")}</div>
+                <div class="section-title">\${ICONS.thermostat} Slide the flags to adjust</div>
                 <div
                   class="thermo-widget"
                   data-indoor="\${indoor}"
@@ -2289,7 +3186,7 @@ function dashboardContent(): string {
                   </div>
                 </div>
                 <div>
-                  <div class="section-title">\${ICONS.home} Quick settings \${renderTileRefresh("presets", "active preset")}</div>
+                  <div class="section-title">\${ICONS.home} Quick settings</div>
                   <div class="preset-tiles">\${presetTiles}</div>
                 </div>
                 <div class="message zone-message"></div>
@@ -2329,68 +3226,33 @@ function dashboardContent(): string {
       }
 
       async function loadDashboard(options = {}) {
+        if (dashboardFetchInFlight && options.auto) return;
         const pill = document.getElementById("connection-pill");
         const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
         const zoneDragging = Boolean(zoneCards.querySelector('[data-dragging="true"]'));
+        const recentlyMutated = Date.now() < dashboardQuietUntil;
+        const forceRefresh = Boolean(options.refresh || recentlyMutated);
+        dashboardFetchInFlight = true;
         try {
-          const res = await fetch("/api/status");
+          const res = await fetch("/api/status" + (forceRefresh ? "?refresh=1" : ""));
           const data = await res.json();
-          updateActiveSystemLabel(data);
-          if (!data.configured) {
-            pill.className = "status-pill warning";
-            pill.textContent = "Setup required";
-            systemCards.innerHTML = '<div class="card"><h3>Sign in required</h3><p class="muted">Connect your Bryant/Carrier account on the <a href="/setup">Setup page</a>.</p></div>';
-            zoneCards.innerHTML = "";
+          if (!data.configured || !data.connected) {
+            applyDashboardSnapshot(data);
             return;
           }
-          if (!data.connected) {
-            pill.className = "status-pill warning";
-            pill.textContent = data.error ? "Connection issue" : "Syncing";
-            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + escapeHtml(data.error || "Waiting for data from Carrier cloud. Check your internet connection.") + '</p></div>';
-            zoneCards.innerHTML = "";
-            return;
-          }
-          pill.className = "status-pill success";
-          pill.textContent = "Connected";
           const mode = data.system.mode || "auto";
-          const unitLabel = "°F";
-          const outdoor = data.system.outdoor_temp_display ?? data.system.outdoor_temp ?? "—";
-          const filter = data.system.filter_remaining ?? "—";
           if (!options.soft) {
-            const filterWidth = Number.isFinite(Number(filter)) ? Math.max(0, Math.min(100, Number(filter))) : 0;
             systemCards.innerHTML = \`
               <div class="card">
                 <div class="card-header-row">
                   <h3>What should it do?</h3>
-                  \${renderTileRefresh("mode", "system mode")}
                 </div>
                 <p class="muted" style="margin:0.35rem 0 0;font-size:0.88rem" data-mode-readout>Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
                 <div class="mode-tiles">\${renderModeTiles(mode)}</div>
                 <div class="message" id="mode-message"></div>
               </div>
-              <div class="card weather-card">
-                <div class="weather-row">
-                  <div class="weather-icon-wrap">\${ICONS.sun}</div>
-                  <div style="flex:1;min-width:0">
-                    <div class="tile-header-row">
-                      <div class="temp-label">Outside</div>
-                      \${renderTileRefresh("outdoor", "outdoor temperature")}
-                    </div>
-                    <div class="temp-display" style="font-size:2rem;margin:0" data-outdoor-value>\${outdoor}\${outdoor === "—" ? "" : unitLabel}</div>
-                  </div>
-                </div>
-                <div class="filter-life">
-                  <div class="filter-life-row">
-                    <span>\${ICONS.filter} Air filter</span>
-                    <span data-filter-value>\${filter === "—" ? "—" : filter + "% left"}</span>
-                    \${renderTileRefresh("filter", "filter life")}
-                  </div>
-                  <div class="filter-bar-track"><span class="filter-bar-fill" data-filter-bar style="width:\${filterWidth}%"></span></div>
-                </div>
-              </div>
             \`;
-            initSystemRefreshButtons();
             systemCards.querySelectorAll("[data-mode]").forEach((button) => {
               button.addEventListener("click", async () => {
                 const message = document.getElementById("mode-message");
@@ -2402,30 +3264,626 @@ function dashboardContent(): string {
                 const modeData = await modeRes.json();
                 message.className = "message " + (modeRes.ok ? "success" : "error");
                 message.textContent = modeRes.ok ? "Updated." : (modeData.error || "Could not change mode.");
-                if (modeRes.ok) loadDashboard();
+                if (modeRes.ok) {
+                  markDashboardMutation();
+                  loadDashboard({ soft: true, refresh: true });
+                }
               });
             });
           }
           if (!zoneDragging) {
+            const singleZone = data.zones.length === 1;
+            const zoneCount = data.zones.length;
+            const existingCards = zoneCards.querySelectorAll(".zone-control-card").length;
+            const singleZoneMismatch = singleZone !== zoneCards.classList.contains("single-zone");
+            zoneCards.classList.toggle("single-zone", singleZone);
             const hasZoneCards = Boolean(zoneCards.querySelector(".zone-control-card"));
-            if (hasZoneCards) {
-              updateZoneCardsFromData(data.zones);
+            if (hasZoneCards && existingCards === zoneCount && !singleZoneMismatch) {
+              applyDashboardSnapshot(data, { preserveLayout: true });
             } else {
-              zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode)).join("");
+              zoneCards.innerHTML = data.zones.map((zone) => renderZoneCard(zone, mode, singleZone)).join("");
               zoneCards.querySelectorAll(".zone-control-card").forEach(initZoneCard);
+              applyDashboardSnapshot(data, { preserveLayout: true });
             }
+          } else {
+            applyDashboardSnapshot(data, { preserveLayout: true });
           }
         } catch (error) {
-          pill.className = "status-pill error";
-          pill.textContent = "Error";
+          if (pill) {
+            pill.className = "status-pill error";
+            pill.textContent = "Error";
+          }
           if (!options.soft) {
             systemCards.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + '</p></div>';
             zoneCards.innerHTML = "";
           }
+        } finally {
+          dashboardFetchInFlight = false;
         }
       }
+      initDashboardRefreshButton();
       loadDashboard();
-      setInterval(() => loadDashboard(), 15000);
+      setInterval(() => loadDashboard({ soft: true, auto: true }), 15000);
+    </script>
+  `;
+}
+
+function weatherContent(): string {
+  return `
+    <div class="toolbar">
+      <div>
+        <h2>Weather</h2>
+        <p class="toolbar-meta" id="weather-system-label">Loading system…</p>
+      </div>
+      <button type="button" class="secondary" id="weather-refresh">Refresh</button>
+    </div>
+    <div id="weather-content" class="weather-grid">
+      <div class="card"><p class="muted">Loading outdoor temperature…</p></div>
+    </div>
+    <script>
+      const SUN_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>';
+      const REFRESH_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function renderOutdoorCard(system) {
+        const outdoor = system.outdoor_temp_display ?? system.outdoor_temp ?? "—";
+        const hasTemp = outdoor !== "—";
+        return (
+          '<div class="card weather-hero-card" id="outdoor-card">' +
+          '<div class="maintenance-item-header">' +
+          SUN_ICON +
+          "<h3>Outside temperature</h3>" +
+          '<button type="button" class="tile-refresh" data-refresh="outdoor" aria-label="Refresh outdoor temperature">' +
+          REFRESH_ICON +
+          "</button>" +
+          "</div>" +
+          '<div class="weather-row">' +
+          '<div class="weather-icon-wrap" aria-hidden="true">' +
+          SUN_ICON +
+          "</div>" +
+          "<div>" +
+          '<div class="temp-display" data-outdoor-value>' +
+          escapeHtml(String(outdoor)) +
+          (hasTemp ? '<span class="temp-unit">°F</span>' : "") +
+          "</div>" +
+          '<span class="weather-caption">From your thermostat outdoor sensor</span>' +
+          "</div>" +
+          "</div>" +
+          "</div>"
+        );
+      }
+
+      function syncOutdoorCard(system) {
+        const outdoor = system.outdoor_temp_display ?? system.outdoor_temp ?? "—";
+        const hasTemp = outdoor !== "—";
+        const display = document.querySelector("[data-outdoor-value]");
+        if (display) {
+          display.innerHTML = escapeHtml(String(outdoor)) + (hasTemp ? '<span class="temp-unit">°F</span>' : "");
+        }
+      }
+
+      function renderWeather(data) {
+        const root = document.getElementById("weather-content");
+        const label = document.getElementById("weather-system-label");
+        if (!root) return;
+
+        if (!data.configured) {
+          if (label) label.textContent = "Connect your Carrier account to view weather.";
+          root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
+          return;
+        }
+
+        if (label) {
+          label.innerHTML = data.system
+            ? "Outdoor reading for <strong>" + escapeHtml(data.system.name) + "</strong>"
+            : "No system selected";
+        }
+
+        if (data.error && !data.system) {
+          root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
+          return;
+        }
+
+        if (!data.system) {
+          root.innerHTML = '<div class="card"><p class="muted">No system selected.</p></div>';
+          return;
+        }
+
+        root.innerHTML = renderOutdoorCard(data.system);
+        const refreshButton = root.querySelector("[data-refresh='outdoor']");
+        if (refreshButton) {
+          refreshButton.addEventListener("click", async () => {
+            refreshButton.disabled = true;
+            refreshButton.classList.add("spinning");
+            try {
+              const res = await fetch("/api/status?refresh=1");
+              const fresh = await res.json();
+              if (fresh.system) syncOutdoorCard(fresh.system);
+            } finally {
+              refreshButton.disabled = false;
+              refreshButton.classList.remove("spinning");
+            }
+          });
+        }
+      }
+
+      async function loadWeather(force) {
+        const button = document.getElementById("weather-refresh");
+        if (button) button.disabled = true;
+        try {
+          const suffix = force ? "?refresh=1" : "";
+          const res = await fetch("/api/status" + suffix);
+          const data = await res.json();
+          renderWeather(data);
+        } catch (error) {
+          const root = document.getElementById("weather-content");
+          if (root) {
+            root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
+          }
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      document.getElementById("weather-refresh")?.addEventListener("click", () => loadWeather(true));
+      loadWeather(false);
+      setInterval(() => loadWeather(false), 60000);
+    </script>
+  `;
+}
+
+function maintenanceContent(): string {
+  return `
+    <div class="toolbar">
+      <div>
+        <h2>Maintenance</h2>
+        <p class="toolbar-meta" id="maintenance-system-label">Loading system…</p>
+      </div>
+      <button type="button" class="secondary" id="maintenance-refresh">Refresh</button>
+    </div>
+    <div id="maintenance-content" class="maintenance-grid">
+      <div class="card"><p class="muted">Loading maintenance data…</p></div>
+    </div>
+    <script>
+      const FILTER_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>';
+      const CONDENSATE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3c4 6 7 8.5 7 12a7 7 0 1 1-14 0c0-3.5 3-6 7-12z"/></svg>';
+      const REFRESH_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function filterLifeClass(remaining) {
+        const value = Number(remaining);
+        if (!Number.isFinite(value)) return "";
+        if (value <= 10) return " critical";
+        if (value <= 25) return " low";
+        return "";
+      }
+
+      function filterStatusHint(remaining) {
+        const value = Number(remaining);
+        if (!Number.isFinite(value)) return "Filter life is reported by your thermostat.";
+        if (value <= 10) return "Replace the filter soon.";
+        if (value <= 25) return "Plan a filter replacement.";
+        return "Filter life looks good.";
+      }
+
+      function renderFilterCard(system) {
+        const remaining = system.filter_remaining;
+        const hasLife = Number.isFinite(Number(remaining));
+        const width = hasLife ? Math.max(0, Math.min(100, Number(remaining))) : 0;
+        const valueText = hasLife ? remaining + "% left" : "—";
+        const filterType = system.filter_type ? escapeHtml(system.filter_type) : "Air filter";
+        const interval = Number(system.filter_interval);
+        const intervalText = Number.isFinite(interval) && interval > 0
+          ? "Replacement interval: " + interval + " days"
+          : "";
+
+        return (
+          '<div class="card" id="filter-card">' +
+          '<div class="maintenance-item-header">' +
+          FILTER_ICON +
+          "<h3>" + filterType + "</h3>" +
+          '<button type="button" class="tile-refresh" data-refresh="filter" aria-label="Refresh filter life">' +
+          REFRESH_ICON +
+          "</button>" +
+          "</div>" +
+          '<div class="maintenance-value' + filterLifeClass(remaining) + '" data-filter-value>' +
+          escapeHtml(valueText) +
+          "</div>" +
+          '<div class="filter-bar-track"><span class="filter-bar-fill" data-filter-bar style="width:' + width + '%"></span></div>' +
+          '<p class="maintenance-detail" data-filter-hint>' + escapeHtml(filterStatusHint(remaining)) + "</p>" +
+          (intervalText ? '<p class="maintenance-detail">' + escapeHtml(intervalText) + "</p>" : "") +
+          "</div>"
+        );
+      }
+
+      function syncFilterCard(system) {
+        const remaining = system.filter_remaining;
+        const hasLife = Number.isFinite(Number(remaining));
+        const width = hasLife ? Math.max(0, Math.min(100, Number(remaining))) : 0;
+        const value = document.querySelector("[data-filter-value]");
+        const bar = document.querySelector("[data-filter-bar]");
+        const hint = document.querySelector("[data-filter-hint]");
+        if (value) {
+          value.textContent = hasLife ? remaining + "% left" : "—";
+          value.className = "maintenance-value" + filterLifeClass(remaining);
+        }
+        if (bar) bar.style.width = width + "%";
+        if (hint) hint.textContent = filterStatusHint(remaining);
+      }
+
+      function formatDateLabel(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return "";
+        return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+      }
+
+      function condensateLifeClass(condensate) {
+        if (!condensate) return "";
+        if (condensate.status === "overdue" || condensate.status === "unknown") return " critical";
+        if (condensate.status === "due_soon") return " low";
+        return "";
+      }
+
+      function condensateBarWidth(condensate) {
+        if (!condensate || condensate.status === "unknown") return 0;
+        const interval = Number(condensate.interval_days) || 30;
+        const remaining = Number(condensate.days_remaining);
+        if (!Number.isFinite(remaining)) return 0;
+        return Math.max(0, Math.min(100, (remaining / interval) * 100));
+      }
+
+      function condensateValueText(condensate) {
+        if (!condensate || condensate.status === "unknown") return "Due now";
+        if (condensate.status === "overdue") {
+          const overdue = Number(condensate.days_overdue) || 0;
+          return overdue + " day" + (overdue === 1 ? "" : "s") + " overdue";
+        }
+        const remaining = Number(condensate.days_remaining);
+        return remaining + " day" + (remaining === 1 ? "" : "s") + " left";
+      }
+
+      function condensateStatusHint(condensate) {
+        if (!condensate || condensate.status === "unknown") {
+          return "Clear the condensate line, then mark it cleared to start the 30-day timer.";
+        }
+        if (condensate.status === "overdue") return "Clear the condensate drain line.";
+        if (condensate.status === "due_soon") return "Plan to clear the condensate line soon.";
+        const nextDue = formatDateLabel(condensate.next_due_at);
+        return nextDue ? "Next due " + nextDue + "." : "On schedule.";
+      }
+
+      function renderCondensateCard(condensate) {
+        const width = condensateBarWidth(condensate);
+        const lastCleared = formatDateLabel(condensate?.last_cleared_at);
+        const lastClearedText = lastCleared ? "Last cleared " + lastCleared + "." : "";
+
+        return (
+          '<div class="card" id="condensate-card">' +
+          '<div class="maintenance-item-header">' +
+          CONDENSATE_ICON +
+          "<h3>Clear condensate line</h3>" +
+          "</div>" +
+          '<div class="maintenance-value' + condensateLifeClass(condensate) + '" data-condensate-value>' +
+          escapeHtml(condensateValueText(condensate)) +
+          "</div>" +
+          '<div class="filter-bar-track"><span class="filter-bar-fill" data-condensate-bar style="width:' + width + '%"></span></div>' +
+          '<p class="maintenance-detail" data-condensate-hint>' + escapeHtml(condensateStatusHint(condensate)) + "</p>" +
+          '<p class="maintenance-detail">Every ' + escapeHtml(String(condensate?.interval_days || 30)) + " days." +
+          (lastClearedText ? " " + escapeHtml(lastClearedText) : "") +
+          "</p>" +
+          '<div class="maintenance-actions">' +
+          '<button type="button" class="secondary" data-condensate-clear>Mark cleared today</button>' +
+          "</div>" +
+          '<div class="message" data-condensate-message></div>' +
+          "</div>"
+        );
+      }
+
+      function bindCondensateActions(onUpdated) {
+        const button = document.querySelector("[data-condensate-clear]");
+        const message = document.querySelector("[data-condensate-message]");
+        if (!button || button.dataset.initialized === "true") return;
+        button.dataset.initialized = "true";
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          if (message) {
+            message.className = "message";
+            message.textContent = "";
+          }
+          try {
+            const res = await fetch("/api/maintenance/condensate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}",
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Could not save condensate maintenance.");
+            if (message) {
+              message.className = "message success";
+              message.textContent = "Logged. Next reminder in 30 days.";
+            }
+            await onUpdated();
+          } catch (error) {
+            if (message) {
+              message.className = "message error";
+              message.textContent = String(error);
+            }
+          } finally {
+            button.disabled = false;
+          }
+        });
+      }
+
+      function renderMaintenance(data) {
+        const root = document.getElementById("maintenance-content");
+        const label = document.getElementById("maintenance-system-label");
+        if (!root) return;
+
+        if (!data.configured) {
+          if (label) label.textContent = "Connect your Carrier account to view maintenance.";
+          root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
+          return;
+        }
+
+        if (label) {
+          label.innerHTML = data.system
+            ? "Maintenance for <strong>" + escapeHtml(data.system.name) + "</strong>"
+            : "No system selected";
+        }
+
+        if (data.error && !data.system) {
+          root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
+          return;
+        }
+
+        if (!data.system) {
+          root.innerHTML = '<div class="card"><p class="muted">No system selected.</p></div>';
+          return;
+        }
+
+        root.innerHTML = renderFilterCard(data.system) + renderCondensateCard(data.condensate);
+        const refreshButton = root.querySelector("[data-refresh='filter']");
+        if (refreshButton) {
+          refreshButton.addEventListener("click", async () => {
+            refreshButton.disabled = true;
+            refreshButton.classList.add("spinning");
+            try {
+              const res = await fetch("/api/maintenance?refresh=1");
+              const fresh = await res.json();
+              if (fresh.system) syncFilterCard(fresh.system);
+            } finally {
+              refreshButton.disabled = false;
+              refreshButton.classList.remove("spinning");
+            }
+          });
+        }
+        bindCondensateActions(() => loadMaintenance(false));
+      }
+
+      async function loadMaintenance(force) {
+        const button = document.getElementById("maintenance-refresh");
+        if (button) button.disabled = true;
+        try {
+          const suffix = force ? "?refresh=1" : "";
+          const res = await fetch("/api/maintenance" + suffix);
+          const data = await res.json();
+          renderMaintenance(data);
+        } catch (error) {
+          const root = document.getElementById("maintenance-content");
+          if (root) {
+            root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
+          }
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      document.getElementById("maintenance-refresh")?.addEventListener("click", () => loadMaintenance(true));
+      loadMaintenance(false);
+      setInterval(() => loadMaintenance(false), 60000);
+    </script>
+  `;
+}
+
+function scheduleContent(): string {
+  return `
+    <div class="toolbar">
+      <div>
+        <h2>Weekly schedule</h2>
+        <p class="toolbar-meta" id="schedule-system-label">Loading system…</p>
+      </div>
+      <button type="button" class="secondary" id="schedule-refresh">Refresh</button>
+    </div>
+    <div id="schedule-content" class="schedule-grid">
+      <div class="card"><p class="muted">Loading schedules…</p></div>
+    </div>
+    <script>
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function formatTimeLabel(time) {
+        const parts = String(time || "").split(":");
+        const hours = Number.parseInt(parts[0], 10);
+        const minutes = Number.parseInt(parts[1], 10);
+        if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return time || "—";
+        const date = new Date();
+        date.setHours(hours, minutes, 0, 0);
+        return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      }
+
+      function currentPeriodIndex(periods, nowMinutes) {
+        let index = -1;
+        for (let i = 0; i < periods.length; i += 1) {
+          if (periods[i].time_minutes <= nowMinutes) index = i;
+        }
+        return index;
+      }
+
+      function renderSetpoints(period) {
+        const heat = period.heat_setpoint_display;
+        const cool = period.cool_setpoint_display;
+        if (!heat && !cool) return "";
+        const parts = [];
+        if (heat) parts.push(heat + "° heat");
+        if (cool) parts.push(cool + "° cool");
+        return '<span class="schedule-period-setpoints">' + escapeHtml(parts.join(" · ")) + "</span>";
+      }
+
+      function renderPeriodPill(period, isCurrent) {
+        const activityClass = period.activity ? " activity-" + period.activity : "";
+        return (
+          '<span class="schedule-period-pill' +
+          activityClass +
+          (isCurrent ? " current" : "") +
+          '">' +
+          '<span class="schedule-period-time">' +
+          escapeHtml(formatTimeLabel(period.time)) +
+          "</span>" +
+          '<span class="schedule-period-activity">' +
+          escapeHtml(period.activity_label) +
+          "</span>" +
+          renderSetpoints(period) +
+          "</span>"
+        );
+      }
+
+      function renderScheduleZone(zone, singleZone) {
+        const now = new Date();
+        const todayId = now.getDay();
+        const nowMinutes = now.getHours() * 60 + now.getMinutes();
+        const statusText = zone.hold
+          ? "On hold: <strong>" + escapeHtml(zone.current_activity_label || "Manual") + "</strong>"
+          : "Running: <strong>" + escapeHtml(zone.current_activity_label || "—") + "</strong>";
+
+        const rows = (zone.days || [])
+          .map((day) => {
+            const isToday = day.day_id === todayId;
+            const periods = day.periods || [];
+            const currentIndex = isToday ? currentPeriodIndex(periods, nowMinutes) : -1;
+            const periodHtml = periods.length
+              ? '<div class="schedule-periods">' +
+                periods
+                  .map((period, index) => renderPeriodPill(period, index === currentIndex))
+                  .join("") +
+                "</div>"
+              : '<span class="schedule-empty">No periods</span>';
+            return (
+              "<tr" +
+              (isToday ? ' class="today"' : "") +
+              ">" +
+              '<td class="schedule-day-name">' +
+              escapeHtml(day.day_name) +
+              (isToday ? " (today)" : "") +
+              "</td>" +
+              "<td>" +
+              periodHtml +
+              "</td>" +
+              "</tr>"
+            );
+          })
+          .join("");
+
+        const metaHtml = singleZone
+          ? ""
+          : '<p class="schedule-zone-meta">' + statusText + "</p>";
+        return (
+          '<div class="card schedule-zone-card' +
+          (singleZone ? " single-zone" : "") +
+          '">' +
+          (singleZone ? "" : "<h3>" + escapeHtml(zone.name) + "</h3>") +
+          metaHtml +
+          '<table class="schedule-table"><thead><tr><th>Day</th><th>Program</th></tr></thead><tbody>' +
+          rows +
+          "</tbody></table>" +
+          "</div>"
+        );
+      }
+
+      function renderSchedule(data) {
+        const root = document.getElementById("schedule-content");
+        const label = document.getElementById("schedule-system-label");
+        if (!root) return;
+
+        if (!data.configured) {
+          if (label) label.textContent = "Connect your Carrier account to view schedules.";
+          root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
+          return;
+        }
+
+        const singleZone = data.zones.length === 1;
+        const loneZone = singleZone ? data.zones[0] : null;
+        if (label) {
+          if (!data.system) {
+            label.textContent = "No system selected";
+          } else if (singleZone && loneZone) {
+            const statusText = loneZone.hold
+              ? "On hold: <strong>" + escapeHtml(loneZone.current_activity_label || "Manual") + "</strong>"
+              : "Running: <strong>" + escapeHtml(loneZone.current_activity_label || "—") + "</strong>";
+            label.innerHTML =
+              "Showing schedule for <strong>" +
+              escapeHtml(data.system.name) +
+              "</strong> · " +
+              statusText;
+          } else {
+            label.innerHTML =
+              "Showing schedule for <strong>" + escapeHtml(data.system.name) + "</strong>";
+          }
+        }
+
+        if (data.error && !data.zones.length) {
+          root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
+          return;
+        }
+
+        if (!data.zones.length) {
+          root.innerHTML = '<div class="card"><p class="schedule-empty">No schedule data available.</p></div>';
+          return;
+        }
+
+        root.innerHTML = data.zones.map((zone) => renderScheduleZone(zone, singleZone)).join("");
+      }
+
+      async function loadSchedule(force) {
+        const button = document.getElementById("schedule-refresh");
+        if (button) button.disabled = true;
+        try {
+          const suffix = force ? "?refresh=1" : "";
+          const res = await fetch("/api/schedule" + suffix);
+          const data = await res.json();
+          renderSchedule(data);
+        } catch (error) {
+          const root = document.getElementById("schedule-content");
+          if (root) {
+            root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
+          }
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      document.getElementById("schedule-refresh")?.addEventListener("click", () => loadSchedule(true));
+      loadSchedule(false);
+      setInterval(() => loadSchedule(false), 60000);
     </script>
   `;
 }
@@ -2672,30 +4130,64 @@ function settingsContent(settings: PublicSettings): string {
         event.preventDefault();
         const message = document.getElementById("settings-message");
         const form = event.target;
-        const res = await fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            system_name: form.system_name.value.trim(),
-            system_serial: form.system_serial.value.trim(),
-            username: form.username.value.trim(),
-            password: form.password.value,
-          }),
-        });
-        const data = await res.json();
-        message.className = "message " + (res.ok ? "success" : "error");
-        message.textContent = res.ok ? "Saved." : (data.error || "Could not save settings.");
-        if (res.ok) setTimeout(() => location.reload(), 500);
+        const button = form.querySelector('button[type="submit"]');
+        if (!hvacSetButtonPending(button, "Saving…")) return;
+        message.className = "message";
+        message.textContent = "Updating settings…";
+        try {
+          const res = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              system_name: form.system_name.value.trim(),
+              system_serial: form.system_serial.value.trim(),
+              username: form.username.value.trim(),
+              password: form.password.value,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            hvacSetButtonSuccess(button, "Saved!");
+            message.className = "message success";
+            message.textContent = "Settings saved. Reloading…";
+            window.setTimeout(() => location.reload(), 700);
+            return;
+          }
+          hvacSetButtonError(button, "Try again");
+          message.className = "message error";
+          message.textContent = data.error || "Could not save settings.";
+        } catch (error) {
+          hvacSetButtonError(button, "Try again");
+          message.className = "message error";
+          message.textContent = String(error);
+        }
       });
       document.getElementById("clear-credentials").addEventListener("click", async () => {
         const message = document.getElementById("settings-message");
-        const res = await fetch("/api/settings", {
-          method: "DELETE",
-        });
-        const data = await res.json();
-        message.className = "message " + (res.ok ? "success" : "error");
-        message.textContent = res.ok ? "Signed out." : (data.error || "Could not clear credentials.");
-        if (res.ok) window.location.href = "/setup";
+        const button = document.getElementById("clear-credentials");
+        if (!hvacSetButtonPending(button, "Signing out…")) return;
+        message.className = "message";
+        message.textContent = "Clearing saved credentials…";
+        try {
+          const res = await fetch("/api/settings", {
+            method: "DELETE",
+          });
+          const data = await res.json();
+          if (res.ok) {
+            hvacSetButtonSuccess(button, "Signed out");
+            message.className = "message success";
+            message.textContent = "Signed out. Redirecting…";
+            window.setTimeout(() => { window.location.href = "/setup"; }, 700);
+            return;
+          }
+          hvacSetButtonError(button, "Try again");
+          message.className = "message error";
+          message.textContent = data.error || "Could not clear credentials.";
+        } catch (error) {
+          hvacSetButtonError(button, "Try again");
+          message.className = "message error";
+          message.textContent = String(error);
+        }
       });
     </script>
   `;
@@ -2730,6 +4222,8 @@ async function handleApi(
       carrier,
       local_endpoints: {
         status: "GET /api/status",
+        schedule: "GET /api/schedule",
+        maintenance: "GET /api/maintenance",
         settings: "GET /api/settings",
         health: "GET /health",
         mode: "POST /api/mode",
@@ -2751,6 +4245,74 @@ async function handleApi(
     sendJson(res, 200, {
       ...snapshot,
       settings: publicSettings(settings),
+    });
+    return;
+  }
+
+  if (route === "/api/schedule" && req.method === "GET") {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const forceRefresh = url.searchParams.get("refresh") === "1";
+    const needsRefresh =
+      forceRefresh ||
+      !lastSyncAt ||
+      Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS;
+    await refreshCloudData(settings, needsRefresh);
+    sendJson(res, 200, buildScheduleSnapshot(settings));
+    return;
+  }
+
+  if (route === "/api/maintenance" && req.method === "GET") {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const forceRefresh = url.searchParams.get("refresh") === "1";
+    const needsRefresh =
+      forceRefresh ||
+      !lastSyncAt ||
+      Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS;
+    await refreshCloudData(settings, needsRefresh);
+    sendJson(res, 200, await buildMaintenanceSnapshot(settings));
+    return;
+  }
+
+  if (route === "/api/maintenance/condensate" && req.method === "POST") {
+    if (!isConfigured(settings)) {
+      sendJson(res, 400, { error: "Account not configured" });
+      return;
+    }
+    const system = selectSystem(settings, cachedSystems);
+    const serial = system?.profile.serial ?? settings.system_serial;
+    if (!serial) {
+      sendJson(res, 400, { error: "No system selected" });
+      return;
+    }
+
+    let clearedAt = new Date().toISOString();
+    try {
+      const bodyText = (await readBody(req)).toString("utf8").trim();
+      if (bodyText) {
+        const body = JSON.parse(bodyText) as { cleared_at?: string };
+        if (body.cleared_at) {
+          const parsed = new Date(body.cleared_at);
+          if (Number.isNaN(parsed.getTime())) {
+            sendJson(res, 400, { error: "Invalid cleared_at timestamp" });
+            return;
+          }
+          clearedAt = parsed.toISOString();
+        }
+      }
+    } catch {
+      sendJson(res, 400, { error: "Invalid request body" });
+      return;
+    }
+
+    const store = await loadMaintenanceStore();
+    store.systems[serial] = {
+      ...(store.systems[serial] ?? { condensate_cleared_at: null }),
+      condensate_cleared_at: clearedAt,
+    };
+    await saveMaintenanceStore(store);
+    sendJson(res, 200, {
+      ok: true,
+      condensate: buildCondensateView(serial, store),
     });
     return;
   }
@@ -2893,10 +4455,16 @@ async function handleApi(
       const cool = body.cool_setpoint !== undefined && body.cool_setpoint !== "" ? String(body.cool_setpoint) : null;
       const fan = body.fan?.trim().toLowerCase();
 
-      if (heat || cool || (fan && fan !== "auto")) {
+      if (heat || cool) {
         const manual = findManualActivity(system, zoneId);
-        const heatSetpoint = heat ?? String(manual?.htsp ?? statusZone?.htsp ?? 68);
-        const coolSetpoint = cool ?? String(manual?.clsp ?? statusZone?.clsp ?? 74);
+        const heatSetpoint = formatCarrierSetpoint(
+          heat ?? manual?.htsp ?? statusZone?.htsp,
+          68,
+        );
+        const coolSetpoint = formatCarrierSetpoint(
+          cool ?? manual?.clsp ?? statusZone?.clsp,
+          74,
+        );
         let fanMode: FanMode | undefined;
         if (fan === "auto" || fan === "on") {
           fanMode = "off";
@@ -2908,15 +4476,52 @@ async function handleApi(
 
         await client.setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode);
         await client.setHold(serial, zoneId, "manual", null);
-      } else if (fan === "auto" || fan === "low" || fan === "med" || fan === "high") {
-        const configZone = findConfigZoneById(system, zoneId);
-        const activityType = (configZone?.holdActivity || statusZone?.currentActivity || "home") as ActivityType;
+      } else if (fan) {
+        await refreshCloudData(settings, true);
+        const beforeZone =
+          buildSnapshot(settings).zones.find((item) => zoneIdsMatch(item.id, zoneId)) ?? null;
+        const beforeFan = beforeZone?.fan ?? null;
+        const freshSystem = selectSystem(settings, cachedSystems);
+        const freshStatus = findStatusZone(freshSystem ?? system, zoneId);
+        const configZone = findConfigZoneById(freshSystem ?? system, zoneId);
+        const manual = findManualActivity(freshSystem ?? system, zoneId);
+        const setpoints = resolveZoneSetpoints(freshStatus, configZone);
         const fanMode: FanMode = fan === "auto" ? "off" : (fan as FanMode);
-        await client.updateFan(serial, zoneId, activityType, fanMode);
+        const heatSetpoint = formatCarrierSetpoint(
+          freshStatus?.htsp ?? setpoints.heat ?? manual?.htsp,
+          68,
+        );
+        const coolSetpoint = formatCarrierSetpoint(
+          freshStatus?.clsp ?? setpoints.cool ?? manual?.clsp,
+          74,
+        );
+        const onManualHold =
+          configZone?.hold === "on" &&
+          (configZone?.holdActivity === "manual" || freshStatus?.currentActivity === "manual");
+
+        if (onManualHold) {
+          await client.updateFan(serial, zoneId, "manual", fanMode);
+        } else {
+          await client.setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode);
+          await sleep(400);
+          await client.setHold(serial, zoneId, "manual", null);
+        }
+
+        const zone = await waitForCloudZoneFan(settings, zoneId, fan, beforeFan);
+        if (!zone) {
+          sendJson(res, 502, {
+            error: "Blower speed change did not reach the thermostat yet. Wait a few seconds and refresh.",
+          });
+          return;
+        }
+        sendJson(res, 200, { ok: true, zone });
+        return;
       }
 
       await refreshCloudData(settings, true);
-      sendJson(res, 200, { ok: true });
+      const snapshot = buildSnapshot(settings);
+      const zone = snapshot.zones.find((item) => zoneIdsMatch(item.id, zoneId)) ?? null;
+      sendJson(res, 200, { ok: true, zone });
     } catch (error) {
       sendJson(res, 502, {
         error: error instanceof Error ? error.message : "Zone update failed",
@@ -2972,6 +4577,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (route === "/weather") {
+    sendText(res, 200, "text/html; charset=utf-8", renderPage("weather", weatherContent()));
+    return;
+  }
+
+  if (route === "/schedule") {
+    sendText(res, 200, "text/html; charset=utf-8", renderPage("schedule", scheduleContent()));
+    return;
+  }
+
+  if (route === "/maintenance") {
+    sendText(res, 200, "text/html; charset=utf-8", renderPage("maintenance", maintenanceContent()));
+    return;
+  }
+
   if (route === "/api") {
     sendText(res, 200, "text/html; charset=utf-8", renderPage("api", apiExplorerContent()));
     return;
@@ -2986,7 +4606,11 @@ createServer((req, res) => {
     sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
   });
 }).listen(port, "0.0.0.0", () => {
-  console.log(`Bryant/Carrier HVAC v${APP_VERSION} listening on :${port}`);
+  const mode = IS_LOCAL_DEV ? "LOCAL DEV" : "production";
+  console.log(`Bryant/Carrier HVAC v${APP_VERSION} [${mode}] listening on http://localhost:${port}`);
+  if (IS_LOCAL_DEV) {
+    console.log(`  data dir: ${DATA_ROOT}`);
+  }
   void loadSettings().then((settings) => {
     ensurePolling(settings);
     if (isConfigured(settings)) {

@@ -1,14 +1,16 @@
 {
   "name": "wolverineks-hvac",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.4.1",
   "scripts": {
     "build": "tsc && cp dist/server.js server.js && cp dist/carrier-api.js carrier-api.js",
     "start": "node server.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "dev:local": "HVAC_DEV=1 HVAC_DATA_DIR=./.local-data PORT=4040 tsx watch server.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
+    "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }
 }

@@ -319,7 +319,7 @@ class CarrierApiClient {
         updateInfinityConfig(input: $input) { etag }
       }`, { input: { serial, mode } });
     }
-    async setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode) {
+    async setManualActivity(serial, zoneId, heatSetpoint, coolSetpoint, fanMode, etag) {
         const input = {
             serial,
             zoneId,
@@ -329,47 +329,44 @@ class CarrierApiClient {
         };
         if (fanMode)
             input.fan = fanMode;
-        await this.mutate("updateInfinityZoneActivity", `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
+        return this.mutateForEtag("updateInfinityZoneActivity", `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
         updateInfinityZoneActivity(input: $input) { etag }
-      }`, { input });
+      }`, { input }, "updateInfinityZoneActivity");
     }
-    async setHold(serial, zoneId, activityType, holdUntil = null) {
-        await this.mutate("updateInfinityZoneConfig", `mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
+    async setHold(serial, zoneId, activityType, holdUntil = null, etag) {
+        const input = {
+            serial,
+            zoneId,
+            hold: "on",
+            holdActivity: activityType,
+            otmr: holdUntil,
+        };
+        return this.mutateForEtag("updateInfinityZoneConfig", `mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
         updateInfinityZoneConfig(input: $input) { etag }
-      }`, {
-            input: {
-                serial,
-                zoneId,
-                hold: "on",
-                holdActivity: activityType,
-                otmr: holdUntil,
-            },
-        });
+      }`, { input }, "updateInfinityZoneConfig");
     }
-    async resumeSchedule(serial, zoneId) {
-        await this.mutate("updateInfinityZoneConfig", `mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
+    async resumeSchedule(serial, zoneId, _etag) {
+        const input = {
+            serial,
+            zoneId,
+            hold: "off",
+            holdActivity: null,
+            otmr: null,
+        };
+        return this.mutateForEtag("updateInfinityZoneConfig", `mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
         updateInfinityZoneConfig(input: $input) { etag }
-      }`, {
-            input: {
-                serial,
-                zoneId,
-                hold: "off",
-                holdActivity: null,
-                otmr: null,
-            },
-        });
+      }`, { input }, "updateInfinityZoneConfig");
     }
-    async updateFan(serial, zoneId, activityType, fanMode) {
-        await this.mutate("updateInfinityZoneActivity", `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
+    async updateFan(serial, zoneId, activityType, fanMode, etag) {
+        const input = {
+            serial,
+            zoneId,
+            activityType,
+            fan: fanMode,
+        };
+        return this.mutateForEtag("updateInfinityZoneActivity", `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
         updateInfinityZoneActivity(input: $input) { etag }
-      }`, {
-            input: {
-                serial,
-                zoneId,
-                activityType,
-                fan: fanMode,
-            },
-        });
+      }`, { input }, "updateInfinityZoneActivity");
     }
     async ensureLoggedIn() {
         if (!this.tokens) {
@@ -449,6 +446,12 @@ class CarrierApiClient {
         await this.ensureLoggedIn();
         await this.authedGraphql(operationName, query, variables);
     }
+    async mutateForEtag(operationName, query, variables, resultKey) {
+        await this.ensureLoggedIn();
+        const data = await this.authedGraphql(operationName, query, variables);
+        const etag = data[resultKey]?.etag;
+        return typeof etag === "string" && etag.length ? etag : null;
+    }
     async authedGraphql(operationName, query, variables) {
         if (!this.tokens) {
             throw new CarrierAuthError("Not authenticated");
@@ -514,6 +517,8 @@ class CarrierApiClient {
             config: {
                 etag: nullableString(config.etag),
                 mode: nullableString(config.mode),
+                filterType: nullableString(config.filtertype),
+                filterInterval: asNumber(config.filterinterval),
                 zones: normalizeConfigZones(config.zones),
             },
         };
@@ -587,8 +592,39 @@ function normalizeConfigZones(value) {
             holdActivity: nullableString(record.holdActivity),
             otmr: nullableString(record.otmr),
             activities,
+            program: normalizeZoneProgram(record.program),
         };
     });
+}
+function normalizeZoneProgram(value) {
+    if (!value || typeof value !== "object")
+        return null;
+    const record = value;
+    const days = Array.isArray(record.day)
+        ? record.day.map((day) => {
+            const dayRecord = day;
+            const periods = Array.isArray(dayRecord.period)
+                ? dayRecord.period.map((period) => {
+                    const periodRecord = period;
+                    return {
+                        id: asString(periodRecord.id),
+                        dayId: asNumber(periodRecord.dayId) ?? 0,
+                        activity: asString(periodRecord.activity),
+                        time: asString(periodRecord.time),
+                        enabled: nullableString(periodRecord.enabled) === "on",
+                    };
+                })
+                : [];
+            return {
+                id: asNumber(dayRecord.id) ?? 0,
+                periods,
+            };
+        })
+        : [];
+    return {
+        id: asString(record.id),
+        days,
+    };
 }
 function zoneIdsMatch(left, right) {
     if (left === undefined || left === null || right === undefined || right === null)
