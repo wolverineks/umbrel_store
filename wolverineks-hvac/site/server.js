@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.4.2";
+const APP_VERSION = "2.4.3";
 const IS_LOCAL_DEV = process.env.HVAC_DEV === "1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
@@ -17,6 +17,7 @@ const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const POLL_INTERVAL_MS = IS_LOCAL_DEV ? 10_000 : 30_000;
 const STATUS_CACHE_MS = IS_LOCAL_DEV ? 3_000 : 15_000;
 const SCHEDULE_DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const ACTIVITY_DISPLAY_ORDER = ["home", "wake", "sleep", "away", "vacation", "manual"];
 const CONDENSATE_INTERVAL_DAYS = 30;
 const DEFAULT_SETTINGS = {
     system_name: "Home HVAC",
@@ -488,6 +489,89 @@ function mapScheduleZones(system) {
     }
     return zones;
 }
+function mapActivityZones(system) {
+    const cfgem = system.status.cfgem;
+    const zones = [];
+    for (const configZone of system.config.zones) {
+        const statusZone = findStatusZone(system, configZone.id);
+        if (!isZoneEnabled(configZone, statusZone))
+            continue;
+        const onHold = configZone.hold === "on" || statusZone?.hold === "on";
+        const heldActivity = configZone.holdActivity ?? (onHold ? statusZone?.currentActivity ?? null : null);
+        const currentActivity = statusZone?.currentActivity ?? null;
+        const activityByType = new Map(configZone.activities.map((activity) => [activity.type, activity]));
+        const activities = [];
+        for (const type of ACTIVITY_DISPLAY_ORDER) {
+            const activity = activityByType.get(type);
+            if (!activity)
+                continue;
+            activities.push({
+                type,
+                label: formatActivityLabel(type),
+                heat_setpoint_display: (0, carrier_api_1.formatFahrenheit)(activity.htsp, cfgem),
+                cool_setpoint_display: (0, carrier_api_1.formatFahrenheit)(activity.clsp, cfgem),
+                heat_setpoint: (0, carrier_api_1.toFahrenheit)(activity.htsp, cfgem),
+                cool_setpoint: (0, carrier_api_1.toFahrenheit)(activity.clsp, cfgem),
+                fan: normalizeFanMode(activity.fan),
+                fan_label: formatFanSettingLabel(activity.fan),
+                is_current: onHold ? type === heldActivity : type === currentActivity,
+                is_held: onHold && type === heldActivity,
+            });
+        }
+        for (const activity of configZone.activities) {
+            if (ACTIVITY_DISPLAY_ORDER.includes(activity.type))
+                continue;
+            activities.push({
+                type: activity.type,
+                label: formatActivityLabel(activity.type),
+                heat_setpoint_display: (0, carrier_api_1.formatFahrenheit)(activity.htsp, cfgem),
+                cool_setpoint_display: (0, carrier_api_1.formatFahrenheit)(activity.clsp, cfgem),
+                heat_setpoint: (0, carrier_api_1.toFahrenheit)(activity.htsp, cfgem),
+                cool_setpoint: (0, carrier_api_1.toFahrenheit)(activity.clsp, cfgem),
+                fan: normalizeFanMode(activity.fan),
+                fan_label: formatFanSettingLabel(activity.fan),
+                is_current: onHold ? activity.type === heldActivity : activity.type === currentActivity,
+                is_held: onHold && activity.type === heldActivity,
+            });
+        }
+        zones.push({
+            id: configZone.id,
+            name: configZone.name,
+            hold: onHold,
+            current_activity: onHold ? heldActivity : currentActivity,
+            current_activity_label: formatActivityLabel(onHold ? heldActivity : currentActivity),
+            activities,
+        });
+    }
+    return zones;
+}
+function buildActivitiesSnapshot(settings) {
+    const system = selectSystem(settings, cachedSystems);
+    return {
+        connected: Boolean(system && !system.status.isDisconnected),
+        configured: isConfigured(settings),
+        error: lastError,
+        last_sync: lastSyncAt?.toISOString() ?? null,
+        system: system
+            ? {
+                serial: system.profile.serial,
+                name: settings.system_name || system.profile.name,
+                brand: system.profile.brand,
+                model: system.profile.model,
+                firmware: system.profile.firmware,
+                mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
+                outdoor_temp: (0, carrier_api_1.toFahrenheit)(system.status.oat, system.status.cfgem),
+                filter_remaining: system.status.filtrlvl,
+                filter_type: system.config.filterType,
+                filter_interval: system.config.filterInterval,
+                disconnected: Boolean(system.status.isDisconnected),
+                temperature_unit: "F",
+                outdoor_temp_display: (0, carrier_api_1.formatFahrenheit)(system.status.oat, system.status.cfgem),
+            }
+            : null,
+        zones: system ? mapActivityZones(system) : [],
+    };
+}
 function buildScheduleSnapshot(settings) {
     const system = selectSystem(settings, cachedSystems);
     return {
@@ -621,6 +705,12 @@ const API_CATALOG = {
         },
         {
             method: "GET",
+            path: "/api/activities",
+            query: "?refresh=1 forces Carrier cloud sync",
+            description: "Zone activity presets with heat, cool, and fan settings for view and edit.",
+        },
+        {
+            method: "GET",
             path: "/api/maintenance",
             query: "?refresh=1 forces Carrier cloud sync",
             description: "Maintenance snapshot: air filter life plus local condensate line tracking.",
@@ -661,8 +751,8 @@ const API_CATALOG = {
         {
             method: "POST",
             path: "/api/zone/:zoneId",
-            body: '{ "heat_setpoint", "cool_setpoint", "fan", "preset" }',
-            description: "Update zone setpoints, fan, or schedule preset on the selected system.",
+            body: '{ "heat_setpoint", "cool_setpoint", "fan", "preset", "activity_type" }',
+            description: "Update zone setpoints, fan, schedule preset, or saved activity settings on the selected system.",
         },
         {
             method: "GET",
@@ -1337,9 +1427,39 @@ function pageStyles() {
     html[data-theme="dark"] .status-fan { background: #2e1065; color: #c4b5fd; }
     .stat-chips {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.65rem;
       margin-bottom: 1rem;
+    }
+    .blower-chip {
+      grid-column: 1 / -1;
+      gap: 0.55rem;
+    }
+    .blower-chip .chip-header [data-fan-label] {
+      margin-left: auto;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .blower-chip-body {
+      display: grid;
+      grid-template-columns: minmax(5rem, auto) 1fr;
+      gap: 0.75rem;
+      align-items: center;
+    }
+    .blower-indicator {
+      display: grid;
+      gap: 0.2rem;
+      min-width: 0;
+    }
+    .blower-chip .fan-control {
+      border: none;
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+    }
+    .blower-chip .fan-control input[type="range"] {
+      margin-top: 0;
     }
     .stat-chip {
       border: 1px solid var(--border);
@@ -1492,29 +1612,45 @@ function pageStyles() {
       letter-spacing: 0;
     }
     .section-title .icon { width: 1rem; height: 1rem; }
+    .mode-control-card {
+      padding: 1rem 1.1rem;
+    }
+    .mode-control-card h3 {
+      font-size: 0.95rem;
+    }
+    .mode-readout {
+      margin: 0.2rem 0 0;
+      font-size: 0.8rem;
+    }
     .mode-tiles {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.55rem;
-      margin-top: 0.75rem;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.4rem;
+      margin-top: 0.55rem;
     }
     .mode-tile {
-      display: grid;
-      justify-items: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       gap: 0.3rem;
-      padding: 0.85rem 0.55rem;
-      border-radius: 0.85rem;
+      padding: 0.45rem 0.35rem;
+      border-radius: 0.65rem;
       border: 1px solid var(--border);
       background: var(--bg);
       color: var(--text);
       font-weight: 600;
-      font-size: 0.88rem;
+      font-size: 0.76rem;
+      min-width: 0;
     }
-    .mode-tile .icon { width: 1.45rem; height: 1.45rem; }
-    .mode-tile small {
-      font-size: 0.68rem;
-      font-weight: 500;
-      color: var(--muted);
+    .mode-tile .icon {
+      width: 1rem;
+      height: 1rem;
+      flex-shrink: 0;
+    }
+    .mode-tile span {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .mode-tile.active {
       border-color: var(--accent);
@@ -1664,6 +1800,9 @@ function pageStyles() {
       .mobile-dashboard-refresh {
         display: grid;
       }
+      .mode-tiles {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
       .toolbar-connection-pill {
         display: none;
       }
@@ -1706,6 +1845,7 @@ function pageStyles() {
       }
       .zone-control-layout { grid-template-columns: 1fr; }
       .stat-chips { grid-template-columns: 1fr; }
+      .blower-chip-body { grid-template-columns: 1fr; }
     }
     .api-toolbar {
       display: flex;
@@ -1895,6 +2035,129 @@ function pageStyles() {
     html[data-theme="dark"] .schedule-period-pill.activity-away .schedule-period-activity { color: #94a3b8; }
     html[data-theme="dark"] .schedule-period-pill.activity-sleep .schedule-period-activity { color: #c4b5fd; }
     html[data-theme="dark"] .schedule-period-pill.activity-wake .schedule-period-activity { color: #fdba74; }
+    .activities-grid {
+      display: grid;
+      gap: 1rem;
+    }
+    .activities-zone-card h3 {
+      margin: 0 0 0.35rem;
+      font-size: 1rem;
+    }
+    .activities-zone-card.single-zone h3 {
+      display: none;
+    }
+    .activities-zone-meta {
+      margin: 0 0 0.85rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .activities-zone-meta strong {
+      color: var(--text);
+    }
+    .activities-zone-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      margin-bottom: 0.85rem;
+    }
+    .activity-cards {
+      display: grid;
+      gap: 0.75rem;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+    .activity-card {
+      border: 1px solid var(--border);
+      border-radius: 0.85rem;
+      padding: 0.9rem 1rem;
+      background: var(--bg);
+      display: grid;
+      gap: 0.65rem;
+    }
+    .activity-card.current {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .activity-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .activity-card-header h4 {
+      margin: 0;
+      font-size: 0.95rem;
+    }
+    .activity-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+      justify-content: flex-end;
+    }
+    .activity-badge {
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 0.18rem 0.45rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .activity-badge.hold {
+      background: #ffedd5;
+      color: #c2410c;
+    }
+    html[data-theme="dark"] .activity-badge.hold {
+      background: #431407;
+      color: #fdba74;
+    }
+    .activity-readout {
+      display: grid;
+      gap: 0.2rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .activity-readout strong {
+      color: var(--text);
+      font-weight: 700;
+    }
+    .activity-form {
+      display: grid;
+      gap: 0.55rem;
+    }
+    .activity-form-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.45rem;
+    }
+    .activity-form label {
+      display: grid;
+      gap: 0.2rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .activity-form input,
+    .activity-form select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 0.55rem;
+      padding: 0.45rem 0.5rem;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+    }
+    .activity-form-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+    }
+    .activity-form-actions button {
+      flex: 1;
+      min-width: 6.5rem;
+    }
+    .activity-card .message {
+      margin: 0;
+      font-size: 0.78rem;
+    }
     html[data-theme="dark"] .schedule-period-pill.activity-manual .schedule-period-activity { color: #7dd3fc; }
     html[data-theme="dark"] .schedule-period-pill.activity-vacation .schedule-period-activity { color: #fcd34d; }
     .schedule-empty {
@@ -1932,6 +2195,7 @@ function renderPage(active, content) {
         { id: "dashboard", label: "Dashboard", href: "/" },
         { id: "weather", label: "Weather", href: "/weather" },
         { id: "schedule", label: "Schedule", href: "/schedule" },
+        { id: "activities", label: "Activities", href: "/activities" },
         { id: "maintenance", label: "Maintenance", href: "/maintenance" },
         { id: "api", label: "API Explorer", href: "/api" },
         { id: "setup", label: "Setup", href: "/setup" },
@@ -2465,7 +2729,7 @@ function dashboardContent() {
 
       function syncFanBars(card, zone) {
         const barsIndex = fanBarsIndex(zone);
-        card.querySelectorAll(".stat-chip .fan-bar").forEach((bar, index) => {
+        card.querySelectorAll(".blower-chip .fan-bar").forEach((bar, index) => {
           const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
           bar.classList.toggle("active", lit);
           bar.classList.toggle("auto", false);
@@ -2938,26 +3202,9 @@ function dashboardContent() {
         syncLabel();
       }
 
-      function initPresetTiles(card) {
-        card.querySelectorAll("[data-preset]").forEach((tile) => {
-          if (tile.dataset.initialized === "true") return;
-          tile.dataset.initialized = "true";
-          tile.addEventListener("click", async () => {
-            card.querySelectorAll("[data-preset]").forEach((item) => {
-              item.disabled = true;
-            });
-            await postZoneUpdate(card, { preset: tile.dataset.preset });
-            card.querySelectorAll("[data-preset]").forEach((item) => {
-              item.disabled = false;
-            });
-          });
-        });
-      }
-
       function initZoneCard(card) {
         initThermoWidget(card.querySelector(".thermo-widget"));
         initFanSlider(card);
-        initPresetTiles(card);
       }
 
       function renderFanBars(zone) {
@@ -2983,10 +3230,6 @@ function dashboardContent() {
         const scheduleText = chipActivityLabel(zone);
         const scheduleChipLabel = zone.hold ? "Hold" : "Schedule";
         const humidityWidth = Number.isFinite(Number(zone.humidity)) ? Math.max(0, Math.min(100, Number(zone.humidity))) : 0;
-        const presetTiles = (zone.presets || []).map((preset) =>
-          '<button type="button" class="preset-tile" data-preset="' + escapeHtml(preset) + '">' + presetIcon(preset) + '<span>' + escapeHtml(presetLabel(preset)) + "</span></button>"
-        ).join("");
-
         return \`
           <div class="card zone-control-card\${singleZone ? " single-zone" : ""} mode-\${escapeHtml(normalizedMode)}" data-zone-id="\${escapeHtml(zone.id)}" data-system-mode="\${escapeHtml(normalizedMode)}">
             <div class="zone-hero">
@@ -3014,19 +3257,33 @@ function dashboardContent() {
               </div>
               <div class="stat-chip">
                 <div class="chip-header">
-                  \${ICONS.fan}
-                  <span class="chip-label">Blower</span>
-                </div>
-                <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
-                <div class="fan-bars">\${renderFanBars(zone)}</div>
-              </div>
-              <div class="stat-chip">
-                <div class="chip-header">
                   \${ICONS.calendar}
                   <span class="chip-label" data-schedule-label>\${escapeHtml(scheduleChipLabel)}</span>
                 </div>
                 <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
                 <a class="schedule-chip-link" href="/schedule">View week</a>
+              </div>
+              <div class="stat-chip blower-chip">
+                <div class="chip-header">
+                  \${ICONS.fan}
+                  <span class="chip-label">Blower</span>
+                  <span data-fan-label>\${escapeHtml(fanSettingText)}</span>
+                </div>
+                <div class="blower-chip-body">
+                  <div class="blower-indicator">
+                    <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
+                    <div class="fan-bars">\${renderFanBars(zone)}</div>
+                  </div>
+                  <div class="fan-control">
+                    <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Blower speed" />
+                    <div class="fan-ticks">
+                      <span class="\${fanIndex === 0 ? "active" : ""}">Auto</span>
+                      <span class="\${fanIndex === 1 ? "active" : ""}">Low</span>
+                      <span class="\${fanIndex === 2 ? "active" : ""}">Med</span>
+                      <span class="\${fanIndex === 3 ? "active" : ""}">High</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="zone-control-layout">
@@ -3057,20 +3314,6 @@ function dashboardContent() {
                 <div class="thermo-legend"><span>Heat</span><span>Red = inside now</span><span>Cool</span></div>
               </div>
               <div class="zone-side-panel">
-                <div class="fan-control">
-                  <div class="section-title">\${ICONS.fan} Blower speed <span data-fan-label style="margin-left:auto;color:var(--accent)">\${escapeHtml(fanSettingText)}</span></div>
-                  <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Blower speed" />
-                  <div class="fan-ticks">
-                    <span class="\${fanIndex === 0 ? "active" : ""}">Auto</span>
-                    <span class="\${fanIndex === 1 ? "active" : ""}">Low</span>
-                    <span class="\${fanIndex === 2 ? "active" : ""}">Med</span>
-                    <span class="\${fanIndex === 3 ? "active" : ""}">High</span>
-                  </div>
-                </div>
-                <div>
-                  <div class="section-title">\${ICONS.home} Quick settings</div>
-                  <div class="preset-tiles">\${presetTiles}</div>
-                </div>
                 <div class="message zone-message"></div>
               </div>
             </div>
@@ -3087,8 +3330,8 @@ function dashboardContent() {
           { id: "off", label: "Off", hint: "Paused", icon: ICONS.power },
         ];
         return modes.map((mode) =>
-          '<button type="button" class="mode-tile mode-tile-' + mode.id + (active === mode.id ? " active" : "") + '" data-mode="' + mode.id + '">' +
-            mode.icon + "<span>" + mode.label + '</span><small>' + mode.hint + "</small></button>"
+          '<button type="button" class="mode-tile mode-tile-' + mode.id + (active === mode.id ? " active" : "") + '" data-mode="' + mode.id + '" title="' + escapeHtml(mode.hint) + '">' +
+            mode.icon + "<span>" + mode.label + "</span></button>"
         ).join("");
       }
 
@@ -3126,11 +3369,11 @@ function dashboardContent() {
           const mode = data.system.mode || "auto";
           if (!options.soft) {
             systemCards.innerHTML = \`
-              <div class="card">
+              <div class="card mode-control-card">
                 <div class="card-header-row">
                   <h3>What should it do?</h3>
                 </div>
-                <p class="muted" style="margin:0.35rem 0 0;font-size:0.88rem" data-mode-readout>Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
+                <p class="muted mode-readout" data-mode-readout>Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
                 <div class="mode-tiles">\${renderModeTiles(mode)}</div>
                 <div class="message" id="mode-message"></div>
               </div>
@@ -3576,6 +3819,278 @@ function maintenanceContent() {
       document.getElementById("maintenance-refresh")?.addEventListener("click", () => loadMaintenance(true));
       loadMaintenance(false);
       setInterval(() => loadMaintenance(false), 60000);
+    </script>
+  `;
+}
+function activitiesContent() {
+    return `
+    <div class="toolbar">
+      <div>
+        <h2>Activities</h2>
+        <p class="toolbar-meta" id="activities-system-label">Loading system…</p>
+      </div>
+      <button type="button" class="secondary" id="activities-refresh">Refresh</button>
+    </div>
+    <div id="activities-content" class="activities-grid">
+      <div class="card"><p class="muted">Loading activities…</p></div>
+    </div>
+    <script>
+      const FAN_OPTIONS = [
+        { value: "auto", label: "Auto" },
+        { value: "low", label: "Low" },
+        { value: "med", label: "Medium" },
+        { value: "high", label: "High" },
+      ];
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function fanSelectOptions(selected) {
+        return FAN_OPTIONS.map((option) =>
+          '<option value="' + option.value + '"' + (option.value === selected ? " selected" : "") + ">" + option.label + "</option>"
+        ).join("");
+      }
+
+      function setCardMessage(card, text, kind) {
+        const message = card.querySelector(".message");
+        if (!message) return;
+        message.className = "message" + (kind ? " " + kind : "");
+        message.textContent = text || "";
+      }
+
+      function renderActivityCard(zone, activity) {
+        const badges = [];
+        if (activity.is_current && !zone.hold) badges.push('<span class="activity-badge">Running</span>');
+        if (activity.is_held) badges.push('<span class="activity-badge hold">On hold</span>');
+        else if (activity.is_current && zone.hold) badges.push('<span class="activity-badge">Active</span>');
+
+        return (
+          '<article class="activity-card' +
+          (activity.is_current ? " current" : "") +
+          '" data-activity-card data-zone-id="' +
+          escapeHtml(zone.id) +
+          '" data-activity-type="' +
+          escapeHtml(activity.type) +
+          '">' +
+          '<div class="activity-card-header">' +
+          "<h4>" +
+          escapeHtml(activity.label) +
+          "</h4>" +
+          '<div class="activity-badges">' +
+          badges.join("") +
+          "</div>" +
+          "</div>" +
+          '<div class="activity-readout">' +
+          "<span>Heat <strong>" +
+          escapeHtml(activity.heat_setpoint_display || "—") +
+          (activity.heat_setpoint_display ? "°F" : "") +
+          "</strong></span>" +
+          "<span>Cool <strong>" +
+          escapeHtml(activity.cool_setpoint_display || "—") +
+          (activity.cool_setpoint_display ? "°F" : "") +
+          "</strong></span>" +
+          "<span>Fan <strong>" +
+          escapeHtml(activity.fan_label || "—") +
+          "</strong></span>" +
+          "</div>" +
+          '<form class="activity-form">' +
+          '<div class="activity-form-row">' +
+          '<label>Heat to<input type="number" min="60" max="90" step="1" name="heat_setpoint" value="' +
+          escapeHtml(activity.heat_setpoint_display || "") +
+          '" /></label>' +
+          '<label>Cool to<input type="number" min="60" max="90" step="1" name="cool_setpoint" value="' +
+          escapeHtml(activity.cool_setpoint_display || "") +
+          '" /></label>' +
+          '<label>Blower<select name="fan">' +
+          fanSelectOptions(activity.fan || "auto") +
+          "</select></label>" +
+          "</div>" +
+          '<div class="activity-form-actions">' +
+          '<button type="submit" class="secondary">Save settings</button>' +
+          '<button type="button" class="primary" data-use-activity>Use now</button>' +
+          "</div>" +
+          '<p class="message"></p>' +
+          "</form>" +
+          "</article>"
+        );
+      }
+
+      function renderActivitiesZone(zone, singleZone) {
+        const statusText = zone.hold
+          ? "On hold: <strong>" + escapeHtml(zone.current_activity_label || "Manual") + "</strong>"
+          : "Running: <strong>" + escapeHtml(zone.current_activity_label || "—") + "</strong>";
+        const resumeButton = zone.hold
+          ? '<div class="activities-zone-actions"><button type="button" class="secondary" data-resume-schedule data-zone-id="' +
+            escapeHtml(zone.id) +
+            '">Back to schedule</button></div>'
+          : "";
+        const metaHtml = singleZone ? "" : '<p class="activities-zone-meta">' + statusText + "</p>";
+
+        return (
+          '<div class="card activities-zone-card' +
+          (singleZone ? " single-zone" : "") +
+          '" data-zone-card="' +
+          escapeHtml(zone.id) +
+          '">' +
+          (singleZone ? "" : "<h3>" + escapeHtml(zone.name) + "</h3>") +
+          metaHtml +
+          resumeButton +
+          '<div class="activity-cards">' +
+          zone.activities.map((activity) => renderActivityCard(zone, activity)).join("") +
+          "</div>" +
+          "</div>"
+        );
+      }
+
+      function bindActivityCards(root) {
+        root.querySelectorAll("[data-activity-card]").forEach((card) => {
+          const form = card.querySelector("form");
+          const useButton = card.querySelector("[data-use-activity]");
+          const zoneId = card.dataset.zoneId;
+          const activityType = card.dataset.activityType;
+          if (!form || !zoneId || !activityType) return;
+
+          form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const saveButton = form.querySelector('button[type="submit"]');
+            if (!hvacSetButtonPending(saveButton, "Saving…")) return;
+            setCardMessage(card, "", "");
+            try {
+              const payload = {
+                activity_type: activityType,
+                heat_setpoint: form.heat_setpoint.value,
+                cool_setpoint: form.cool_setpoint.value,
+                fan: form.fan.value,
+              };
+              const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Could not save activity.");
+              hvacSetButtonSuccess(saveButton, "Saved");
+              setCardMessage(card, "Saved.", "success");
+              await loadActivities(true);
+            } catch (error) {
+              hvacSetButtonError(saveButton, "Try again");
+              setCardMessage(card, String(error), "error");
+            }
+          });
+
+          useButton?.addEventListener("click", async () => {
+            if (!hvacSetButtonPending(useButton, "Applying…")) return;
+            setCardMessage(card, "", "");
+            try {
+              const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ preset: activityType }),
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Could not apply activity.");
+              hvacSetButtonSuccess(useButton, "Applied");
+              setCardMessage(card, "Applied.", "success");
+              await loadActivities(true);
+            } catch (error) {
+              hvacSetButtonError(useButton, "Try again");
+              setCardMessage(card, String(error), "error");
+            }
+          });
+        });
+
+        root.querySelectorAll("[data-resume-schedule]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const zoneId = button.dataset.zoneId;
+            if (!zoneId || !hvacSetButtonPending(button, "Resuming…")) return;
+            try {
+              const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ preset: "resume" }),
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Could not resume schedule.");
+              hvacSetButtonSuccess(button, "Resumed");
+              await loadActivities(true);
+            } catch (error) {
+              hvacSetButtonError(button, "Try again");
+            }
+          });
+        });
+      }
+
+      function renderActivities(data) {
+        const root = document.getElementById("activities-content");
+        const label = document.getElementById("activities-system-label");
+        if (!root) return;
+
+        if (!data.configured) {
+          if (label) label.textContent = "Connect your Carrier account to view activities.";
+          root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
+          return;
+        }
+
+        const singleZone = data.zones.length === 1;
+        const loneZone = singleZone ? data.zones[0] : null;
+        if (label) {
+          if (!data.system) {
+            label.textContent = "No system selected";
+          } else if (singleZone && loneZone) {
+            const statusText = loneZone.hold
+              ? "On hold: <strong>" + escapeHtml(loneZone.current_activity_label || "Manual") + "</strong>"
+              : "Running: <strong>" + escapeHtml(loneZone.current_activity_label || "—") + "</strong>";
+            label.innerHTML =
+              "Showing activities for <strong>" +
+              escapeHtml(data.system.name) +
+              "</strong> · " +
+              statusText;
+          } else {
+            label.innerHTML =
+              "Showing activities for <strong>" + escapeHtml(data.system.name) + "</strong>";
+          }
+        }
+
+        if (data.error && !data.zones.length) {
+          root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
+          return;
+        }
+
+        if (!data.zones.length) {
+          root.innerHTML = '<div class="card"><p class="muted">No activity data available.</p></div>';
+          return;
+        }
+
+        root.innerHTML = data.zones.map((zone) => renderActivitiesZone(zone, singleZone)).join("");
+        bindActivityCards(root);
+      }
+
+      async function loadActivities(force) {
+        const button = document.getElementById("activities-refresh");
+        if (button) button.disabled = true;
+        try {
+          const suffix = force ? "?refresh=1" : "";
+          const res = await fetch("/api/activities" + suffix);
+          const data = await res.json();
+          renderActivities(data);
+        } catch (error) {
+          const root = document.getElementById("activities-content");
+          if (root) {
+            root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
+          }
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      document.getElementById("activities-refresh")?.addEventListener("click", () => loadActivities(true));
+      loadActivities(false);
+      setInterval(() => loadActivities(false), 60000);
     </script>
   `;
 }
@@ -4085,6 +4600,7 @@ async function handleApi(route, req, res, settings) {
             local_endpoints: {
                 status: "GET /api/status",
                 schedule: "GET /api/schedule",
+                activities: "GET /api/activities",
                 maintenance: "GET /api/maintenance",
                 settings: "GET /api/settings",
                 health: "GET /health",
@@ -4116,6 +4632,16 @@ async function handleApi(route, req, res, settings) {
             Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS;
         await refreshCloudData(settings, needsRefresh);
         sendJson(res, 200, buildScheduleSnapshot(settings));
+        return;
+    }
+    if (route === "/api/activities" && req.method === "GET") {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        const forceRefresh = url.searchParams.get("refresh") === "1";
+        const needsRefresh = forceRefresh ||
+            !lastSyncAt ||
+            Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS;
+        await refreshCloudData(settings, needsRefresh);
+        sendJson(res, 200, buildActivitiesSnapshot(settings));
         return;
     }
     if (route === "/api/maintenance" && req.method === "GET") {
@@ -4282,6 +4808,10 @@ async function handleApi(route, req, res, settings) {
         const serial = system.profile.serial;
         const statusZone = findStatusZone(system, zoneId);
         try {
+            const heat = body.heat_setpoint !== undefined && body.heat_setpoint !== "" ? String(body.heat_setpoint) : null;
+            const cool = body.cool_setpoint !== undefined && body.cool_setpoint !== "" ? String(body.cool_setpoint) : null;
+            const fan = body.fan?.trim().toLowerCase();
+            const activityType = body.activity_type?.trim().toLowerCase() ?? null;
             if (body.preset) {
                 const preset = body.preset.toLowerCase();
                 if (preset === "resume" || preset === "schedule") {
@@ -4291,9 +4821,28 @@ async function handleApi(route, req, res, settings) {
                     await client.setHold(serial, zoneId, preset, null);
                 }
             }
-            const heat = body.heat_setpoint !== undefined && body.heat_setpoint !== "" ? String(body.heat_setpoint) : null;
-            const cool = body.cool_setpoint !== undefined && body.cool_setpoint !== "" ? String(body.cool_setpoint) : null;
-            const fan = body.fan?.trim().toLowerCase();
+            if (activityType &&
+                ["home", "away", "sleep", "wake", "manual", "vacation"].includes(activityType)) {
+                const configZone = findConfigZoneById(system, zoneId);
+                const existing = configZone?.activities.find((item) => item.type === activityType);
+                const heatSetpoint = formatCarrierSetpoint(heat ?? existing?.htsp ?? statusZone?.htsp, 68);
+                const coolSetpoint = formatCarrierSetpoint(cool ?? existing?.clsp ?? statusZone?.clsp, 74);
+                let fanMode;
+                if (fan === "auto" || fan === "on") {
+                    fanMode = "off";
+                }
+                else if (fan && ["low", "med", "high", "off"].includes(fan)) {
+                    fanMode = fan;
+                }
+                else if (existing?.fan) {
+                    fanMode = existing.fan;
+                }
+                await client.updateZoneActivity(serial, zoneId, activityType, heatSetpoint, coolSetpoint, fanMode);
+                await refreshCloudData(settings, true);
+                const activityZone = buildActivitiesSnapshot(settings).zones.find((item) => (0, carrier_api_1.zoneIdsMatch)(item.id, zoneId)) ?? null;
+                sendJson(res, 200, { ok: true, zone: activityZone });
+                return;
+            }
             if (heat || cool) {
                 const manual = findManualActivity(system, zoneId);
                 const heatSetpoint = formatCarrierSetpoint(heat ?? manual?.htsp ?? statusZone?.htsp, 68);
@@ -4408,6 +4957,10 @@ async function handleRequest(req, res) {
     }
     if (route === "/schedule") {
         sendText(res, 200, "text/html; charset=utf-8", renderPage("schedule", scheduleContent()));
+        return;
+    }
+    if (route === "/activities") {
+        sendText(res, 200, "text/html; charset=utf-8", renderPage("activities", activitiesContent()));
         return;
     }
     if (route === "/maintenance") {

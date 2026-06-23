@@ -529,6 +529,33 @@ export class CarrierApiClient {
     );
   }
 
+  async updateZoneActivity(
+    serial: string,
+    zoneId: string,
+    activityType: string,
+    heatSetpoint: string,
+    coolSetpoint: string,
+    fanMode?: FanMode,
+    etag?: string | null,
+  ): Promise<string | null> {
+    const input: Record<string, string> = {
+      serial,
+      zoneId,
+      activityType,
+      htsp: heatSetpoint,
+      clsp: coolSetpoint,
+    };
+    if (fanMode) input.fan = fanMode;
+    return this.mutateForEtag(
+      "updateInfinityZoneActivity",
+      `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
+        updateInfinityZoneActivity(input: $input) { etag }
+      }`,
+      { input },
+      "updateInfinityZoneActivity",
+    );
+  }
+
   async updateFan(
     serial: string,
     zoneId: string,

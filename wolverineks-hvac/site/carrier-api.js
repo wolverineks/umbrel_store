@@ -357,6 +357,20 @@ class CarrierApiClient {
         updateInfinityZoneConfig(input: $input) { etag }
       }`, { input }, "updateInfinityZoneConfig");
     }
+    async updateZoneActivity(serial, zoneId, activityType, heatSetpoint, coolSetpoint, fanMode, etag) {
+        const input = {
+            serial,
+            zoneId,
+            activityType,
+            htsp: heatSetpoint,
+            clsp: coolSetpoint,
+        };
+        if (fanMode)
+            input.fan = fanMode;
+        return this.mutateForEtag("updateInfinityZoneActivity", `mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
+        updateInfinityZoneActivity(input: $input) { etag }
+      }`, { input }, "updateInfinityZoneActivity");
+    }
     async updateFan(serial, zoneId, activityType, fanMode, etag) {
         const input = {
             serial,
