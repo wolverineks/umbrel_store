@@ -18,7 +18,7 @@ import {
   type SystemMode,
 } from "./carrier-api";
 
-const APP_VERSION = "2.4.4";
+const APP_VERSION = "2.4.5";
 const REFRESH_ICON_SVG =
   '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
 const IS_LOCAL_DEV = process.env.HVAC_DEV === "1";
@@ -2088,15 +2088,7 @@ function pageStyles(): string {
       width: 0.4rem;
       height: 1.65rem;
     }
-    .schedule-chip-compact .chip-value {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .schedule-chip-compact .schedule-chip-link {
-      font-size: 0.6rem;
-      margin-top: 0.05rem;
-    }
+    .schedule-chip-compact .chip-value,
     .blower-chip-compact .chip-value {
       white-space: nowrap;
       overflow: hidden;
@@ -2178,6 +2170,20 @@ function pageStyles(): string {
       color: var(--accent);
       flex-shrink: 0;
     }
+    a.stat-chip-link {
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    a.stat-chip-link:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    a.stat-chip-link:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     .tile-refresh {
       margin-left: auto;
       border: none;
@@ -2221,10 +2227,7 @@ function pageStyles(): string {
     .dashboard-refresh {
       margin-left: 0;
     }
-    .mobile-dashboard-refresh {
-      display: none;
-      flex-shrink: 0;
-    }
+
     .card-header-row,
     .tile-header-row,
     .status-row {
@@ -2542,8 +2545,9 @@ function pageStyles(): string {
       .dashboard-toolbar {
         display: none;
       }
-      .mobile-dashboard-refresh {
-        display: grid;
+      .toolbar .tile-refresh,
+      .dashboard-toolbar-actions .tile-refresh {
+        display: none;
       }
       .mode-tiles {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2908,17 +2912,7 @@ function pageStyles(): string {
       color: var(--muted);
       font-size: 0.88rem;
     }
-    .schedule-chip-link {
-      display: inline-block;
-      margin-top: 0.15rem;
-      font-size: 0.72rem;
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
-    }
-    .schedule-chip-link:hover {
-      text-decoration: underline;
-    }
+
   `;
 }
 
@@ -2999,7 +2993,7 @@ function renderPage(active: string, content: string): string {
           <option value="">Bryant/Carrier HVAC</option>
         </select>
       </div>
-      ${active === "dashboard" ? '<button type="button" class="tile-refresh dashboard-refresh mobile-dashboard-refresh" id="mobile-dashboard-refresh" aria-label="Refresh dashboard"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>' : ""}
+      <button type="button" class="tile-refresh header-refresh" id="header-refresh" aria-label="Refresh page">${REFRESH_ICON_SVG}</button>
       <span class="status-pill status-pill-compact warning" id="mobile-connection-pill">Loading…</span>
     </header>
     <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
@@ -3056,6 +3050,15 @@ function renderPage(active: string, content: string): string {
         button.textContent = button.dataset.originalLabel;
       }
     };
+    window.hvacRefreshButton = function(toolbarId) {
+      if (window.matchMedia("(min-width: 901px)").matches) {
+        return document.getElementById(toolbarId) || document.getElementById("header-refresh");
+      }
+      return document.getElementById("header-refresh");
+    };
+    document.getElementById("header-refresh")?.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("hvac:refresh"));
+    });
     (function () {
       const toggle = document.getElementById("menu-toggle");
       const sidebar = document.getElementById("sidebar");
@@ -3228,7 +3231,12 @@ function setupContent(settings: PublicSettings): string {
   return `
     <div class="toolbar">
       <h2>Setup</h2>
-      <span class="status-pill toolbar-connection-pill warning" id="connection-pill">Checking…</span>
+      <div class="dashboard-toolbar-actions">
+        <button type="button" class="tile-refresh" id="setup-refresh" aria-label="Refresh connection status">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        </button>
+        <span class="status-pill toolbar-connection-pill warning" id="connection-pill">Checking…</span>
+      </div>
     </div>
     <div class="card">
       <h3>Sign in with your Bryant/Carrier account</h3>
@@ -3267,7 +3275,7 @@ function setupContent(settings: PublicSettings): string {
       <p class="muted message" id="diag-error" style="margin-top:0.75rem"></p>
     </div>
     <script>
-      async function refreshConnection() {
+      async function refreshConnection(force) {
         const pill = document.getElementById("connection-pill");
         const diagCloud = document.getElementById("diag-cloud");
         const diagSystems = document.getElementById("diag-systems");
@@ -3276,7 +3284,7 @@ function setupContent(settings: PublicSettings): string {
         const diagSensor = document.getElementById("diag-sensor");
         const diagError = document.getElementById("diag-error");
         try {
-          const res = await fetch("/api/status");
+          const res = await fetch("/api/status" + (force ? "?refresh=1" : ""));
           const data = await res.json();
           diagSystems.textContent = String(data.systems?.length ?? 0);
           diagSync.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never";
@@ -3342,8 +3350,22 @@ function setupContent(settings: PublicSettings): string {
           message.textContent = String(error);
         }
       });
-      refreshConnection();
-      setInterval(refreshConnection, 5000);
+      async function refreshSetupPage() {
+        const button = window.hvacRefreshButton("setup-refresh");
+        if (!button) return;
+        button.disabled = true;
+        button.classList.add("spinning");
+        try {
+          await refreshConnection(true);
+        } finally {
+          button.disabled = false;
+          button.classList.remove("spinning");
+        }
+      }
+      document.getElementById("setup-refresh")?.addEventListener("click", () => refreshSetupPage());
+      window.addEventListener("hvac:refresh", () => refreshSetupPage());
+      refreshConnection(false);
+      setInterval(() => refreshConnection(false), 5000);
     </script>
   `;
 }
@@ -3729,14 +3751,18 @@ function dashboardContent(): string {
       }
 
       function initDashboardRefreshButton() {
-        document.querySelectorAll(".dashboard-refresh").forEach((button) => {
-          if (button.dataset.initialized === "true") return;
-          button.dataset.initialized = "true";
-          button.addEventListener("click", async () => {
-            await refreshDashboard(button);
-          });
+        const button = document.getElementById("dashboard-refresh");
+        if (!button || button.dataset.initialized === "true") return;
+        button.dataset.initialized = "true";
+        button.addEventListener("click", async () => {
+          await refreshDashboard(button);
         });
       }
+
+      window.addEventListener("hvac:refresh", async () => {
+        const button = window.hvacRefreshButton("dashboard-refresh");
+        if (button) await refreshDashboard(button);
+      });
 
       function renderThermoScale() {
         return [90, 80, 70, 60].map((temp) =>
@@ -3990,22 +4016,20 @@ function dashboardContent(): string {
                     <span class="chip-value" data-humidity-value>\${humidity}\${humidity === "—" ? "" : "%"}</span>
                   </div>
                 </div>
-                <div class="stat-chip stat-chip-compact schedule-chip-compact">
+                <a class="stat-chip stat-chip-compact stat-chip-link schedule-chip-compact" href="/schedule">
                   <div class="chip-header">
                     \${ICONS.calendar}
                     <span class="chip-label" data-schedule-label>\${escapeHtml(scheduleChipLabel)}</span>
                   </div>
                   <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
-                  <a class="schedule-chip-link" href="/schedule">Week</a>
-                </div>
-                <div class="stat-chip stat-chip-compact blower-chip-compact">
+                </a>
+                <a class="stat-chip stat-chip-compact stat-chip-link blower-chip-compact" href="/circulation">
                   <div class="chip-header">
                     \${ICONS.fan}
                     <span class="chip-label">Blower</span>
                   </div>
                   <span class="chip-value" data-blower-setting-value>\${escapeHtml(FAN_LABELS[fanIndex] || "Auto")}</span>
-                  <a class="schedule-chip-link" href="/circulation">Set</a>
-                </div>
+                </a>
               </div>
             </div>
             <div class="zone-control-layout">
@@ -4103,6 +4127,9 @@ function modeContent(): string {
   return `
     <div class="toolbar">
       <h2>Mode</h2>
+      <button type="button" class="tile-refresh" id="mode-refresh" aria-label="Refresh mode">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
     </div>
     <div id="mode-content" class="mode-page-grid">
       <div class="card"><p class="muted">Loading system mode…</p></div>
@@ -4212,7 +4239,12 @@ function modeContent(): string {
 
       async function loadMode(options = {}) {
         const root = document.getElementById("mode-content");
+        const button = options.refresh ? window.hvacRefreshButton("mode-refresh") : null;
         if (!root) return;
+        if (button) {
+          button.disabled = true;
+          button.classList.add("spinning");
+        }
         try {
           const res = await fetch("/api/status" + (options.refresh ? "?refresh=1" : ""));
           const data = await res.json();
@@ -4237,9 +4269,16 @@ function modeContent(): string {
           syncSystemActivity(data.zones);
         } catch (error) {
           root.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + "</p></div>";
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
         }
       }
 
+      document.getElementById("mode-refresh")?.addEventListener("click", () => loadMode({ refresh: true }));
+      window.addEventListener("hvac:refresh", () => loadMode({ refresh: true }));
       loadMode();
       setInterval(() => loadMode({ soft: true }), 15000);
     </script>
@@ -4249,18 +4288,16 @@ function modeContent(): string {
 function weatherContent(): string {
   return `
     <div class="toolbar">
-      <div>
-        <h2>Weather</h2>
-        <p class="toolbar-meta" id="weather-system-label">Loading system…</p>
-      </div>
-      <button type="button" class="secondary" id="weather-refresh">Refresh</button>
+      <h2>Weather</h2>
+      <button type="button" class="tile-refresh" id="weather-refresh" aria-label="Refresh weather">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
     </div>
     <div id="weather-content" class="weather-grid">
       <div class="card"><p class="muted">Loading outdoor temperature…</p></div>
     </div>
     <script>
       const SUN_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>';
-      const REFRESH_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
 
       function escapeHtml(value) {
         return String(value)
@@ -4278,9 +4315,6 @@ function weatherContent(): string {
           '<div class="maintenance-item-header">' +
           SUN_ICON +
           "<h3>Outside temperature</h3>" +
-          '<button type="button" class="tile-refresh" data-refresh="outdoor" aria-label="Refresh outdoor temperature">' +
-          REFRESH_ICON +
-          "</button>" +
           "</div>" +
           '<div class="weather-row">' +
           '<div class="weather-icon-wrap" aria-hidden="true">' +
@@ -4298,30 +4332,13 @@ function weatherContent(): string {
         );
       }
 
-      function syncOutdoorCard(system) {
-        const outdoor = system.outdoor_temp_display ?? system.outdoor_temp ?? "—";
-        const hasTemp = outdoor !== "—";
-        const display = document.querySelector("[data-outdoor-value]");
-        if (display) {
-          display.innerHTML = escapeHtml(String(outdoor)) + (hasTemp ? '<span class="temp-unit">°F</span>' : "");
-        }
-      }
-
       function renderWeather(data) {
         const root = document.getElementById("weather-content");
-        const label = document.getElementById("weather-system-label");
         if (!root) return;
 
         if (!data.configured) {
-          if (label) label.textContent = "Connect your Carrier account to view weather.";
           root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
           return;
-        }
-
-        if (label) {
-          label.innerHTML = data.system
-            ? "Outdoor reading for <strong>" + escapeHtml(data.system.name) + "</strong>"
-            : "No system selected";
         }
 
         if (data.error && !data.system) {
@@ -4335,26 +4352,14 @@ function weatherContent(): string {
         }
 
         root.innerHTML = renderOutdoorCard(data.system);
-        const refreshButton = root.querySelector("[data-refresh='outdoor']");
-        if (refreshButton) {
-          refreshButton.addEventListener("click", async () => {
-            refreshButton.disabled = true;
-            refreshButton.classList.add("spinning");
-            try {
-              const res = await fetch("/api/status?refresh=1");
-              const fresh = await res.json();
-              if (fresh.system) syncOutdoorCard(fresh.system);
-            } finally {
-              refreshButton.disabled = false;
-              refreshButton.classList.remove("spinning");
-            }
-          });
-        }
       }
 
       async function loadWeather(force) {
-        const button = document.getElementById("weather-refresh");
-        if (button) button.disabled = true;
+        const button = force ? window.hvacRefreshButton("weather-refresh") : null;
+        if (button) {
+          button.disabled = true;
+          button.classList.add("spinning");
+        }
         try {
           const suffix = force ? "?refresh=1" : "";
           const res = await fetch("/api/status" + suffix);
@@ -4366,11 +4371,15 @@ function weatherContent(): string {
             root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
           }
         } finally {
-          if (button) button.disabled = false;
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
         }
       }
 
       document.getElementById("weather-refresh")?.addEventListener("click", () => loadWeather(true));
+      window.addEventListener("hvac:refresh", () => loadWeather(true));
       loadWeather(false);
       setInterval(() => loadWeather(false), 60000);
     </script>
@@ -4380,11 +4389,10 @@ function weatherContent(): string {
 function maintenanceContent(): string {
   return `
     <div class="toolbar">
-      <div>
-        <h2>Maintenance</h2>
-        <p class="toolbar-meta" id="maintenance-system-label">Loading system…</p>
-      </div>
-      <button type="button" class="secondary" id="maintenance-refresh">Refresh</button>
+      <h2>Maintenance</h2>
+      <button type="button" class="tile-refresh" id="maintenance-refresh" aria-label="Refresh maintenance">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
     </div>
     <div id="maintenance-content" class="maintenance-grid">
       <div class="card"><p class="muted">Loading maintenance data…</p></div>
@@ -4392,7 +4400,6 @@ function maintenanceContent(): string {
     <script>
       const FILTER_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>';
       const CONDENSATE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3c4 6 7 8.5 7 12a7 7 0 1 1-14 0c0-3.5 3-6 7-12z"/></svg>';
-      const REFRESH_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
 
       function escapeHtml(value) {
         return String(value)
@@ -4434,9 +4441,6 @@ function maintenanceContent(): string {
           '<div class="maintenance-item-header">' +
           FILTER_ICON +
           "<h3>" + filterType + "</h3>" +
-          '<button type="button" class="tile-refresh" data-refresh="filter" aria-label="Refresh filter life">' +
-          REFRESH_ICON +
-          "</button>" +
           "</div>" +
           '<div class="maintenance-value' + filterLifeClass(remaining) + '" data-filter-value>' +
           escapeHtml(valueText) +
@@ -4446,21 +4450,6 @@ function maintenanceContent(): string {
           (intervalText ? '<p class="maintenance-detail">' + escapeHtml(intervalText) + "</p>" : "") +
           "</div>"
         );
-      }
-
-      function syncFilterCard(system) {
-        const remaining = system.filter_remaining;
-        const hasLife = Number.isFinite(Number(remaining));
-        const width = hasLife ? Math.max(0, Math.min(100, Number(remaining))) : 0;
-        const value = document.querySelector("[data-filter-value]");
-        const bar = document.querySelector("[data-filter-bar]");
-        const hint = document.querySelector("[data-filter-hint]");
-        if (value) {
-          value.textContent = hasLife ? remaining + "% left" : "—";
-          value.className = "maintenance-value" + filterLifeClass(remaining);
-        }
-        if (bar) bar.style.width = width + "%";
-        if (hint) hint.textContent = filterStatusHint(remaining);
       }
 
       function formatDateLabel(value) {
@@ -4569,19 +4558,11 @@ function maintenanceContent(): string {
 
       function renderMaintenance(data) {
         const root = document.getElementById("maintenance-content");
-        const label = document.getElementById("maintenance-system-label");
         if (!root) return;
 
         if (!data.configured) {
-          if (label) label.textContent = "Connect your Carrier account to view maintenance.";
           root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
           return;
-        }
-
-        if (label) {
-          label.innerHTML = data.system
-            ? "Maintenance for <strong>" + escapeHtml(data.system.name) + "</strong>"
-            : "No system selected";
         }
 
         if (data.error && !data.system) {
@@ -4595,27 +4576,15 @@ function maintenanceContent(): string {
         }
 
         root.innerHTML = renderFilterCard(data.system) + renderCondensateCard(data.condensate);
-        const refreshButton = root.querySelector("[data-refresh='filter']");
-        if (refreshButton) {
-          refreshButton.addEventListener("click", async () => {
-            refreshButton.disabled = true;
-            refreshButton.classList.add("spinning");
-            try {
-              const res = await fetch("/api/maintenance?refresh=1");
-              const fresh = await res.json();
-              if (fresh.system) syncFilterCard(fresh.system);
-            } finally {
-              refreshButton.disabled = false;
-              refreshButton.classList.remove("spinning");
-            }
-          });
-        }
         bindCondensateActions(() => loadMaintenance(false));
       }
 
       async function loadMaintenance(force) {
-        const button = document.getElementById("maintenance-refresh");
-        if (button) button.disabled = true;
+        const button = force ? window.hvacRefreshButton("maintenance-refresh") : null;
+        if (button) {
+          button.disabled = true;
+          button.classList.add("spinning");
+        }
         try {
           const suffix = force ? "?refresh=1" : "";
           const res = await fetch("/api/maintenance" + suffix);
@@ -4627,11 +4596,15 @@ function maintenanceContent(): string {
             root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
           }
         } finally {
-          if (button) button.disabled = false;
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
         }
       }
 
       document.getElementById("maintenance-refresh")?.addEventListener("click", () => loadMaintenance(true));
+      window.addEventListener("hvac:refresh", () => loadMaintenance(true));
       loadMaintenance(false);
       setInterval(() => loadMaintenance(false), 60000);
     </script>
@@ -4929,10 +4902,10 @@ function circulationContent(): string {
       }
 
       async function loadCirculation(options = {}) {
-        const button = document.getElementById("circulation-refresh");
+        const button = options.refresh ? window.hvacRefreshButton("circulation-refresh") : null;
         if (button) {
           button.disabled = true;
-          if (options.refresh) button.classList.add("spinning");
+          button.classList.add("spinning");
         }
         try {
           const suffix = options.refresh ? "?refresh=1" : "";
@@ -4953,6 +4926,7 @@ function circulationContent(): string {
       }
 
       document.getElementById("circulation-refresh")?.addEventListener("click", () => loadCirculation({ refresh: true }));
+      window.addEventListener("hvac:refresh", () => loadCirculation({ refresh: true }));
       loadCirculation();
       setInterval(() => loadCirculation({ soft: true }), 15000);
     </script>
@@ -5187,10 +5161,10 @@ function activitiesContent(): string {
       }
 
       async function loadActivities(force) {
-        const button = document.getElementById("activities-refresh");
+        const button = force ? window.hvacRefreshButton("activities-refresh") : null;
         if (button) {
           button.disabled = true;
-          if (force) button.classList.add("spinning");
+          button.classList.add("spinning");
         }
         try {
           const suffix = force ? "?refresh=1" : "";
@@ -5211,6 +5185,7 @@ function activitiesContent(): string {
       }
 
       document.getElementById("activities-refresh")?.addEventListener("click", () => loadActivities(true));
+      window.addEventListener("hvac:refresh", () => loadActivities(true));
       loadActivities(false);
       setInterval(() => loadActivities(false), 60000);
     </script>
@@ -5220,10 +5195,7 @@ function activitiesContent(): string {
 function scheduleContent(): string {
   return `
     <div class="toolbar">
-      <div>
-        <h2>Weekly schedule</h2>
-        <p class="toolbar-meta" id="schedule-system-label">Loading system…</p>
-      </div>
+      <h2>Weekly schedule</h2>
       <button type="button" class="tile-refresh" id="schedule-refresh" aria-label="Refresh schedule">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
       </button>
@@ -5340,34 +5312,14 @@ function scheduleContent(): string {
 
       function renderSchedule(data) {
         const root = document.getElementById("schedule-content");
-        const label = document.getElementById("schedule-system-label");
         if (!root) return;
 
         if (!data.configured) {
-          if (label) label.textContent = "Connect your Carrier account to view schedules.";
           root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
           return;
         }
 
         const singleZone = data.zones.length === 1;
-        const loneZone = singleZone ? data.zones[0] : null;
-        if (label) {
-          if (!data.system) {
-            label.textContent = "No system selected";
-          } else if (singleZone && loneZone) {
-            const statusText = loneZone.hold
-              ? "On hold: <strong>" + escapeHtml(loneZone.current_activity_label || "Manual") + "</strong>"
-              : "Running: <strong>" + escapeHtml(loneZone.current_activity_label || "—") + "</strong>";
-            label.innerHTML =
-              "Showing schedule for <strong>" +
-              escapeHtml(data.system.name) +
-              "</strong> · " +
-              statusText;
-          } else {
-            label.innerHTML =
-              "Showing schedule for <strong>" + escapeHtml(data.system.name) + "</strong>";
-          }
-        }
 
         if (data.error && !data.zones.length) {
           root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
@@ -5383,10 +5335,10 @@ function scheduleContent(): string {
       }
 
       async function loadSchedule(force) {
-        const button = document.getElementById("schedule-refresh");
+        const button = force ? window.hvacRefreshButton("schedule-refresh") : null;
         if (button) {
           button.disabled = true;
-          if (force) button.classList.add("spinning");
+          button.classList.add("spinning");
         }
         try {
           const suffix = force ? "?refresh=1" : "";
@@ -5407,6 +5359,7 @@ function scheduleContent(): string {
       }
 
       document.getElementById("schedule-refresh")?.addEventListener("click", () => loadSchedule(true));
+      window.addEventListener("hvac:refresh", () => loadSchedule(true));
       loadSchedule(false);
       setInterval(() => loadSchedule(false), 60000);
     </script>
@@ -5481,10 +5434,12 @@ function apiExplorerContent(): string {
         <h2>API Explorer</h2>
         <p class="toolbar-meta">Live responses from every app endpoint and full Carrier cloud payloads.</p>
       </div>
+      <button type="button" class="tile-refresh" id="api-refresh-all" aria-label="Refresh all data">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
     </div>
     <div class="card">
       <div class="api-toolbar">
-        <button type="button" id="api-refresh-all">Refresh all data</button>
         <span class="muted" id="api-fetched-at">Not loaded yet</span>
       </div>
       <p class="muted" style="margin:0">Passwords are never shown. Carrier responses include every field returned by the cloud GraphQL API.</p>
@@ -5551,6 +5506,11 @@ function apiExplorerContent(): string {
       }
 
       async function loadApiExplorer(force) {
+        const button = force ? window.hvacRefreshButton("api-refresh-all") : null;
+        if (button) {
+          button.disabled = true;
+          button.classList.add("spinning");
+        }
         const suffix = force ? "?refresh=1" : "";
         const fetchedAt = document.getElementById("api-fetched-at");
         if (fetchedAt) fetchedAt.textContent = "Loading…";
@@ -5576,9 +5536,15 @@ function apiExplorerContent(): string {
           const stamp = explorer.body?.fetched_at || explorer.body?.carrier?.fetched_at || new Date().toISOString();
           fetchedAt.textContent = "Last fetched " + new Date(stamp).toLocaleString();
         }
+
+        if (button) {
+          button.disabled = false;
+          button.classList.remove("spinning");
+        }
       }
 
       document.getElementById("api-refresh-all")?.addEventListener("click", () => loadApiExplorer(true));
+      window.addEventListener("hvac:refresh", () => loadApiExplorer(true));
       loadApiExplorer(false);
     </script>
   `;
@@ -5586,7 +5552,12 @@ function apiExplorerContent(): string {
 
 function settingsContent(settings: PublicSettings): string {
   return `
-    <div class="toolbar"><h2>Settings</h2></div>
+    <div class="toolbar">
+      <h2>Settings</h2>
+      <button type="button" class="tile-refresh" id="settings-refresh" aria-label="Refresh settings">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </div>
     <div class="card">
       <form id="settings-form">
         <label>
@@ -5629,10 +5600,10 @@ function settingsContent(settings: PublicSettings): string {
           .replaceAll('"', "&quot;");
       }
 
-      async function loadSystemPicker() {
+      async function loadSystemPicker(force) {
         const select = document.getElementById("system_serial");
         try {
-          const res = await fetch("/api/status");
+          const res = await fetch("/api/status" + (force ? "?refresh=1" : ""));
           const data = await res.json();
           const systems = data.systems || [];
           if (!systems.length) {
@@ -5649,7 +5620,21 @@ function settingsContent(settings: PublicSettings): string {
         }
       }
 
-      loadSystemPicker();
+      async function refreshSettingsPage() {
+        const button = window.hvacRefreshButton("settings-refresh");
+        if (!button) return;
+        button.disabled = true;
+        button.classList.add("spinning");
+        try {
+          await loadSystemPicker(true);
+        } finally {
+          button.disabled = false;
+          button.classList.remove("spinning");
+        }
+      }
+      document.getElementById("settings-refresh")?.addEventListener("click", () => refreshSettingsPage());
+      window.addEventListener("hvac:refresh", () => refreshSettingsPage());
+      loadSystemPicker(false);
 
       document.getElementById("settings-form").addEventListener("submit", async (event) => {
         event.preventDefault();
