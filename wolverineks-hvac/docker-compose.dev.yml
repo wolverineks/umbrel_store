@@ -1,0 +1,18 @@
+# Local UI development — faster iteration than the Umbrel deployment.
+# From wolverineks-hvac/: docker compose -f docker-compose.dev.yml up
+version: "3.7"
+
+services:
+  server:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev:local"
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./site:/app
+    environment:
+      HVAC_DEV: "1"
+      HVAC_DATA_DIR: /app/.local-data
+      PORT: "4040"
+    init: true

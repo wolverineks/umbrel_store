@@ -8,7 +8,8 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.4.3";
+const APP_VERSION = "2.4.4";
+const REFRESH_ICON_SVG = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
 const IS_LOCAL_DEV = process.env.HVAC_DEV === "1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
@@ -36,6 +37,10 @@ let apiClient = null;
 let apiClientKey = "";
 let realtime = null;
 let realtimeKey = "";
+const OPERATION_HISTORY_MAX = 10;
+const TRANSITION_WINDOW_MS = 60_000;
+const OPERATION_SAMPLE_MIN_MS = 2_000;
+const operationHistoryByZone = new Map();
 function escapeHtml(value) {
     return value
         .replace(/&/g, "&amp;")
@@ -205,6 +210,14 @@ function ensureRealtime(settings) {
     realtime = new carrier_api_1.CarrierRealtime(() => client.getAccessToken(), (message) => {
         if ((0, carrier_api_1.applyInfinityStatusMessage)(cachedSystems, message)) {
             lastLiveUpdateAt = new Date();
+            const liveSystem = selectSystem(settings, cachedSystems);
+            if (liveSystem) {
+                for (const statusZone of liveSystem.status.zones) {
+                    if (statusZone.enabled !== "on")
+                        continue;
+                    recordOperationSample(statusZone.id, liveSystem, statusZone.zoneconditioning ?? "idle");
+                }
+            }
         }
     });
     realtime.start();
@@ -322,16 +335,271 @@ function formatFanSpeedLabel(speed) {
         return "High";
     return speed.charAt(0).toUpperCase() + speed.slice(1);
 }
-function formatBlowerLiveDisplay(idu, fanSpeed) {
-    const rpm = idu?.blwrpm;
-    const cfm = idu?.cfm;
-    if (rpm != null && rpm > 0) {
-        return `${Math.round(rpm)} RPM`;
+function parseCompressorStage(opstat, conditioning, systemMode) {
+    const value = String(opstat || "").toLowerCase();
+    if (value.includes("defrost")) {
+        return { stage: 0, heatCool: "heat", defrost: true };
     }
-    if (cfm != null && cfm > 0) {
-        return `${Math.round(cfm)} CFM`;
+    const stageMatch = value.match(/stage\s*(\d+)/i);
+    let stage = stageMatch ? Number.parseInt(stageMatch[1], 10) : 0;
+    if (!Number.isFinite(stage) || stage < 0)
+        stage = 0;
+    stage = Math.min(5, stage);
+    let heatCool = null;
+    if (value.includes("heat"))
+        heatCool = "heat";
+    else if (value.includes("cool"))
+        heatCool = "cool";
+    const cond = conditioning.toLowerCase();
+    if (!heatCool && cond.includes("heat"))
+        heatCool = "heat";
+    else if (!heatCool && cond.includes("cool"))
+        heatCool = "cool";
+    else if (!heatCool && stage > 0) {
+        const mode = systemMode.toLowerCase();
+        if (mode === "heat" || mode === "emheat")
+            heatCool = "heat";
+        else if (mode === "cool")
+            heatCool = "cool";
     }
-    return formatFanSpeedLabel(fanSpeed);
+    if (stage === 0 && (value.includes("heat") || value.includes("cool"))) {
+        return {
+            stage: 1,
+            heatCool: value.includes("heat") ? "heat" : "cool",
+            defrost: false,
+        };
+    }
+    return { stage, heatCool, defrost: false };
+}
+function conditioningCategory(conditioning) {
+    const value = String(conditioning || "idle").toLowerCase();
+    if (value.includes("prep") || value.includes("pending")) {
+        if (value.includes("heat"))
+            return "prep_heat";
+        if (value.includes("cool"))
+            return "prep_cool";
+        return "prep";
+    }
+    if (value.includes("heat"))
+        return "heat";
+    if (value.includes("cool"))
+        return "cool";
+    if (value.includes("fan"))
+        return "fan";
+    if (value === "idle" || value === "off")
+        return "idle";
+    return value;
+}
+function pushOperationSample(zoneId, sample) {
+    const history = operationHistoryByZone.get(zoneId) ?? [];
+    const last = history[history.length - 1];
+    if (last &&
+        sample.at - last.at < OPERATION_SAMPLE_MIN_MS &&
+        last.conditioning === sample.conditioning &&
+        last.stage === sample.stage &&
+        last.blwrpm === sample.blwrpm &&
+        last.oduOpstat === sample.oduOpstat) {
+        return;
+    }
+    history.push(sample);
+    if (history.length > OPERATION_HISTORY_MAX)
+        history.shift();
+    operationHistoryByZone.set(zoneId, history);
+}
+function recordOperationSample(zoneId, system, conditioning) {
+    const systemMode = system.status.mode ?? system.config.mode ?? "auto";
+    const parsed = parseCompressorStage(system.status.odu?.opstat, conditioning, systemMode);
+    const sample = {
+        at: Date.now(),
+        conditioning,
+        oduOpstat: system.status.odu?.opstat ?? null,
+        blwrpm: system.status.idu?.blwrpm ?? null,
+        stage: parsed.stage,
+        heatCool: parsed.heatCool,
+    };
+    pushOperationSample(zoneId, sample);
+    return sample;
+}
+function recentOperationSamples(zoneId) {
+    const cutoff = Date.now() - TRANSITION_WINDOW_MS;
+    return (operationHistoryByZone.get(zoneId) ?? []).filter((sample) => sample.at >= cutoff);
+}
+function hasRecentOperationChange(history, current) {
+    if (history.length < 2)
+        return false;
+    const prior = history.slice(0, -1);
+    return prior.some((sample) => {
+        if (sample.conditioning !== current.conditioning)
+            return true;
+        if ((sample.stage === 0) !== (current.stage === 0))
+            return true;
+        if (sample.heatCool !== current.heatCool)
+            return true;
+        const priorRpm = sample.blwrpm ?? 0;
+        const currentRpm = current.blwrpm ?? 0;
+        return Math.abs(currentRpm - priorRpm) >= 350;
+    });
+}
+function isEnteringConditioning(history, category) {
+    if (!category.startsWith("prep") && category !== "heat" && category !== "cool")
+        return false;
+    const prior = history.slice(0, -1);
+    return prior.some((sample) => conditioningCategory(sample.conditioning) === "idle");
+}
+function isLeavingConditioning(history, category) {
+    if (category !== "idle")
+        return false;
+    const prior = history.slice(0, -1);
+    return prior.some((sample) => {
+        const priorCategory = conditioningCategory(sample.conditioning);
+        return priorCategory === "heat" || priorCategory === "cool" || priorCategory.startsWith("prep");
+    });
+}
+function transitionDirection(history, current) {
+    if (history.length < 2)
+        return "steady";
+    const oldest = history[0];
+    const currentRpm = current.blwrpm ?? 0;
+    const oldestRpm = oldest.blwrpm ?? 0;
+    if (current.stage > oldest.stage || currentRpm > oldestRpm + 250)
+        return "up";
+    if (current.stage < oldest.stage || (oldestRpm > 350 && currentRpm < oldestRpm - 250))
+        return "down";
+    return "steady";
+}
+function formatBlowerTelemetry(value, unit) {
+    if (value == null || !Number.isFinite(Number(value)))
+        return "Off";
+    const rounded = Math.round(Number(value));
+    if (rounded <= 0)
+        return "Off";
+    return `${rounded} ${unit}`;
+}
+function blowerTelemetryActive(idu) {
+    const rpm = idu?.blwrpm ?? 0;
+    const cfm = idu?.cfm ?? 0;
+    return rpm > 80 || cfm > 50;
+}
+function buildBlowerMetrics(idu, fanSetting, fanSpeed) {
+    const rpm = formatBlowerTelemetry(idu?.blwrpm, "RPM");
+    const cfm = formatBlowerTelemetry(idu?.cfm, "CFM");
+    const setting = formatFanSettingLabel(fanSetting) ?? formatFanSpeedLabel(fanSpeed);
+    return {
+        rpm,
+        cfm,
+        setting,
+        combined: `${rpm} · ${cfm}`,
+    };
+}
+function formatBlowerDetail(idu) {
+    const rpm = formatBlowerTelemetry(idu?.blwrpm, "RPM");
+    const cfm = formatBlowerTelemetry(idu?.cfm, "CFM");
+    return `${rpm} · ${cfm}`;
+}
+function isBlowerCirculating(idu) {
+    return blowerTelemetryActive(idu);
+}
+function presentZoneOperation(system, conditioning, zoneId, fanSetting, fanSpeed) {
+    const conditioningValue = String(conditioning || "idle");
+    const category = conditioningCategory(conditioningValue);
+    const systemMode = (system.status.mode ?? system.config.mode ?? "auto").toLowerCase();
+    const current = recordOperationSample(zoneId, system, conditioningValue);
+    const history = recentOperationSamples(zoneId);
+    const parsed = parseCompressorStage(system.status.odu?.opstat, conditioningValue, systemMode);
+    const blowerDetail = formatBlowerDetail(system.status.idu);
+    const rpm = system.status.idu?.blwrpm ?? 0;
+    const fanOnlyMode = systemMode === "fanonly" || systemMode === "fan_only";
+    const contradictoryIdle = category === "idle" && (parsed.stage > 0 || rpm > 300);
+    const explicitPrep = category.startsWith("prep");
+    const recentChange = hasRecentOperationChange(history, current);
+    const transition = explicitPrep ||
+        (contradictoryIdle && recentChange) ||
+        (recentChange && (isEnteringConditioning(history, category) || isLeavingConditioning(history, category)));
+    let kind = "idle";
+    let summary = "Standing by";
+    let className = "status-idle";
+    let stage = parsed.stage;
+    const detailParts = [];
+    if (parsed.defrost) {
+        kind = "defrost";
+        summary = "Defrosting";
+        className = "status-heating";
+    }
+    else if (transition) {
+        kind = "transition";
+        className = "status-transition";
+        if (category === "prep_heat")
+            summary = "Getting ready to heat";
+        else if (category === "prep_cool")
+            summary = "Getting ready to cool";
+        else if (category === "prep")
+            summary = "Getting ready";
+        else {
+            const direction = transitionDirection(history, current);
+            summary = direction === "down" ? "Winding down" : "Starting up";
+        }
+    }
+    else if (category === "heat" || (contradictoryIdle && parsed.heatCool === "heat")) {
+        kind = "heating";
+        summary = "Heating";
+        className = "status-heating";
+        stage = Math.max(stage, 1);
+    }
+    else if (category === "cool" || (contradictoryIdle && parsed.heatCool === "cool")) {
+        kind = "cooling";
+        summary = "Cooling";
+        className = "status-cooling";
+        stage = Math.max(stage, 1);
+    }
+    else if (category === "fan" || fanOnlyMode) {
+        kind = "fan";
+        summary = "Fan running";
+        className = "status-fan";
+    }
+    else if (isBlowerCirculating(system.status.idu)) {
+        kind = "circulating";
+        summary = "Circulating air";
+        className = "status-fan";
+    }
+    else {
+        kind = "idle";
+        summary = "Standing by";
+        className = "status-idle";
+    }
+    if (kind === "heating" || kind === "cooling") {
+        if (stage > 0)
+            detailParts.push(`Stage ${stage}`);
+        if (blowerDetail)
+            detailParts.push(blowerDetail);
+    }
+    else if (kind === "circulating" || kind === "fan") {
+        if (blowerDetail)
+            detailParts.push(blowerDetail);
+    }
+    else if (kind === "defrost") {
+        if (blowerDetail)
+            detailParts.push(blowerDetail);
+    }
+    else if (kind === "transition" && blowerDetail) {
+        detailParts.push(blowerDetail);
+    }
+    else if (kind === "idle") {
+        const modeLabel = fanOnlyMode ? "Fan only" : systemMode === "auto" ? "Auto" : systemMode.charAt(0).toUpperCase() + systemMode.slice(1);
+        detailParts.push(modeLabel);
+        if (blowerDetail)
+            detailParts.push(blowerDetail);
+    }
+    return {
+        summary,
+        className,
+        detail: detailParts.length ? detailParts.join(" · ") : null,
+        kind,
+        stage,
+        transition,
+    };
+}
+function formatBlowerLiveDisplay(idu, fanSetting, fanSpeed) {
+    return buildBlowerMetrics(idu, fanSetting, fanSpeed).combined;
 }
 function resolveFanSetting(statusZone, configZone) {
     if (!configZone)
@@ -397,6 +665,9 @@ function mapZones(system) {
         const fanSpeed = resolveFanSpeed(statusZone);
         const setpoints = resolveZoneSetpoints(statusZone, configZone);
         const onHold = configZone?.hold === "on" || statusZone?.hold === "on";
+        const conditioning = statusZone?.zoneconditioning ?? "idle";
+        const blowerMetrics = buildBlowerMetrics(system.status.idu, fan, fanSpeed);
+        const operation = presentZoneOperation(system, conditioning, zoneId, fan, fanSpeed);
         zones.push({
             id: zoneId,
             name: configZone?.name ?? `Zone ${zoneId}`,
@@ -410,15 +681,24 @@ function mapZones(system) {
             sensor_rt: indoorTemp,
             fan,
             fan_speed: fanSpeed,
-            fan_display: formatBlowerLiveDisplay(system.status.idu, fanSpeed),
+            fan_display: blowerMetrics.combined,
+            fan_rpm_display: blowerMetrics.rpm,
+            fan_cfm_display: blowerMetrics.cfm,
+            fan_setting_display: blowerMetrics.setting,
             activity: onHold
                 ? (configZone?.holdActivity ?? statusZone?.currentActivity ?? null)
                 : (statusZone?.currentActivity ?? null),
-            conditioning: statusZone?.zoneconditioning ?? "idle",
+            conditioning,
             hold: onHold,
             hold_activity: configZone?.holdActivity ?? (onHold ? statusZone?.currentActivity ?? null : null),
             hold_until: configZone?.otmr ?? null,
             presets,
+            operation_summary: operation.summary,
+            operation_class: operation.className,
+            operation_detail: operation.detail,
+            operation_kind: operation.kind,
+            operation_stage: operation.stage,
+            operation_transition: operation.transition,
         });
     }
     return zones;
@@ -898,6 +1178,18 @@ function pageStyles() {
     .brand img { width: 40px; height: 40px; border-radius: 10px; }
     .brand h1 { font-size: 1rem; margin: 0; }
     .brand p { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.8rem; }
+    .nav-section {
+      margin: 1rem 0 0.35rem;
+      padding: 0 0.85rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .nav-section:first-child {
+      margin-top: 0.15rem;
+    }
     .nav-link {
       display: block;
       padding: 0.7rem 0.85rem;
@@ -943,12 +1235,46 @@ function pageStyles() {
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .mobile-header-meta {
-      font-size: 0.72rem;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+
+    .system-selector {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid transparent;
+      border-radius: 0.5rem;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      padding: 0.1rem 1.4rem 0.1rem 0;
+      margin: 0;
+      max-width: 100%;
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0 center;
+      background-size: 0.9rem;
+    }
+    .system-selector:hover:not(:disabled) {
+      border-color: var(--border);
+      background-color: var(--panel);
+    }
+    .system-selector:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .system-selector:disabled {
+      cursor: default;
+      opacity: 0.85;
+      background-image: none;
+      padding-right: 0;
+    }
+    .mobile-header-title.system-selector {
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+    .toolbar-meta.system-selector {
+      font-size: 0.88rem;
+      color: var(--text);
+      font-weight: 600;
     }
     .status-pill-compact {
       font-size: 0.72rem;
@@ -1418,30 +1744,104 @@ function pageStyles() {
       font-weight: 600;
     }
     .status-badge .icon { width: 1rem; height: 1rem; }
+    .status-icon-staged {
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 0.15rem;
+      vertical-align: middle;
+    }
+    .status-icon-staged > .icon { width: 1rem; height: 1rem; flex-shrink: 0; }
+    .stage-bars {
+      display: inline-flex;
+      flex-direction: column-reverse;
+      gap: 1px;
+      height: 1rem;
+      justify-content: flex-end;
+    }
+    .stage-bar {
+      width: 0.28rem;
+      border-radius: 1px;
+      background: currentColor;
+      opacity: 0.2;
+    }
+    .stage-bar:nth-child(1) { height: 0.2rem; }
+    .stage-bar:nth-child(2) { height: 0.35rem; }
+    .stage-bar:nth-child(3) { height: 0.5rem; }
+    .stage-bar:nth-child(4) { height: 0.65rem; }
+    .stage-bar:nth-child(5) { height: 0.8rem; }
+    .stage-bar.active { opacity: 1; }
     .status-heating { background: #ffedd5; color: #c2410c; }
     .status-cooling { background: #e0f2fe; color: #0369a1; }
     .status-idle { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
     .status-fan { background: #ede9fe; color: #6d28d9; }
+    .status-transition { background: #f5f5f4; color: #57534e; border: 1px solid var(--border); }
     html[data-theme="dark"] .status-heating { background: #431407; color: #fdba74; }
     html[data-theme="dark"] .status-cooling { background: #0c4a6e; color: #7dd3fc; }
     html[data-theme="dark"] .status-fan { background: #2e1065; color: #c4b5fd; }
+    html[data-theme="dark"] .status-transition { background: #292524; color: #d6d3d1; }
     .stat-chips {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.65rem;
+      gap: 0.5rem;
       margin-bottom: 1rem;
     }
-    .blower-chip {
-      grid-column: 1 / -1;
-      gap: 0.55rem;
+    .stat-chips-compact-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: stretch;
     }
-    .blower-chip .chip-header [data-fan-label] {
-      margin-left: auto;
-      font-size: 0.72rem;
-      font-weight: 700;
-      color: var(--accent);
+    .stat-chip-compact {
+      flex: 1 1 6rem;
+      min-width: 5.75rem;
+      max-width: 8rem;
+      padding: 0.45rem 0.5rem;
+      gap: 0.15rem;
+      border-radius: 0.7rem;
     }
-    .blower-chip-body {
+    .stat-chip-compact .icon {
+      width: 0.85rem;
+      height: 0.85rem;
+    }
+    .stat-chip-compact .chip-label {
+      font-size: 0.62rem;
+    }
+    .stat-chip-compact .chip-value {
+      font-size: 0.8rem;
+      line-height: 1.2;
+    }
+    .stat-chip-compact .humidity-chip-body {
+      gap: 0.35rem;
+    }
+    .stat-chip-compact .humidity-bar-track {
+      width: 0.4rem;
+      height: 1.65rem;
+    }
+    .schedule-chip-compact .chip-value {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .schedule-chip-compact .schedule-chip-link {
+      font-size: 0.6rem;
+      margin-top: 0.05rem;
+    }
+    .blower-chip-compact .chip-value {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .circulation-grid {
+      display: grid;
+      gap: 1rem;
+    }
+    .circulation-zone-card h3 {
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+    }
+    .circulation-zone-card.single-zone h3 {
+      display: none;
+    }
+    .circulation-panel {
       display: grid;
       grid-template-columns: minmax(5rem, auto) 1fr;
       gap: 0.75rem;
@@ -1452,15 +1852,37 @@ function pageStyles() {
       gap: 0.2rem;
       min-width: 0;
     }
-    .blower-chip .fan-control {
-      border: none;
-      padding: 0;
-      background: transparent;
-      border-radius: 0;
+    .blower-readout {
+      display: grid;
+      gap: 0.1rem;
+      min-width: 0;
     }
-    .blower-chip .fan-control input[type="range"] {
-      margin-top: 0;
+    .blower-metric {
+      display: flex;
+      align-items: baseline;
+      gap: 0.35rem;
+      font-size: 0.88rem;
+      font-weight: 700;
+      line-height: 1.35;
+      white-space: nowrap;
     }
+    .blower-metric-label {
+      flex: 0 0 3.25rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .fan-control-label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 0.2rem;
+      text-align: center;
+    }
+
     .stat-chip {
       border: 1px solid var(--border);
       border-radius: 0.85rem;
@@ -1554,6 +1976,23 @@ function pageStyles() {
       flex: 1;
       min-width: 0;
     }
+    .status-copy {
+      display: grid;
+      gap: 0.25rem;
+      flex: 1;
+      min-width: 0;
+    }
+    .status-detail {
+      margin: 0;
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .system-activity-readout {
+      margin: 0.35rem 0 0;
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
     .filter-life-row .tile-refresh {
       margin-left: 0.35rem;
     }
@@ -1566,6 +2005,35 @@ function pageStyles() {
     .chip-value {
       font-size: 0.95rem;
       font-weight: 700;
+    }
+    .humidity-chip-body {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+    }
+    .humidity-indicator {
+      flex-shrink: 0;
+    }
+    .humidity-bar-track {
+      width: 0.55rem;
+      height: 2.75rem;
+      border-radius: 999px;
+      background: var(--border);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    .humidity-bar-fill {
+      display: block;
+      width: 100%;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #7dd3fc, #0284c7);
+      min-height: 0;
+      transition: height 0.35s ease;
+    }
+    html[data-theme="dark"] .humidity-bar-fill {
+      background: linear-gradient(180deg, #38bdf8, #0369a1);
     }
     .mini-bar,
     .filter-bar-track {
@@ -1612,6 +2080,11 @@ function pageStyles() {
       letter-spacing: 0;
     }
     .section-title .icon { width: 1rem; height: 1rem; }
+    .mode-page-grid {
+      display: grid;
+      gap: 1rem;
+      max-width: 36rem;
+    }
     .mode-control-card {
       padding: 1rem 1.1rem;
     }
@@ -1844,8 +2317,7 @@ function pageStyles() {
         grid-row: 2;
       }
       .zone-control-layout { grid-template-columns: 1fr; }
-      .stat-chips { grid-template-columns: 1fr; }
-      .blower-chip-body { grid-template-columns: 1fr; }
+      .circulation-panel { grid-template-columns: 1fr; }
     }
     .api-toolbar {
       display: flex;
@@ -2191,18 +2663,40 @@ function devBannerHtml() {
         "</div>");
 }
 function renderPage(active, content) {
-    const nav = [
-        { id: "dashboard", label: "Dashboard", href: "/" },
-        { id: "weather", label: "Weather", href: "/weather" },
-        { id: "schedule", label: "Schedule", href: "/schedule" },
-        { id: "activities", label: "Activities", href: "/activities" },
-        { id: "maintenance", label: "Maintenance", href: "/maintenance" },
-        { id: "api", label: "API Explorer", href: "/api" },
-        { id: "setup", label: "Setup", href: "/setup" },
-        { id: "settings", label: "Settings", href: "/settings" },
+    const navSections = [
+        {
+            label: "Control",
+            items: [
+                { id: "dashboard", label: "Dashboard", href: "/" },
+                { id: "mode", label: "Mode", href: "/mode" },
+                { id: "schedule", label: "Schedule", href: "/schedule" },
+                { id: "activities", label: "Activities", href: "/activities" },
+                { id: "circulation", label: "Circulation", href: "/circulation" },
+            ],
+        },
+        {
+            label: "System",
+            items: [
+                { id: "weather", label: "Weather", href: "/weather" },
+                { id: "maintenance", label: "Maintenance", href: "/maintenance" },
+            ],
+        },
+        {
+            label: "App",
+            items: [
+                { id: "api", label: "API Explorer", href: "/api" },
+                { id: "setup", label: "Setup", href: "/setup" },
+                { id: "settings", label: "Settings", href: "/settings" },
+            ],
+        },
     ];
-    const navHtml = nav
-        .map((item) => `<a class="nav-link${item.id === active ? " active" : ""}" href="${item.href}">${escapeHtml(item.label)}</a>`)
+    const navHtml = navSections
+        .map((section) => {
+        const links = section.items
+            .map((item) => `<a class="nav-link${item.id === active ? " active" : ""}" href="${item.href}">${escapeHtml(item.label)}</a>`)
+            .join("");
+        return `<p class="nav-section">${escapeHtml(section.label)}</p>${links}`;
+    })
         .join("");
     return `<!DOCTYPE html>
 <html lang="en">
@@ -2222,8 +2716,9 @@ function renderPage(active, content) {
         </svg>
       </button>
       <div class="mobile-header-copy">
-        <span class="mobile-header-title" id="mobile-header-system">Bryant/Carrier HVAC</span>
-        <span class="mobile-header-meta" id="mobile-header-meta">Loading…</span>
+        <select class="mobile-header-title system-selector" id="mobile-header-system" data-system-select aria-label="Select HVAC system">
+          <option value="">Bryant/Carrier HVAC</option>
+        </select>
       </div>
       ${active === "dashboard" ? '<button type="button" class="tile-refresh dashboard-refresh mobile-dashboard-refresh" id="mobile-dashboard-refresh" aria-label="Refresh dashboard"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>' : ""}
       <span class="status-pill status-pill-compact warning" id="mobile-connection-pill">Loading…</span>
@@ -2317,34 +2812,115 @@ function renderPage(active, content) {
         if (!mq.matches) closeSidebar();
       });
     })();
-    window.hvacUpdateMobileHeader = function (data) {
-      const systemEl = document.getElementById("mobile-header-system");
-      const metaEl = document.getElementById("mobile-header-meta");
-      const pill = document.getElementById("mobile-connection-pill");
-      if (!systemEl || !pill) return;
+    window.hvacSystemSelectSyncing = false;
+    window.hvacSystemSwitchInFlight = false;
+    window.hvacPopulateSystemSelect = function (select, data) {
+      if (!select) return;
+      const systems = data?.systems || [];
+      const activeSerial = data?.system?.serial || data?.settings?.system_serial || "";
       const settingsName = data?.settings?.system_name || "Bryant/Carrier HVAC";
+      const fallbackName = data?.system?.name || settingsName;
+      window.hvacSystemSelectSyncing = true;
+      select.replaceChildren();
       if (!data?.configured) {
-        systemEl.textContent = settingsName;
-        if (metaEl) metaEl.textContent = "Setup required";
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = settingsName;
+        select.appendChild(option);
+        select.value = "";
+        select.disabled = true;
+        window.hvacSystemSelectSyncing = false;
+        return;
+      }
+      if (!systems.length) {
+        const option = document.createElement("option");
+        option.value = activeSerial;
+        option.textContent = fallbackName;
+        select.appendChild(option);
+        select.value = activeSerial;
+        select.disabled = true;
+        window.hvacSystemSelectSyncing = false;
+        return;
+      }
+      systems.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.serial;
+        option.textContent = item.name || item.serial;
+        select.appendChild(option);
+      });
+      const selectedSerial = systems.some((item) => item.serial === activeSerial)
+        ? activeSerial
+        : systems[0].serial;
+      select.value = selectedSerial;
+      select.disabled = systems.length <= 1 || window.hvacSystemSwitchInFlight;
+      window.hvacSystemSelectSyncing = false;
+    };
+    window.hvacSyncSystemSelectors = function (data) {
+      document.querySelectorAll("[data-system-select]").forEach((select) => {
+        window.hvacPopulateSystemSelect(select, data);
+      });
+    };
+    window.hvacSwitchSystem = async function (serial) {
+      if (!serial || window.hvacSystemSwitchInFlight) return;
+      window.hvacSystemSwitchInFlight = true;
+      document.querySelectorAll("[data-system-select]").forEach((select) => {
+        select.disabled = true;
+      });
+      const pill = document.getElementById("mobile-connection-pill");
+      try {
+        const res = await fetch("/api/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ system_serial: serial }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || "Could not switch system");
+        window.location.reload();
+      } catch (error) {
+        window.hvacSystemSwitchInFlight = false;
+        if (pill) {
+          pill.className = "status-pill status-pill-compact error";
+          pill.textContent = String(error);
+        }
+        try {
+          const statusRes = await fetch("/api/status");
+          const data = await statusRes.json();
+          window.hvacSyncSystemSelectors(data);
+        } catch (refreshError) {
+          document.querySelectorAll("[data-system-select]").forEach((select) => {
+            select.disabled = false;
+          });
+        }
+      }
+    };
+    window.hvacUpdateMobileHeader = function (data) {
+      const pill = document.getElementById("mobile-connection-pill");
+      window.hvacSyncSystemSelectors(data);
+      if (!pill) return;
+      if (!data?.configured) {
         pill.className = "status-pill status-pill-compact warning";
         pill.textContent = "Setup required";
         return;
       }
       if (!data.system || !data.connected) {
-        systemEl.textContent = data?.system?.name || settingsName;
-        if (metaEl) metaEl.textContent = data?.error || "Waiting for Carrier cloud";
         pill.className = "status-pill status-pill-compact warning";
         pill.textContent = data?.error ? "Connection issue" : "Syncing";
         return;
       }
-      const match = (data.systems || []).find((item) => item.serial === data.system.serial);
-      const carrierName = match?.name || data.system.name || settingsName;
-      const model = match?.model || data.system.model;
-      systemEl.textContent = carrierName;
-      if (metaEl) metaEl.textContent = model || data.system.serial || "";
       pill.className = "status-pill status-pill-compact success";
       pill.textContent = "Connected";
     };
+    document.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement) || !target.matches("[data-system-select]")) return;
+      if (window.hvacSystemSelectSyncing || window.hvacSystemSwitchInFlight) return;
+      const serial = target.value;
+      if (!serial) return;
+      document.querySelectorAll("[data-system-select]").forEach((select) => {
+        if (select !== target) select.value = serial;
+      });
+      window.hvacSwitchSystem(serial);
+    });
     (function () {
       async function refreshMobileHeader() {
         try {
@@ -2353,13 +2929,11 @@ function renderPage(active, content) {
           window.hvacUpdateMobileHeader(data);
         } catch (error) {
           const systemEl = document.getElementById("mobile-header-system");
-          const metaEl = document.getElementById("mobile-header-meta");
           const pill = document.getElementById("mobile-connection-pill");
-          if (systemEl) systemEl.textContent = "Bryant/Carrier HVAC";
-          if (metaEl) metaEl.textContent = String(error);
+          if (systemEl && "value" in systemEl) systemEl.value = "";
           if (pill) {
             pill.className = "status-pill status-pill-compact error";
-            pill.textContent = "Error";
+            pill.textContent = String(error);
           }
         }
       }
@@ -2496,7 +3070,9 @@ function setupContent(settings) {
 function dashboardContent() {
     return `
     <div class="toolbar dashboard-toolbar">
-      <p class="toolbar-meta" id="active-system-label">Loading system…</p>
+      <select class="toolbar-meta system-selector" id="active-system-select" data-system-select aria-label="Select HVAC system">
+        <option value="">Loading system…</option>
+      </select>
       <div class="dashboard-toolbar-actions">
         <button type="button" class="tile-refresh dashboard-refresh" id="dashboard-refresh" aria-label="Refresh dashboard">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
@@ -2504,10 +3080,9 @@ function dashboardContent() {
         <span class="status-pill warning" id="connection-pill">Loading…</span>
       </div>
     </div>
-    <div class="grid" id="system-cards">
-      <div class="card"><p class="muted">Loading system status…</p></div>
+    <div id="zone-cards" class="grid">
+      <div class="card"><p class="muted">Loading zones…</p></div>
     </div>
-    <div id="zone-cards" class="grid" style="margin-top:1rem"></div>
     <script>
       const THERMO_MIN = 60;
       const THERMO_MAX = 90;
@@ -2587,6 +3162,7 @@ function dashboardContent() {
         filter: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>',
         thermostat: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a4 4 0 0 0-4 4v9a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><circle cx="12" cy="15" r="1.5" fill="currentColor"/></svg>',
         pause: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>',
+        activity: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>',
         refresh: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
       };
 
@@ -2606,13 +3182,6 @@ function dashboardContent() {
         if (m === "fanonly" || m === "fan_only") return "fanonly";
         if (m === "off") return "off";
         return "auto";
-      }
-
-      function modeLabel(mode) {
-        const normalized = normalizeMode(mode);
-        if (normalized === "fanonly") return "Fan only";
-        if (normalized === "auto") return "Auto";
-        return normalized.charAt(0).toUpperCase() + normalized.slice(1);
       }
 
       function clampTemp(value) {
@@ -2639,35 +3208,9 @@ function dashboardContent() {
         return index >= 0 ? index : 0;
       }
 
-      function fanSpeedToIndex(speed) {
-        if (!speed || speed === "off") return 0;
-        if (speed === "on") return 1;
-        const index = FAN_LEVELS.indexOf(speed);
-        return index >= 0 ? index : 0;
-      }
-
-      function fanBarsIndex(zone) {
-        return fanSpeedToIndex(zone.fan_speed);
-      }
-
       function fanSettingLabel(zone) {
         const index = fanToIndex(zone.fan);
         return FAN_LABELS[index] || "Auto";
-      }
-
-      function applyFanSettingUi(card, fan) {
-        const fanIndex = fanToIndex(fan);
-        const label = card.querySelector("[data-fan-label]");
-        const slider = card.querySelector('[data-field="fan"]');
-        if (label) label.textContent = FAN_LABELS[fanIndex] || "Auto";
-        if (slider) slider.value = String(fanIndex);
-        card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, index) => {
-          tick.classList.toggle("active", index === fanIndex);
-        });
-      }
-
-      function fanDisplayText(zone) {
-        return zone.fan_display || "—";
       }
 
       function scheduleLabel(activity) {
@@ -2697,13 +3240,40 @@ function dashboardContent() {
         return labels[activity] || activity.charAt(0).toUpperCase() + activity.slice(1);
       }
 
+      function renderStageBars(stage) {
+        const level = Math.max(0, Math.min(5, Number(stage) || 0));
+        return [1, 2, 3, 4, 5].map((index) => {
+          return '<span class="stage-bar' + (index <= level ? " active" : "") + '"></span>';
+        }).join("");
+      }
+
+      function stagedHeatIcon(stage) {
+        const level = Math.max(1, Math.min(5, Number(stage) || 1));
+        return '<span class="status-icon-staged" title="Stage ' + level + '">' + ICONS.flame + '<span class="stage-bars" aria-hidden="true">' + renderStageBars(level) + "</span></span>";
+      }
+
+      function stagedCoolIcon(stage) {
+        const level = Math.max(1, Math.min(5, Number(stage) || 1));
+        return '<span class="status-icon-staged" title="Stage ' + level + '">' + ICONS.snow + '<span class="stage-bars" aria-hidden="true">' + renderStageBars(level) + "</span></span>";
+      }
+
+      function operationIcon(zone) {
+        const kind = zone.operation_kind || "idle";
+        const stage = zone.operation_stage || 0;
+        if (kind === "heating" || kind === "defrost") return stagedHeatIcon(stage || 1);
+        if (kind === "cooling") return stagedCoolIcon(stage || 1);
+        if (kind === "transition") return ICONS.activity;
+        if (kind === "fan" || kind === "circulating") return ICONS.fan;
+        return ICONS.pause;
+      }
+
       function conditioningInfo(conditioning) {
         const value = String(conditioning || "idle").toLowerCase();
         if (value.includes("heat")) {
-          return { label: value.includes("prep") || value.includes("pending") ? "Getting ready to heat" : "Heating now", className: "status-heating", icon: ICONS.flame };
+          return { label: value.includes("prep") || value.includes("pending") ? "Getting ready to heat" : "Heating", className: "status-heating", icon: stagedHeatIcon(1) };
         }
         if (value.includes("cool")) {
-          return { label: value.includes("prep") || value.includes("pending") ? "Getting ready to cool" : "Cooling now", className: "status-cooling", icon: ICONS.snow };
+          return { label: value.includes("prep") || value.includes("pending") ? "Getting ready to cool" : "Cooling", className: "status-cooling", icon: stagedCoolIcon(1) };
         }
         if (value.includes("fan")) {
           return { label: "Fan running", className: "status-fan", icon: ICONS.fan };
@@ -2727,26 +3297,9 @@ function dashboardContent() {
         return scheduleLabel(preset);
       }
 
-      function syncFanBars(card, zone) {
-        const barsIndex = fanBarsIndex(zone);
-        card.querySelectorAll(".blower-chip .fan-bar").forEach((bar, index) => {
-          const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
-          bar.classList.toggle("active", lit);
-          bar.classList.toggle("auto", false);
-        });
-      }
-
-      function syncFanTile(card, zone) {
-        const readout = card.querySelector("[data-fan-readout]");
-        if (readout) readout.textContent = fanDisplayText(zone);
-        syncFanBars(card, zone);
-        if (card.dataset.fanEditing === "true") return;
-        if (card.dataset.fanUpdateInFlight === "true") return;
-        if (card.dataset.mutationPending === "true" && card.dataset.lastFan) {
-          applyFanSettingUi(card, card.dataset.lastFan);
-          return;
-        }
-        applyFanSettingUi(card, zone.fan || "auto");
+      function syncBlowerCompactTile(card, zone) {
+        const setting = card.querySelector("[data-blower-setting-value]");
+        if (setting) setting.textContent = fanSettingLabel(zone);
       }
 
       function syncHumidityTile(card, zone) {
@@ -2757,7 +3310,7 @@ function dashboardContent() {
           humidityValue.textContent = Number.isFinite(humidity) ? humidity + "%" : "—";
         }
         if (humidityBar) {
-          humidityBar.style.width = Number.isFinite(humidity) ? Math.max(0, Math.min(100, humidity)) + "%" : "0%";
+          humidityBar.style.height = Number.isFinite(humidity) ? Math.max(0, Math.min(100, humidity)) + "%" : "0%";
         }
       }
 
@@ -2794,24 +3347,20 @@ function dashboardContent() {
       }
 
       function syncStatusTile(card, zone) {
-        const status = conditioningInfo(zone.conditioning);
+        const fallback = conditioningInfo(zone.conditioning);
+        const summary = zone.operation_summary || fallback.label;
+        const className = zone.operation_class || fallback.className;
         const badge = card.querySelector("[data-status-badge]");
+        const detail = card.querySelector("[data-status-detail]");
         if (badge) {
-          badge.className = "status-badge " + status.className;
-          badge.innerHTML = status.icon + " " + escapeHtml(status.label);
+          badge.className = "status-badge " + className;
+          badge.innerHTML = operationIcon(zone) + " " + escapeHtml(summary);
         }
-      }
-
-      function syncModeTile(mode) {
-        const normalized = normalizeMode(mode || "auto");
-        const readout = document.querySelector("[data-mode-readout]");
-        if (readout) {
-          readout.innerHTML = "Now: <strong>" + escapeHtml(modeLabel(mode)) + "</strong>";
+        if (detail) {
+          const text = zone.operation_detail || "";
+          detail.textContent = text;
+          detail.hidden = !text;
         }
-        document.querySelectorAll("[data-mode]").forEach((button) => {
-          const active = normalizeMode(button.dataset.mode) === normalized;
-          button.className = "mode-tile mode-tile-" + button.dataset.mode + (active ? " active" : "");
-        });
       }
 
       async function fetchFreshStatus() {
@@ -2832,13 +3381,12 @@ function dashboardContent() {
         syncScheduleTile(card, zone);
         syncHumidityTile(card, zone);
         syncThermoTile(card, zone);
-        syncFanTile(card, zone);
+        syncBlowerCompactTile(card, zone);
       }
 
       function applyDashboardSnapshot(data, options = {}) {
         const preserveLayout = options.preserveLayout === true;
         const pill = document.getElementById("connection-pill");
-        const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
         const zoneDragging = Boolean(zoneCards?.querySelector('[data-dragging="true"]'));
 
@@ -2850,9 +3398,8 @@ function dashboardContent() {
             pill.className = "status-pill warning";
             pill.textContent = "Setup required";
           }
-          if (!preserveLayout && systemCards && zoneCards) {
-            systemCards.innerHTML = '<div class="card"><h3>Sign in required</h3><p class="muted">Connect your Bryant/Carrier account on the <a href="/setup">Setup page</a>.</p></div>';
-            zoneCards.innerHTML = "";
+          if (!preserveLayout && zoneCards) {
+            zoneCards.innerHTML = '<div class="card"><h3>Sign in required</h3><p class="muted">Connect your Bryant/Carrier account on the <a href="/setup">Setup page</a>.</p></div>';
           }
           return;
         }
@@ -2862,9 +3409,8 @@ function dashboardContent() {
             pill.className = "status-pill warning";
             pill.textContent = data.error ? "Connection issue" : "Syncing";
           }
-          if (!preserveLayout && systemCards && zoneCards) {
-            systemCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + escapeHtml(data.error || "Waiting for data from Carrier cloud. Check your internet connection.") + '</p></div>';
-            zoneCards.innerHTML = "";
+          if (!preserveLayout && zoneCards) {
+            zoneCards.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + escapeHtml(data.error || "Waiting for data from Carrier cloud. Check your internet connection.") + '</p></div>';
           }
           return;
         }
@@ -2875,9 +3421,6 @@ function dashboardContent() {
         }
 
         const mode = data.system?.mode || "auto";
-        if (systemCards?.querySelector("[data-mode]")) {
-          syncModeTile(mode);
-        }
 
         if (!zoneDragging && zoneCards && Array.isArray(data.zones) && data.zones.length) {
           const singleZone = data.zones.length === 1;
@@ -3028,17 +3571,6 @@ function dashboardContent() {
         });
       }
 
-      function releaseFanUpdateLock(card) {
-        delete card.dataset.fanUpdateInFlight;
-        const timer = card.dataset.fanUpdateLockTimer;
-        if (timer) {
-          window.clearTimeout(Number(timer));
-          delete card.dataset.fanUpdateLockTimer;
-        }
-        const slider = card.querySelector('[data-field="fan"]');
-        if (slider) slider.disabled = false;
-      }
-
       function clearSetpointMutation(card) {
         delete card.dataset.mutationPending;
         delete card.dataset.lastHold;
@@ -3058,32 +3590,11 @@ function dashboardContent() {
             cool: payload.cool_setpoint,
           });
         }
-        if (payload.fan) {
-          if (card.dataset.fanUpdateInFlight === "true") {
-            card.dataset.fanPending = payload.fan;
-            if (message) {
-              message.className = "message";
-              message.textContent = "Updating blower speed…";
-            }
-            return false;
-          }
-          card.dataset.fanUpdateInFlight = "true";
-          card.dataset.fanUpdateLockTimer = String(
-            window.setTimeout(() => {
-              releaseFanUpdateLock(card);
-            }, 45_000),
-          );
-        }
         if (message) {
           message.className = "message";
-          message.textContent = payload.fan ? "Updating blower speed…" : "Updating…";
+          message.textContent = "Updating…";
         }
         markDashboardMutation();
-        if (payload.fan) {
-          card.dataset.mutationPending = "true";
-          card.dataset.lastFan = payload.fan;
-          applyFanSettingUi(card, payload.fan);
-        }
         let ok = false;
         try {
           const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
@@ -3106,8 +3617,6 @@ function dashboardContent() {
                   heat: payload.heat_setpoint,
                   cool: payload.cool_setpoint,
                 });
-              } else if (payload.fan) {
-                rememberZoneMutation(card, zone, { fan: payload.fan });
               } else {
                 rememberZoneMutation(card, zone);
               }
@@ -3117,12 +3626,7 @@ function dashboardContent() {
               syncZoneCardShell(card, zone, systemMode, singleZone);
               syncZoneReadout(card, zone);
             }
-            if (!payload.fan) {
-              window.setTimeout(() => loadDashboard({ soft: true, refresh: true }), 1500);
-            }
-          } else if (payload.fan) {
-            delete card.dataset.mutationPending;
-            delete card.dataset.lastFan;
+            window.setTimeout(() => loadDashboard({ soft: true, refresh: true }), 1500);
           } else if (isSetpointMutation) {
             clearSetpointMutation(card);
           }
@@ -3131,22 +3635,8 @@ function dashboardContent() {
             message.className = "message error";
             message.textContent = String(error);
           }
-          if (payload.fan) {
-            delete card.dataset.mutationPending;
-            delete card.dataset.lastFan;
-          } else if (isSetpointMutation) {
+          if (isSetpointMutation) {
             clearSetpointMutation(card);
-          }
-        } finally {
-          if (payload.fan) {
-            releaseFanUpdateLock(card);
-            const pending = card.dataset.fanPending;
-            delete card.dataset.fanPending;
-            if (pending) {
-              window.setTimeout(() => {
-                void postZoneUpdate(card, { fan: pending });
-              }, 0);
-            }
           }
         }
         return ok;
@@ -3164,56 +3654,8 @@ function dashboardContent() {
         });
       }
 
-      function initFanSlider(card) {
-        const slider = card.querySelector('[data-field="fan"]');
-        if (!slider || slider.dataset.initialized === "true") return;
-        slider.dataset.initialized = "true";
-        releaseFanUpdateLock(card);
-
-        const fanFromSlider = () => FAN_LEVELS[Number.parseInt(slider.value, 10)] || "auto";
-
-        const syncLabel = () => {
-          applyFanSettingUi(card, fanFromSlider());
-        };
-
-        slider.addEventListener("input", () => {
-          card.dataset.fanEditing = "true";
-          const message = card.querySelector(".zone-message");
-          if (message) {
-            message.className = "message";
-            message.textContent = "";
-          }
-          syncLabel();
-        });
-        slider.addEventListener("change", async () => {
-          const message = card.querySelector(".zone-message");
-          const fan = fanFromSlider();
-          try {
-            syncLabel();
-            if (message) {
-              message.className = "message";
-              message.textContent = "Updating blower speed…";
-            }
-            await postZoneUpdate(card, { fan });
-          } finally {
-            delete card.dataset.fanEditing;
-          }
-        });
-        syncLabel();
-      }
-
       function initZoneCard(card) {
         initThermoWidget(card.querySelector(".thermo-widget"));
-        initFanSlider(card);
-      }
-
-      function renderFanBars(zone) {
-        const barsIndex = fanBarsIndex(zone);
-        return [0, 1, 2, 3].map((index) => {
-          const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
-          const classes = "fan-bar" + (lit ? " active" : "");
-          return '<span class="' + classes + '"></span>';
-        }).join("");
       }
 
       function renderZoneCard(zone, systemMode, singleZone) {
@@ -3224,9 +3666,11 @@ function dashboardContent() {
         const cool = parseTemp(zone.cool_setpoint_display ?? zone.cool_setpoint, 74);
         const indoor = parseTemp(zone.temperature_display ?? zone.temperature, heat);
         const fanIndex = fanToIndex(zone.fan);
-        const fanText = fanDisplayText(zone);
-        const fanSettingText = fanSettingLabel(zone);
-        const status = conditioningInfo(zone.conditioning);
+        const status = {
+          label: zone.operation_summary || conditioningInfo(zone.conditioning).label,
+          className: zone.operation_class || conditioningInfo(zone.conditioning).className,
+          icon: operationIcon(zone),
+        };
         const scheduleText = chipActivityLabel(zone);
         const scheduleChipLabel = zone.hold ? "Hold" : "Schedule";
         const humidityWidth = Number.isFinite(Number(zone.humidity)) ? Math.max(0, Math.min(100, Number(zone.humidity))) : 0;
@@ -3236,53 +3680,50 @@ function dashboardContent() {
               <div>
                 <h3 class="zone-name">\${escapeHtml(zone.name)}</h3>
                 <div class="status-row">
-                  <div class="status-badge \${status.className}" data-status-badge>\${status.icon} \${escapeHtml(status.label)}</div>
+                  <div class="status-copy">
+                    <div class="status-badge \${status.className}" data-status-badge>\${status.icon} \${escapeHtml(status.label)}</div>
+                    <p class="status-detail" data-status-detail\${zone.operation_detail ? "" : ' hidden'}>\${escapeHtml(zone.operation_detail || "")}</p>
+                  </div>
                 </div>
               </div>
               <div class="zone-hero-temp">
                 <div>
                   <span class="temp-display">\${temp}</span><span class="temp-unit">\${temp === "—" ? "" : "°F"}</span>
                 </div>
-                <span class="temp-caption">Inside right now</span>
+
               </div>
             </div>
             <div class="stat-chips">
-              <div class="stat-chip">
-                <div class="chip-header">
-                  \${ICONS.droplet}
-                  <span class="chip-label">Humidity</span>
-                </div>
-                <span class="chip-value" data-humidity-value>\${humidity}\${humidity === "—" ? "" : "%"}</span>
-                <div class="mini-bar"><span data-humidity-bar style="width:\${humidityWidth}%"></span></div>
-              </div>
-              <div class="stat-chip">
-                <div class="chip-header">
-                  \${ICONS.calendar}
-                  <span class="chip-label" data-schedule-label>\${escapeHtml(scheduleChipLabel)}</span>
-                </div>
-                <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
-                <a class="schedule-chip-link" href="/schedule">View week</a>
-              </div>
-              <div class="stat-chip blower-chip">
-                <div class="chip-header">
-                  \${ICONS.fan}
-                  <span class="chip-label">Blower</span>
-                  <span data-fan-label>\${escapeHtml(fanSettingText)}</span>
-                </div>
-                <div class="blower-chip-body">
-                  <div class="blower-indicator">
-                    <span class="chip-value" data-fan-readout>\${escapeHtml(fanText)}</span>
-                    <div class="fan-bars">\${renderFanBars(zone)}</div>
+              <div class="stat-chips-compact-row">
+                <div class="stat-chip stat-chip-compact humidity-chip">
+                  <div class="chip-header">
+                    \${ICONS.droplet}
+                    <span class="chip-label">Humidity</span>
                   </div>
-                  <div class="fan-control">
-                    <input type="range" min="0" max="3" step="1" value="\${fanIndex}" data-field="fan" aria-label="Blower speed" />
-                    <div class="fan-ticks">
-                      <span class="\${fanIndex === 0 ? "active" : ""}">Auto</span>
-                      <span class="\${fanIndex === 1 ? "active" : ""}">Low</span>
-                      <span class="\${fanIndex === 2 ? "active" : ""}">Med</span>
-                      <span class="\${fanIndex === 3 ? "active" : ""}">High</span>
+                  <div class="humidity-chip-body">
+                    <div class="humidity-indicator" aria-hidden="true">
+                      <div class="humidity-bar-track">
+                        <span class="humidity-bar-fill" data-humidity-bar style="height:\${humidityWidth}%"></span>
+                      </div>
                     </div>
+                    <span class="chip-value" data-humidity-value>\${humidity}\${humidity === "—" ? "" : "%"}</span>
                   </div>
+                </div>
+                <div class="stat-chip stat-chip-compact schedule-chip-compact">
+                  <div class="chip-header">
+                    \${ICONS.calendar}
+                    <span class="chip-label" data-schedule-label>\${escapeHtml(scheduleChipLabel)}</span>
+                  </div>
+                  <span class="chip-value" data-schedule-readout>\${escapeHtml(scheduleText)}</span>
+                  <a class="schedule-chip-link" href="/schedule">Week</a>
+                </div>
+                <div class="stat-chip stat-chip-compact blower-chip-compact">
+                  <div class="chip-header">
+                    \${ICONS.fan}
+                    <span class="chip-label">Blower</span>
+                  </div>
+                  <span class="chip-value" data-blower-setting-value>\${escapeHtml(FAN_LABELS[fanIndex] || "Auto")}</span>
+                  <a class="schedule-chip-link" href="/circulation">Set</a>
                 </div>
               </div>
             </div>
@@ -3321,39 +3762,13 @@ function dashboardContent() {
         \`;
       }
 
-      function renderModeTiles(currentMode) {
-        const active = normalizeMode(currentMode);
-        const modes = [
-          { id: "heat", label: "Heat", hint: "Warm up", icon: ICONS.flame },
-          { id: "cool", label: "Cool", hint: "Cool down", icon: ICONS.snow },
-          { id: "auto", label: "Auto", hint: "Picks for you", icon: ICONS.auto },
-          { id: "off", label: "Off", hint: "Paused", icon: ICONS.power },
-        ];
-        return modes.map((mode) =>
-          '<button type="button" class="mode-tile mode-tile-' + mode.id + (active === mode.id ? " active" : "") + '" data-mode="' + mode.id + '" title="' + escapeHtml(mode.hint) + '">' +
-            mode.icon + "<span>" + mode.label + "</span></button>"
-        ).join("");
-      }
-
       function updateActiveSystemLabel(data) {
-        const label = document.getElementById("active-system-label");
-        if (!label) return;
-        if (!data.system) {
-          label.textContent = "";
-          return;
-        }
-        const match = (data.systems || []).find((item) => item.serial === data.system.serial);
-        const carrierName = match?.name || data.system.name;
-        const model = match?.model || data.system.model;
-        label.innerHTML = "Controlling <strong>" + escapeHtml(carrierName) + "</strong>" +
-          (model ? " · " + escapeHtml(model) : "") +
-          " · <span class=\\"muted\\">" + escapeHtml(data.system.serial) + "</span>";
+        if (window.hvacSyncSystemSelectors) window.hvacSyncSystemSelectors(data);
       }
 
       async function loadDashboard(options = {}) {
         if (dashboardFetchInFlight && options.auto) return;
         const pill = document.getElementById("connection-pill");
-        const systemCards = document.getElementById("system-cards");
         const zoneCards = document.getElementById("zone-cards");
         const zoneDragging = Boolean(zoneCards.querySelector('[data-dragging="true"]'));
         const recentlyMutated = Date.now() < dashboardQuietUntil;
@@ -3367,35 +3782,6 @@ function dashboardContent() {
             return;
           }
           const mode = data.system.mode || "auto";
-          if (!options.soft) {
-            systemCards.innerHTML = \`
-              <div class="card mode-control-card">
-                <div class="card-header-row">
-                  <h3>What should it do?</h3>
-                </div>
-                <p class="muted mode-readout" data-mode-readout>Now: <strong>\${escapeHtml(modeLabel(mode))}</strong></p>
-                <div class="mode-tiles">\${renderModeTiles(mode)}</div>
-                <div class="message" id="mode-message"></div>
-              </div>
-            \`;
-            systemCards.querySelectorAll("[data-mode]").forEach((button) => {
-              button.addEventListener("click", async () => {
-                const message = document.getElementById("mode-message");
-                const modeRes = await fetch("/api/mode", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ mode: button.dataset.mode }),
-                });
-                const modeData = await modeRes.json();
-                message.className = "message " + (modeRes.ok ? "success" : "error");
-                message.textContent = modeRes.ok ? "Updated." : (modeData.error || "Could not change mode.");
-                if (modeRes.ok) {
-                  markDashboardMutation();
-                  loadDashboard({ soft: true, refresh: true });
-                }
-              });
-            });
-          }
           if (!zoneDragging) {
             const singleZone = data.zones.length === 1;
             const zoneCount = data.zones.length;
@@ -3418,9 +3804,8 @@ function dashboardContent() {
             pill.className = "status-pill error";
             pill.textContent = "Error";
           }
-          if (!options.soft) {
-            systemCards.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + '</p></div>';
-            zoneCards.innerHTML = "";
+          if (!options.soft && zoneCards) {
+            zoneCards.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + '</p></div>';
           }
         } finally {
           dashboardFetchInFlight = false;
@@ -3429,6 +3814,152 @@ function dashboardContent() {
       initDashboardRefreshButton();
       loadDashboard();
       setInterval(() => loadDashboard({ soft: true, auto: true }), 15000);
+    </script>
+  `;
+}
+function modeContent() {
+    return `
+    <div class="toolbar">
+      <h2>Mode</h2>
+    </div>
+    <div id="mode-content" class="mode-page-grid">
+      <div class="card"><p class="muted">Loading system mode…</p></div>
+    </div>
+    <script>
+      const MODE_ICONS = {
+        flame: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3c2 4 5 5.5 5 9a5 5 0 1 1-10 0c0-3.5 3-5 5-9z"/></svg>',
+        snow: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M4 7l16 10M4 17L20 7M2 12h20"/></svg>',
+        auto: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="4"/></svg>',
+        power: '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M6.3 6.3a9 9 0 1 0 11.4 0"/></svg>',
+      };
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function normalizeMode(mode) {
+        if (!mode) return "auto";
+        const m = String(mode).toLowerCase();
+        if (m.includes("cool")) return "cool";
+        if (m.includes("heat") || m === "emheat") return "heat";
+        if (m === "fanonly" || m === "fan_only") return "fanonly";
+        if (m === "off") return "off";
+        return "auto";
+      }
+
+      function modeLabel(mode) {
+        const normalized = normalizeMode(mode);
+        if (normalized === "fanonly") return "Fan only";
+        if (normalized === "auto") return "Auto";
+        return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+      }
+
+      function renderModeTiles(currentMode) {
+        const active = normalizeMode(currentMode);
+        const modes = [
+          { id: "heat", label: "Heat", hint: "Warm up", icon: MODE_ICONS.flame },
+          { id: "cool", label: "Cool", hint: "Cool down", icon: MODE_ICONS.snow },
+          { id: "auto", label: "Auto", hint: "Picks for you", icon: MODE_ICONS.auto },
+          { id: "off", label: "Off", hint: "Paused", icon: MODE_ICONS.power },
+        ];
+        return modes.map((mode) =>
+          '<button type="button" class="mode-tile mode-tile-' + mode.id + (active === mode.id ? " active" : "") + '" data-mode="' + mode.id + '" title="' + escapeHtml(mode.hint) + '">' +
+            mode.icon + "<span>" + mode.label + "</span></button>"
+        ).join("");
+      }
+
+      function syncModeTile(mode) {
+        const normalized = normalizeMode(mode || "auto");
+        const readout = document.querySelector("[data-mode-readout]");
+        if (readout) {
+          readout.innerHTML = "Now: <strong>" + escapeHtml(modeLabel(mode)) + "</strong>";
+        }
+        document.querySelectorAll("[data-mode]").forEach((button) => {
+          const active = normalizeMode(button.dataset.mode) === normalized;
+          button.className = "mode-tile mode-tile-" + button.dataset.mode + (active ? " active" : "");
+        });
+      }
+
+      function syncSystemActivity(zones) {
+        const readout = document.querySelector("[data-system-activity]");
+        if (!readout || !Array.isArray(zones) || !zones.length) return;
+        const zone = zones[0];
+        const text = zone.operation_detail || zone.operation_summary || "";
+        readout.textContent = text;
+        readout.hidden = !text;
+      }
+
+      function renderModeCard(mode) {
+        return (
+          '<div class="card mode-control-card">' +
+          '<div class="card-header-row"><h3>What should it do?</h3></div>' +
+          '<p class="muted mode-readout" data-mode-readout>Now: <strong>' + escapeHtml(modeLabel(mode)) + '</strong></p>' +
+          '<p class="muted system-activity-readout" data-system-activity hidden></p>' +
+          '<div class="mode-tiles">' + renderModeTiles(mode) + '</div>' +
+          '<div class="message" id="mode-message"></div>' +
+          "</div>"
+        );
+      }
+
+      function bindModeButtons() {
+        document.querySelectorAll("[data-mode]").forEach((button) => {
+          if (button.dataset.initialized === "true") return;
+          button.dataset.initialized = "true";
+          button.addEventListener("click", async () => {
+            const message = document.getElementById("mode-message");
+            const modeRes = await fetch("/api/mode", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mode: button.dataset.mode }),
+            });
+            const modeData = await modeRes.json();
+            if (message) {
+              message.className = "message " + (modeRes.ok ? "success" : "error");
+              message.textContent = modeRes.ok ? "Updated." : (modeData.error || "Could not change mode.");
+            }
+            if (modeRes.ok) {
+              await loadMode({ soft: true, refresh: true });
+            }
+          });
+        });
+      }
+
+      async function loadMode(options = {}) {
+        const root = document.getElementById("mode-content");
+        if (!root) return;
+        try {
+          const res = await fetch("/api/status" + (options.refresh ? "?refresh=1" : ""));
+          const data = await res.json();
+          if (window.hvacUpdateMobileHeader) window.hvacUpdateMobileHeader(data);
+
+          if (!data.configured) {
+            root.innerHTML = '<div class="card"><h3>Sign in required</h3><p class="muted">Connect your Bryant/Carrier account on the <a href="/setup">Setup page</a>.</p></div>';
+            return;
+          }
+
+          if (!data.connected || !data.system) {
+            root.innerHTML = '<div class="card"><h3>Not connected yet</h3><p class="muted">' + escapeHtml(data.error || "Waiting for data from Carrier cloud.") + "</p></div>";
+            return;
+          }
+
+          const mode = data.system.mode || "auto";
+          if (!options.soft || !root.querySelector("[data-mode]")) {
+            root.innerHTML = renderModeCard(mode);
+            bindModeButtons();
+          }
+          syncModeTile(mode);
+          syncSystemActivity(data.zones);
+        } catch (error) {
+          root.innerHTML = '<div class="card"><p class="muted">' + escapeHtml(error) + "</p></div>";
+        }
+      }
+
+      loadMode();
+      setInterval(() => loadMode({ soft: true }), 15000);
     </script>
   `;
 }
@@ -3822,14 +4353,333 @@ function maintenanceContent() {
     </script>
   `;
 }
+function circulationContent() {
+    return `
+    <div class="toolbar">
+      <h2>Circulation</h2>
+      <button type="button" class="tile-refresh" id="circulation-refresh" aria-label="Refresh circulation">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </div>
+    <div id="circulation-content" class="circulation-grid">
+      <div class="card"><p class="muted">Loading circulation…</p></div>
+    </div>
+    <script>
+      const FAN_LEVELS = ["auto", "low", "med", "high"];
+      const FAN_LABELS = ["Auto", "Low", "Medium", "High"];
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function fanToIndex(fan) {
+        if (fan === "on") return 1;
+        const index = FAN_LEVELS.indexOf(fan || "auto");
+        return index >= 0 ? index : 0;
+      }
+
+      function fanSpeedToIndex(speed) {
+        if (!speed || speed === "off") return 0;
+        if (speed === "on") return 1;
+        const index = FAN_LEVELS.indexOf(speed);
+        return index >= 0 ? index : 0;
+      }
+
+      function fanBarsIndex(zone) {
+        return fanSpeedToIndex(zone.fan_speed);
+      }
+
+      function renderBlowerMetricRow(label, value) {
+        return (
+          '<span class="blower-metric"><span class="blower-metric-label">' +
+          escapeHtml(label) +
+          "</span>" +
+          escapeHtml(value) +
+          "</span>"
+        );
+      }
+
+      function renderBlowerReadout(zone) {
+        const rpm = zone.fan_rpm_display || "Off";
+        const cfm = zone.fan_cfm_display || "Off";
+        return renderBlowerMetricRow("RPM", rpm) + renderBlowerMetricRow("CFM", cfm);
+      }
+
+      function renderFanBars(zone) {
+        const barsIndex = fanBarsIndex(zone);
+        return [0, 1, 2, 3].map((index) => {
+          const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
+          const classes = "fan-bar" + (lit ? " active" : "");
+          return '<span class="' + classes + '"></span>';
+        }).join("");
+      }
+
+      function applyFanSettingUi(card, fan) {
+        const fanIndex = fanToIndex(fan);
+        const label = card.querySelector("[data-fan-label]");
+        const slider = card.querySelector('[data-field="fan"]');
+        const labelText = FAN_LABELS[fanIndex] || "Auto";
+        if (label) label.textContent = labelText;
+        if (slider) slider.value = String(fanIndex);
+        card.querySelectorAll(".fan-control .fan-ticks span").forEach((tick, index) => {
+          tick.classList.toggle("active", index === fanIndex);
+        });
+      }
+
+      function syncFanBars(card, zone) {
+        const barsIndex = fanBarsIndex(zone);
+        card.querySelectorAll("[data-fan-bars] .fan-bar").forEach((bar, index) => {
+          const lit = barsIndex > 0 && index < (barsIndex === 1 ? 1 : barsIndex === 2 ? 2 : 4);
+          bar.classList.toggle("active", lit);
+          bar.classList.toggle("auto", false);
+        });
+      }
+
+      function syncCirculationCard(card, zone) {
+        const readout = card.querySelector("[data-fan-readout]");
+        if (readout) readout.innerHTML = renderBlowerReadout(zone);
+        syncFanBars(card, zone);
+        if (card.dataset.fanEditing === "true") return;
+        if (card.dataset.fanUpdateInFlight === "true") return;
+        if (card.dataset.mutationPending === "true" && card.dataset.lastFan) {
+          applyFanSettingUi(card, card.dataset.lastFan);
+          return;
+        }
+        applyFanSettingUi(card, zone.fan || "auto");
+      }
+
+      function renderCirculationZone(zone, singleZone) {
+        const fanIndex = fanToIndex(zone.fan);
+        const fanReadoutHtml = renderBlowerReadout(zone);
+        return (
+          '<div class="card circulation-zone-card' +
+          (singleZone ? " single-zone" : "") +
+          '" data-circulation-card data-zone-id="' +
+          escapeHtml(zone.id) +
+          '">' +
+          (singleZone ? "" : "<h3>" + escapeHtml(zone.name) + "</h3>") +
+          '<div class="circulation-panel">' +
+          '<div class="blower-indicator">' +
+          '<div class="blower-readout chip-value" data-fan-readout>' +
+          (fanReadoutHtml === "—" ? "—" : fanReadoutHtml) +
+          "</div>" +
+          '<div class="fan-bars" data-fan-bars>' +
+          renderFanBars(zone) +
+          "</div>" +
+          "</div>" +
+          '<div class="fan-control">' +
+          '<span class="fan-control-label" data-fan-label>' +
+          escapeHtml(FAN_LABELS[fanIndex] || "Auto") +
+          "</span>" +
+          '<input type="range" min="0" max="3" step="1" value="' +
+          fanIndex +
+          '" data-field="fan" aria-label="Blower speed" />' +
+          '<div class="fan-ticks">' +
+          '<span class="' +
+          (fanIndex === 0 ? "active" : "") +
+          '">Auto</span>' +
+          '<span class="' +
+          (fanIndex === 1 ? "active" : "") +
+          '">Low</span>' +
+          '<span class="' +
+          (fanIndex === 2 ? "active" : "") +
+          '">Med</span>' +
+          '<span class="' +
+          (fanIndex === 3 ? "active" : "") +
+          '">High</span>' +
+          "</div>" +
+          "</div>" +
+          "</div>" +
+          '<div class="message" data-circulation-message></div>' +
+          "</div>"
+        );
+      }
+
+      function releaseFanUpdateLock(card) {
+        delete card.dataset.fanUpdateInFlight;
+        const timer = card.dataset.fanUpdateLockTimer;
+        if (timer) {
+          window.clearTimeout(Number(timer));
+          delete card.dataset.fanUpdateLockTimer;
+        }
+        const slider = card.querySelector('[data-field="fan"]');
+        if (slider) slider.disabled = false;
+      }
+
+      async function postFanUpdate(card, fan) {
+        const zoneId = card.dataset.zoneId;
+        const message = card.querySelector("[data-circulation-message]");
+        if (card.dataset.fanUpdateInFlight === "true") {
+          card.dataset.fanPending = fan;
+          if (message) {
+            message.className = "message";
+            message.textContent = "Updating blower speed…";
+          }
+          return false;
+        }
+        card.dataset.fanUpdateInFlight = "true";
+        card.dataset.fanUpdateLockTimer = String(
+          window.setTimeout(() => {
+            releaseFanUpdateLock(card);
+          }, 45_000),
+        );
+        card.dataset.mutationPending = "true";
+        card.dataset.lastFan = fan;
+        applyFanSettingUi(card, fan);
+        if (message) {
+          message.className = "message";
+          message.textContent = "Updating blower speed…";
+        }
+        let ok = false;
+        try {
+          const res = await fetch("/api/zone/" + encodeURIComponent(zoneId), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fan }),
+          });
+          const data = await res.json();
+          ok = res.ok;
+          if (message) {
+            message.className = "message " + (res.ok ? "success" : "error");
+            message.textContent = res.ok ? "Updated." : (data.error || "Update failed.");
+          }
+          if (!res.ok) {
+            delete card.dataset.mutationPending;
+            delete card.dataset.lastFan;
+          }
+        } catch (error) {
+          if (message) {
+            message.className = "message error";
+            message.textContent = String(error);
+          }
+          delete card.dataset.mutationPending;
+          delete card.dataset.lastFan;
+        } finally {
+          releaseFanUpdateLock(card);
+          const pending = card.dataset.fanPending;
+          delete card.dataset.fanPending;
+          if (pending) {
+            window.setTimeout(() => {
+              void postFanUpdate(card, pending);
+            }, 0);
+          }
+        }
+        return ok;
+      }
+
+      function initFanSlider(card) {
+        const slider = card.querySelector('[data-field="fan"]');
+        if (!slider || slider.dataset.initialized === "true") return;
+        slider.dataset.initialized = "true";
+        releaseFanUpdateLock(card);
+
+        const fanFromSlider = () => FAN_LEVELS[Number.parseInt(slider.value, 10)] || "auto";
+
+        slider.addEventListener("input", () => {
+          card.dataset.fanEditing = "true";
+          const message = card.querySelector("[data-circulation-message]");
+          if (message) {
+            message.className = "message";
+            message.textContent = "";
+          }
+          applyFanSettingUi(card, fanFromSlider());
+        });
+        slider.addEventListener("change", async () => {
+          const fan = fanFromSlider();
+          try {
+            applyFanSettingUi(card, fan);
+            await postFanUpdate(card, fan);
+          } finally {
+            delete card.dataset.fanEditing;
+          }
+        });
+        applyFanSettingUi(card, fanFromSlider());
+      }
+
+      function bindCirculationCards(root) {
+        root.querySelectorAll("[data-circulation-card]").forEach((card) => {
+          initFanSlider(card);
+        });
+      }
+
+      function renderCirculation(data, options = {}) {
+        const root = document.getElementById("circulation-content");
+        if (!root) return;
+
+        if (window.hvacUpdateMobileHeader) window.hvacUpdateMobileHeader(data);
+
+        if (!data.configured) {
+          root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
+          return;
+        }
+
+        const singleZone = data.zones?.length === 1;
+
+        if (data.error && !data.zones?.length) {
+          root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
+          return;
+        }
+
+        if (!data.zones?.length) {
+          root.innerHTML = '<div class="card"><p class="muted">No circulation data available.</p></div>';
+          return;
+        }
+
+        const existingCards = root.querySelectorAll("[data-circulation-card]").length;
+        if (options.soft && existingCards === data.zones.length) {
+          for (const zone of data.zones) {
+            const card = root.querySelector('[data-circulation-card][data-zone-id="' + CSS.escape(zone.id) + '"]');
+            if (!card || card.dataset.fanEditing === "true") continue;
+            syncCirculationCard(card, zone);
+          }
+          return;
+        }
+
+        root.innerHTML = data.zones.map((zone) => renderCirculationZone(zone, singleZone)).join("");
+        bindCirculationCards(root);
+      }
+
+      async function loadCirculation(options = {}) {
+        const button = document.getElementById("circulation-refresh");
+        if (button) {
+          button.disabled = true;
+          if (options.refresh) button.classList.add("spinning");
+        }
+        try {
+          const suffix = options.refresh ? "?refresh=1" : "";
+          const res = await fetch("/api/status" + suffix);
+          const data = await res.json();
+          renderCirculation(data, options);
+        } catch (error) {
+          const root = document.getElementById("circulation-content");
+          if (root) {
+            root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
+          }
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
+        }
+      }
+
+      document.getElementById("circulation-refresh")?.addEventListener("click", () => loadCirculation({ refresh: true }));
+      loadCirculation();
+      setInterval(() => loadCirculation({ soft: true }), 15000);
+    </script>
+  `;
+}
 function activitiesContent() {
     return `
     <div class="toolbar">
-      <div>
-        <h2>Activities</h2>
-        <p class="toolbar-meta" id="activities-system-label">Loading system…</p>
-      </div>
-      <button type="button" class="secondary" id="activities-refresh">Refresh</button>
+      <h2>Activities</h2>
+      <button type="button" class="tile-refresh" id="activities-refresh" aria-label="Refresh activities">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
     </div>
     <div id="activities-content" class="activities-grid">
       <div class="card"><p class="muted">Loading activities…</p></div>
@@ -4027,34 +4877,14 @@ function activitiesContent() {
 
       function renderActivities(data) {
         const root = document.getElementById("activities-content");
-        const label = document.getElementById("activities-system-label");
         if (!root) return;
 
         if (!data.configured) {
-          if (label) label.textContent = "Connect your Carrier account to view activities.";
           root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
           return;
         }
 
         const singleZone = data.zones.length === 1;
-        const loneZone = singleZone ? data.zones[0] : null;
-        if (label) {
-          if (!data.system) {
-            label.textContent = "No system selected";
-          } else if (singleZone && loneZone) {
-            const statusText = loneZone.hold
-              ? "On hold: <strong>" + escapeHtml(loneZone.current_activity_label || "Manual") + "</strong>"
-              : "Running: <strong>" + escapeHtml(loneZone.current_activity_label || "—") + "</strong>";
-            label.innerHTML =
-              "Showing activities for <strong>" +
-              escapeHtml(data.system.name) +
-              "</strong> · " +
-              statusText;
-          } else {
-            label.innerHTML =
-              "Showing activities for <strong>" + escapeHtml(data.system.name) + "</strong>";
-          }
-        }
 
         if (data.error && !data.zones.length) {
           root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
@@ -4072,7 +4902,10 @@ function activitiesContent() {
 
       async function loadActivities(force) {
         const button = document.getElementById("activities-refresh");
-        if (button) button.disabled = true;
+        if (button) {
+          button.disabled = true;
+          if (force) button.classList.add("spinning");
+        }
         try {
           const suffix = force ? "?refresh=1" : "";
           const res = await fetch("/api/activities" + suffix);
@@ -4084,7 +4917,10 @@ function activitiesContent() {
             root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
           }
         } finally {
-          if (button) button.disabled = false;
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
         }
       }
 
@@ -4101,7 +4937,9 @@ function scheduleContent() {
         <h2>Weekly schedule</h2>
         <p class="toolbar-meta" id="schedule-system-label">Loading system…</p>
       </div>
-      <button type="button" class="secondary" id="schedule-refresh">Refresh</button>
+      <button type="button" class="tile-refresh" id="schedule-refresh" aria-label="Refresh schedule">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
     </div>
     <div id="schedule-content" class="schedule-grid">
       <div class="card"><p class="muted">Loading schedules…</p></div>
@@ -4259,7 +5097,10 @@ function scheduleContent() {
 
       async function loadSchedule(force) {
         const button = document.getElementById("schedule-refresh");
-        if (button) button.disabled = true;
+        if (button) {
+          button.disabled = true;
+          if (force) button.classList.add("spinning");
+        }
         try {
           const suffix = force ? "?refresh=1" : "";
           const res = await fetch("/api/schedule" + suffix);
@@ -4271,7 +5112,10 @@ function scheduleContent() {
             root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
           }
         } finally {
-          if (button) button.disabled = false;
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
         }
       }
 
@@ -4713,6 +5557,29 @@ async function handleApi(route, req, res, settings) {
         sendJson(res, 200, { settings: publicSettings(cleared) });
         return;
     }
+    if (route === "/api/settings" && req.method === "PATCH") {
+        const body = JSON.parse((await readBody(req)).toString("utf8"));
+        const serial = body.system_serial?.trim();
+        if (!serial) {
+            sendJson(res, 400, { error: "system_serial is required" });
+            return;
+        }
+        if (!isConfigured(settings)) {
+            sendJson(res, 400, { error: "Account not configured" });
+            return;
+        }
+        if (!cachedSystems.some((system) => system.profile.serial === serial)) {
+            sendJson(res, 400, { error: "Selected thermostat was not found on your Carrier account" });
+            return;
+        }
+        if (settings.system_serial !== serial) {
+            settings.system_serial = serial;
+            await saveSettings(settings);
+            lastLiveUpdateAt = null;
+        }
+        sendJson(res, 200, { settings: publicSettings(settings) });
+        return;
+    }
     if (route === "/api/settings" && req.method === "PUT") {
         const body = JSON.parse((await readBody(req)).toString("utf8"));
         const username = body.username?.trim() ?? settings.username;
@@ -4951,12 +5818,20 @@ async function handleRequest(req, res) {
         sendText(res, 200, "text/html; charset=utf-8", renderPage("settings", settingsContent(publicView)));
         return;
     }
+    if (route === "/mode") {
+        sendText(res, 200, "text/html; charset=utf-8", renderPage("mode", modeContent()));
+        return;
+    }
     if (route === "/weather") {
         sendText(res, 200, "text/html; charset=utf-8", renderPage("weather", weatherContent()));
         return;
     }
     if (route === "/schedule") {
         sendText(res, 200, "text/html; charset=utf-8", renderPage("schedule", scheduleContent()));
+        return;
+    }
+    if (route === "/circulation") {
+        sendText(res, 200, "text/html; charset=utf-8", renderPage("circulation", circulationContent()));
         return;
     }
     if (route === "/activities") {

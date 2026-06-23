@@ -4,7 +4,7 @@ name: Bryant/Carrier HVAC
 tagline: Cloud web UI for Bryant Evolution and Carrier Infinity heat pumps
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-hvac/icon.svg
 category: automation
-version: "2.4.3"
+version: "2.4.4"
 port: 4040
 description: >-
   Control your Bryant/Carrier Infinity or Evolution thermostat from Umbrel
@@ -23,9 +23,11 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Add an Activities page to view and edit Home, Wake, Sleep, Away, and other
-  presets. Merge blower speed control and live indicator into one tile. Compact
-  mode selector layout on the dashboard.
+  Header system selector for multi-thermostat accounts. Mode and Circulation
+  moved to dedicated sidebar pages. Compact humidity, schedule, and blower
+  tiles on the dashboard with vertical humidity indicator. Clearer live
+  operation status. Icon refresh buttons on Schedule, Activities, and
+  Circulation.
 dependencies: []
 path: ""
 defaultUsername: ""
