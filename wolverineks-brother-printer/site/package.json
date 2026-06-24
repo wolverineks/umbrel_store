@@ -1,7 +1,7 @@
 {
   "name": "wolverineks-brother-printer",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.2.0",
   "scripts": {
     "build": "tsc && cp dist/server.js server.js",
     "start": "node server.js",
