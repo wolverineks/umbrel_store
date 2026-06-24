@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.8";
+const APP_VERSION = "1.1.0";
 const DATA_ROOT = process.env.PRINTER_DATA_DIR ?? "/data";
 const SCANS_DIR = path.join(DATA_ROOT, "scans");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -20,6 +20,8 @@ const PWG_NS = "http://www.pwg.org/schemas/2010/12/sm";
 type Settings = {
   printer_host: string;
   printer_name: string;
+  black_ink_reorder_url: string;
+  color_ink_reorder_url: string;
 };
 
 type ScanRecord = {
@@ -63,9 +65,17 @@ type PrintOptions = {
   media: string;
 };
 
+const DEFAULT_BLACK_INK_REORDER_URL =
+  "https://www.amazon.com/Brother-Genuine-LC501XL2PK-Cartridges-Printers/dp/B0FKL36T9M/ref=sr_1_3?crid=3U2IHBBOA24L9&dib=eyJ2IjoiMSJ9.FY1W4QzVZuxABV-W0Koybv3iJrNFKC9fV9XQvujf95XxqJbvjfFInM62PkNC7fffAvXcX1NQrxL5z9HHhZs0FxAqT9kvsRS2P59ZpXkNhahp4nio-aiWm1N5LoBWaYKTNwv_aKYw6Gma9oLzQPlWYBwjChqhEBreCssiCFZBIp-tsx2mwiWjE8mUe586D5dc4N5hzSjXI9imBQ0ZvuVSFLjsucuN2KS1W79G-6XPprk.lXlPGVisv7rNSOIaDtGgxGR7DBfNLn-1F73gelzNQso&dib_tag=se&keywords=brother%2Blc501xl&qid=1782261557&sprefix=brother%2Blc501xl%2Caps%2C188&sr=8-3&th=1";
+
+const DEFAULT_COLOR_INK_REORDER_URL =
+  "https://www.amazon.com/Brother-Genuine-LC501XL2PK-Cartridges-Printers/dp/B0FKLH56D3/ref=sr_1_3?crid=3U2IHBBOA24L9&dib=eyJ2IjoiMSJ9.FY1W4QzVZuxABV-W0Koybv3iJrNFKC9fV9XQvujf95XxqJbvjfFInM62PkNC7fffAvXcX1NQrxL5z9HHhZs0FxAqT9kvsRS2P59ZpXkNhahp4nio-aiWm1N5LoBWaYKTNwv_aKYw6Gma9oLzQPlWYBwjChqhEBreCssiCFZBIp-tsx2mwiWjE8mUe586D5dc4N5hzSjXI9imBQ0ZvuVSFLjsucuN2KS1W79G-6XPprk.lXlPGVisv7rNSOIaDtGgxGR7DBfNLn-1F73gelzNQso&dib_tag=se&keywords=brother%2Blc501xl&qid=1782261557&sprefix=brother%2Blc501xl%2Caps%2C188&sr=8-3&th=1";
+
 const DEFAULT_SETTINGS: Settings = {
   printer_host: process.env.PRINTER_HOST?.trim() || "192.168.86.31",
   printer_name: "Brother MFC-J1360DW",
+  black_ink_reorder_url: DEFAULT_BLACK_INK_REORDER_URL,
+  color_ink_reorder_url: DEFAULT_COLOR_INK_REORDER_URL,
 };
 
 async function ensureDataDirs(): Promise<void> {
@@ -82,6 +92,14 @@ async function loadSettings(): Promise<Settings> {
     return {
       printer_host: parsed.printer_host?.trim() || DEFAULT_SETTINGS.printer_host,
       printer_name: parsed.printer_name?.trim() || DEFAULT_SETTINGS.printer_name,
+      black_ink_reorder_url:
+        parsed.black_ink_reorder_url === undefined
+          ? DEFAULT_SETTINGS.black_ink_reorder_url
+          : parsed.black_ink_reorder_url.trim(),
+      color_ink_reorder_url:
+        parsed.color_ink_reorder_url === undefined
+          ? DEFAULT_SETTINGS.color_ink_reorder_url
+          : parsed.color_ink_reorder_url.trim(),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -90,6 +108,22 @@ async function loadSettings(): Promise<Settings> {
 
 async function saveSettings(settings: Settings): Promise<void> {
   await writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+}
+
+function normalizeReorderUrl(value: string | undefined, current: string): string {
+  if (value === undefined) return current;
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Reorder links must be valid http or https URLs.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Reorder links must use http or https.");
+  }
+  return trimmed;
 }
 
 function printerBaseUrl(host: string): string {
@@ -263,7 +297,31 @@ type StatusAlert = {
   severity: "success" | "info" | "warning" | "error";
   title: string;
   message: string;
+  reorder_url?: string;
 };
+
+const BROTHER_INK_COLOR_CODES: Record<string, string> = {
+  BK: "Black",
+  M: "Magenta",
+  C: "Cyan",
+  Y: "Yellow",
+};
+
+function inkReorderUrl(color: string, settings: Settings): string | undefined {
+  const url = color === "Black" ? settings.black_ink_reorder_url : settings.color_ink_reorder_url;
+  const trimmed = url.trim();
+  return trimmed || undefined;
+}
+
+function inkReorderUrlFromBrotherCode(code: string, settings: Settings): string | undefined {
+  const color = BROTHER_INK_COLOR_CODES[code.trim().toUpperCase()];
+  return color ? inkReorderUrl(color, settings) : undefined;
+}
+
+function inkReorderUrlFromStatusMessage(message: string, settings: Settings): string | undefined {
+  const match = message.trim().match(/^Ink (?:Low|Empty) \(([^)]+)\)$/i);
+  return match ? inkReorderUrlFromBrotherCode(match[1], settings) : undefined;
+}
 
 function decodeHtmlEntities(text: string): string {
   return text
@@ -295,26 +353,14 @@ function expandBrotherStatusMessage(message: string): string {
   const normalized = message.trim();
   const inkLowMatch = normalized.match(/^Ink Low \(([^)]+)\)$/i);
   if (inkLowMatch) {
-    const colorMap: Record<string, string> = {
-      BK: "Black",
-      M: "Magenta",
-      C: "Cyan",
-      Y: "Yellow",
-    };
     const code = inkLowMatch[1].trim().toUpperCase();
-    const color = colorMap[code] ?? code;
+    const color = BROTHER_INK_COLOR_CODES[code] ?? code;
     return `${color} ink is low. Replace or refill the ${color.toLowerCase()} ink cartridge.`;
   }
   const inkEmptyMatch = normalized.match(/^Ink Empty \(([^)]+)\)$/i);
   if (inkEmptyMatch) {
-    const colorMap: Record<string, string> = {
-      BK: "Black",
-      M: "Magenta",
-      C: "Cyan",
-      Y: "Yellow",
-    };
     const code = inkEmptyMatch[1].trim().toUpperCase();
-    const color = colorMap[code] ?? code;
+    const color = BROTHER_INK_COLOR_CODES[code] ?? code;
     return `${color} ink is empty. Replace the ${color.toLowerCase()} ink cartridge before printing.`;
   }
   if (/^paper empty$/i.test(normalized)) {
@@ -329,20 +375,26 @@ function expandBrotherStatusMessage(message: string): string {
   return normalized;
 }
 
-function buildInkAlerts(ink: { cartridges: InkLevel[]; reservoir: InkLevel[] }): StatusAlert[] {
+function buildInkAlerts(
+  ink: { cartridges: InkLevel[]; reservoir: InkLevel[] },
+  settings: Settings,
+): StatusAlert[] {
   const alerts: StatusAlert[] = [];
   for (const level of ink.cartridges) {
+    const reorderUrl = inkReorderUrl(level.color, settings);
     if (level.percent === 0) {
       alerts.push({
         severity: "error",
         title: `${level.color} cartridge empty`,
         message: `The ${level.color.toLowerCase()} ink cartridge appears empty.`,
+        reorder_url: reorderUrl,
       });
     } else if (level.low) {
       alerts.push({
         severity: "warning",
         title: `${level.color} cartridge low`,
         message: `The ${level.color.toLowerCase()} ink cartridge is running low (${level.percent}%).`,
+        reorder_url: reorderUrl,
       });
     }
   }
@@ -361,6 +413,7 @@ function buildInkAlerts(ink: { cartridges: InkLevel[]; reservoir: InkLevel[] }):
 function buildStatusAlerts(
   monitor: { message: string; level: DeviceStatusLevel },
   ink: { cartridges: InkLevel[]; reservoir: InkLevel[] },
+  settings: Settings,
 ): StatusAlert[] {
   const alerts: StatusAlert[] = [];
   const expanded = expandBrotherStatusMessage(monitor.message);
@@ -382,12 +435,14 @@ function buildStatusAlerts(
       severity: "warning",
       title: "Printer needs attention",
       message: expanded,
+      reorder_url: inkReorderUrlFromStatusMessage(monitor.message, settings),
     });
   } else if (monitor.level === "error") {
     alerts.push({
       severity: "error",
       title: "Printer error",
       message: expanded,
+      reorder_url: inkReorderUrlFromStatusMessage(monitor.message, settings),
     });
   } else if (monitor.message !== "Status unavailable") {
     alerts.push({
@@ -397,7 +452,7 @@ function buildStatusAlerts(
     });
   }
 
-  for (const inkAlert of buildInkAlerts(ink)) {
+  for (const inkAlert of buildInkAlerts(ink, settings)) {
     const duplicate = alerts.some(
       (alert) =>
         alert.title.toLowerCase().includes(inkAlert.title.split(" ")[0].toLowerCase()) ||
@@ -430,14 +485,14 @@ function parseInkLevels(html: string): { cartridges: InkLevel[]; reservoir: InkL
   };
 }
 
-async function getPrinterStatus(host: string) {
+async function getPrinterStatus(host: string, settings: Settings) {
   const [statusHtml, monitorHtml] = await Promise.all([
     fetchPrinterText(host, "/home/status.html"),
     fetchPrinterText(host, "/home/monitor.html"),
   ]);
   const ink = parseInkLevels(statusHtml);
   const monitor = parseMonitorStatus(monitorHtml);
-  const alerts = buildStatusAlerts(monitor, ink);
+  const alerts = buildStatusAlerts(monitor, ink, settings);
   return {
     device_status: monitor.message,
     device_status_level: monitor.level,
@@ -820,10 +875,10 @@ async function ensurePrintTools(): Promise<void> {
   }
 }
 
-async function getPrintWarnings(host: string, options: PrintOptions): Promise<string[]> {
+async function getPrintWarnings(host: string, options: PrintOptions, settings: Settings): Promise<string[]> {
   const warnings: string[] = [];
   try {
-    const printer = await getPrinterStatus(host);
+    const printer = await getPrinterStatus(host, settings);
     const blackCartridge = printer.ink.cartridges.find((level) => level.color === "Black");
     if (options.color === "monochrome" && blackCartridge && (blackCartridge.percent === 0 || blackCartridge.low)) {
       warnings.push(
@@ -880,9 +935,14 @@ type PrintResult = {
   pages_printed: number;
 };
 
-async function printFile(host: string, filePath: string, options: PrintOptions): Promise<PrintResult> {
+async function printFile(
+  host: string,
+  filePath: string,
+  options: PrintOptions,
+  settings: Settings,
+): Promise<PrintResult> {
   await ensurePrintTools();
-  const warnings = await getPrintWarnings(host, options);
+  const warnings = await getPrintWarnings(host, options, settings);
   const prepared = await preparePrintPages(filePath);
   const cleanup = [...prepared.cleanup];
 
@@ -948,6 +1008,7 @@ function renderPage(active: string, content: string): string {
         `<a class="nav-link${item.id === active ? " active" : ""}" href="${item.href}">${escapeHtml(item.label)}</a>`,
     )
     .join("");
+  const activeLabel = nav.find((item) => item.id === active)?.label ?? "Brother Print & Scan";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1022,6 +1083,37 @@ function renderPage(active: string, content: string): string {
       background: var(--accent-soft);
       color: var(--accent);
     }
+    .sidebar-supplies {
+      margin: 0 0.5rem 1rem;
+      padding-top: 0.25rem;
+      border-top: 1px solid var(--border);
+    }
+    .sidebar-supplies-label {
+      margin: 0 0 0.35rem 0.35rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .supplies-link {
+      display: block;
+      padding: 0.55rem 0.75rem;
+      border-radius: 0.65rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.88rem;
+      margin-bottom: 0.15rem;
+    }
+    .supplies-link:hover {
+      background: var(--accent-soft);
+    }
+    .ink-reorder-link {
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-left: 0.35rem;
+      white-space: nowrap;
+    }
     .sidebar-footer {
       position: absolute;
       left: 1rem;
@@ -1042,6 +1134,36 @@ function renderPage(active: string, content: string): string {
       opacity: 0.7;
     }
     .main { padding: 1.5rem; }
+    .mobile-header,
+    .sidebar-backdrop {
+      display: none;
+    }
+    .menu-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 0.65rem;
+      padding: 0.45rem 0.55rem;
+      cursor: pointer;
+      color: var(--text);
+      flex-shrink: 0;
+    }
+    .menu-toggle .icon {
+      width: 1.25rem;
+      height: 1.25rem;
+    }
+    .mobile-header-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+    }
     .toolbar {
       display: flex;
       justify-content: space-between;
@@ -1301,9 +1423,60 @@ function renderPage(active: string, content: string): string {
       border: 1px solid var(--border);
     }
     @media (max-width: 900px) {
-      .layout { grid-template-columns: 1fr; }
-      .sidebar { position: static; height: auto; }
-      .sidebar-footer { position: static; margin-top: 1rem; }
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .mobile-header {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        padding: 0.85rem 1rem;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.45);
+        z-index: 35;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+      }
+      html[data-theme="dark"] .sidebar-backdrop {
+        background: rgba(0, 0, 0, 0.55);
+      }
+      .sidebar-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(280px, 86vw);
+        height: 100vh;
+        z-index: 40;
+        transform: translateX(-105%);
+        transition: transform 0.22s ease;
+        box-shadow: var(--shadow);
+      }
+      .sidebar.open {
+        transform: translateX(0);
+      }
+      .main {
+        padding: 1rem;
+        grid-column: 1;
+        grid-row: 2;
+      }
       .library-layout { grid-template-columns: 1fr; }
       .library-sidebar { max-height: none; }
       .library-preview-stage { min-height: 280px; }
@@ -1312,7 +1485,16 @@ function renderPage(active: string, content: string): string {
 </head>
 <body>
   <div class="layout">
-    <aside class="sidebar">
+    <header class="mobile-header">
+      <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <h2 class="mobile-header-title">${escapeHtml(activeLabel)}</h2>
+    </header>
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <img src="/icon.svg" alt="" />
         <div>
@@ -1321,6 +1503,10 @@ function renderPage(active: string, content: string): string {
         </div>
       </div>
       <nav>${navHtml}</nav>
+      <div class="sidebar-supplies" id="sidebar-supplies" hidden>
+        <p class="sidebar-supplies-label">Reorder ink</p>
+        <div id="sidebar-supplies-links"></div>
+      </div>
       <div class="sidebar-footer">
         <div class="sidebar-footer-actions">
           <button class="secondary" id="theme-toggle" type="button">Theme</button>
@@ -1344,10 +1530,84 @@ function renderPage(active: string, content: string): string {
       else root.removeAttribute("data-theme");
       localStorage.setItem(themeKey, next);
     });
+    function escapeAttr(value) {
+      return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    }
+    function renderSidebarSupplies(settings) {
+      const container = document.getElementById("sidebar-supplies");
+      const links = document.getElementById("sidebar-supplies-links");
+      if (!container || !links || !settings) return;
+      const items = [];
+      if (settings.black_ink_reorder_url) {
+        items.push({ label: "Black cartridges", url: settings.black_ink_reorder_url });
+      }
+      if (settings.color_ink_reorder_url) {
+        items.push({ label: "Color cartridges", url: settings.color_ink_reorder_url });
+      }
+      if (!items.length) {
+        container.hidden = true;
+        links.innerHTML = "";
+        return;
+      }
+      container.hidden = false;
+      links.innerHTML = items.map((item) =>
+        '<a class="supplies-link" href="' + escapeAttr(item.url) + '" target="_blank" rel="noopener noreferrer">' + item.label + '</a>'
+      ).join("");
+    }
+    async function refreshSidebarStatus() {
+      try {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load status");
+        renderSidebarSupplies(data.settings);
+      } catch {
+        const supplies = document.getElementById("sidebar-supplies");
+        if (supplies) supplies.hidden = true;
+      }
+    }
+    window.refreshSidebarStatus = refreshSidebarStatus;
+    refreshSidebarStatus();
+    setInterval(refreshSidebarStatus, 30000);
     document.getElementById("refresh-status")?.addEventListener("click", () => {
+      refreshSidebarStatus();
       if (typeof window.refreshDashboard === "function") window.refreshDashboard();
       else location.reload();
     });
+    (function () {
+      const toggle = document.getElementById("menu-toggle");
+      const sidebar = document.getElementById("sidebar");
+      const backdrop = document.getElementById("sidebar-backdrop");
+      if (!toggle || !sidebar || !backdrop) return;
+
+      const mq = window.matchMedia("(max-width: 900px)");
+
+      function setOpen(open) {
+        sidebar.classList.toggle("open", open);
+        backdrop.classList.toggle("open", open);
+        backdrop.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        toggle.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+        document.body.style.overflow = open && mq.matches ? "hidden" : "";
+      }
+
+      function closeSidebar() {
+        setOpen(false);
+      }
+
+      toggle.addEventListener("click", () => {
+        setOpen(!sidebar.classList.contains("open"));
+      });
+      backdrop.addEventListener("click", closeSidebar);
+      sidebar.querySelectorAll(".nav-link").forEach((link) => {
+        link.addEventListener("click", closeSidebar);
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeSidebar();
+      });
+      mq.addEventListener("change", () => {
+        if (!mq.matches) closeSidebar();
+      });
+    })();
   </script>
 </body>
 </html>`;
@@ -1383,6 +1643,13 @@ function dashboardContent(): string {
       </section>
     </div>
     <script>
+      function escapeAttr(value) {
+        return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      }
+      function alertReorderLink(alert) {
+        if (!alert.reorder_url) return "";
+        return ' <a class="ink-reorder-link" href="' + escapeAttr(alert.reorder_url) + '" target="_blank" rel="noopener noreferrer">Reorder</a>';
+      }
       function inkBar(level) {
         const cls = level.color.toLowerCase();
         const lowTag = level.low ? ' <span class="muted">(low)</span>' : '';
@@ -1397,7 +1664,7 @@ function dashboardContent(): string {
         }
         container.hidden = false;
         container.innerHTML = alerts.map((alert) =>
-          '<div class="notification ' + alert.severity + '"><strong>' + alert.title + '</strong><span>' + alert.message + '</span></div>'
+          '<div class="notification ' + alert.severity + '"><strong>' + alert.title + '</strong><span>' + alert.message + alertReorderLink(alert) + '</span></div>'
         ).join("");
       }
       function pillLabel(level, message) {
@@ -1417,6 +1684,7 @@ function dashboardContent(): string {
           pill.className = "status-pill " + (level === "unknown" ? "info" : level);
           pill.textContent = pillLabel(level, data.printer.device_status);
           renderNotifications(data.printer.alerts || []);
+          if (typeof window.refreshSidebarStatus === "function") window.refreshSidebarStatus();
           document.getElementById("device-model").textContent = data.capabilities.make_and_model;
           document.getElementById("device-status").textContent = "Printer says: " + data.printer.device_status;
           document.getElementById("device-status-detail").textContent = data.printer.device_status_detail;
@@ -1850,6 +2118,18 @@ function settingsContent(settings: Settings): string {
           </div>
         </div>
         <p class="muted" style="margin-top:1rem">Your printer is currently reachable at <strong>${escapeHtml(settings.printer_host)}</strong>. The Umbrel server must be on the same local network.</p>
+        <h3 style="margin-top:1.5rem">Ink reorder links</h3>
+        <p class="muted" style="margin-top:0.35rem">These links appear in the side menu and on low-ink alerts. Leave blank to hide a link.</p>
+        <div class="form-grid" style="margin-top:0.75rem">
+          <div>
+            <label for="black_ink_reorder_url">Black cartridge link</label>
+            <input id="black_ink_reorder_url" name="black_ink_reorder_url" type="url" value="${escapeHtml(settings.black_ink_reorder_url)}" placeholder="https://..." />
+          </div>
+          <div>
+            <label for="color_ink_reorder_url">Color cartridge link</label>
+            <input id="color_ink_reorder_url" name="color_ink_reorder_url" type="url" value="${escapeHtml(settings.color_ink_reorder_url)}" placeholder="https://..." />
+          </div>
+        </div>
         <div class="actions">
           <button type="submit">Save settings</button>
         </div>
@@ -1870,6 +2150,7 @@ function settingsContent(settings: Settings): string {
         const data = await res.json();
         message.className = "message show " + (res.ok ? "success" : "error");
         message.textContent = res.ok ? "Settings saved." : (data.error || "Save failed");
+        if (res.ok && typeof window.refreshSidebarStatus === "function") window.refreshSidebarStatus();
       });
     </script>`;
 }
@@ -1885,7 +2166,7 @@ async function handleApi(
       const [scanner, capabilities, printer] = await Promise.all([
         getScannerStatus(settings.printer_host),
         getScannerCapabilities(settings.printer_host),
-        getPrinterStatus(settings.printer_host),
+        getPrinterStatus(settings.printer_host, settings),
       ]);
       sendJson(res, 200, { settings, scanner, capabilities, printer });
     } catch (error) {
@@ -1992,7 +2273,7 @@ async function handleApi(
           color: parsed.fields.color === "monochrome" ? "monochrome" : "color",
           media: parsed.fields.media || "na_letter_8.5x11in",
         };
-        const result = await printFile(settings.printer_host, tempPath, options);
+        const result = await printFile(settings.printer_host, tempPath, options, settings);
         sendJson(res, 200, result);
       } finally {
         await rm(tempPath, { force: true });
@@ -2022,7 +2303,7 @@ async function handleApi(
       const scanResult = await performScan(settings.printer_host, scanOptions);
       const record = await saveScan(scanResult.buffers, scanResult.contentType, scanOptions);
       const filePath = path.join(SCANS_DIR, record.filename);
-      const printResult = await printFile(settings.printer_host, filePath, printOptions);
+      const printResult = await printFile(settings.printer_host, filePath, printOptions, settings);
       sendJson(res, 200, {
         ...printResult,
         message: `Copied ${record.page_count} page(s) to the printer.`,
@@ -2046,6 +2327,8 @@ async function handleApi(
       const next: Settings = {
         printer_host: body.printer_host?.trim() || settings.printer_host,
         printer_name: body.printer_name?.trim() || settings.printer_name,
+        black_ink_reorder_url: normalizeReorderUrl(body.black_ink_reorder_url, settings.black_ink_reorder_url),
+        color_ink_reorder_url: normalizeReorderUrl(body.color_ink_reorder_url, settings.color_ink_reorder_url),
       };
       await saveSettings(next);
       sendJson(res, 200, next);
