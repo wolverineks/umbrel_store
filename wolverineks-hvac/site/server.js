@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const carrier_api_1 = require("./carrier-api");
-const APP_VERSION = "2.4.5";
+const APP_VERSION = "2.4.6";
 const REFRESH_ICON_SVG = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
 const IS_LOCAL_DEV = process.env.HVAC_DEV === "1";
 const DATA_ROOT = process.env.HVAC_DATA_DIR ?? "/data";
@@ -913,6 +913,76 @@ function buildSnapshot(settings) {
         last_live_update: lastLiveUpdateAt?.toISOString() ?? null,
     };
 }
+function buildDiagnosticsSnapshot(settings) {
+    const system = selectSystem(settings, cachedSystems);
+    const snapshot = buildSnapshot(settings);
+    const selectedSerial = system?.profile.serial ?? settings.system_serial;
+    return {
+        app_version: APP_VERSION,
+        configured: snapshot.configured,
+        connected: snapshot.connected,
+        error: snapshot.error,
+        last_sync: snapshot.last_sync,
+        last_live_update: snapshot.last_live_update,
+        systems: cachedSystems.map((item) => ({
+            serial: item.profile.serial,
+            name: item.profile.name,
+            model: item.profile.model,
+            disconnected: Boolean(item.status.isDisconnected),
+            selected: item.profile.serial === selectedSerial,
+        })),
+        system: system
+            ? {
+                serial: system.profile.serial,
+                name: settings.system_name || system.profile.name,
+                brand: system.profile.brand,
+                model: system.profile.model,
+                firmware: system.profile.firmware,
+                indoor_model: system.profile.indoorModel,
+                indoor_serial: system.profile.indoorSerial,
+                outdoor_model: system.profile.outdoorModel,
+                outdoor_serial: system.profile.outdoorSerial,
+                idu_type: system.profile.idutype,
+                odu_type: system.profile.odutype,
+                mode: (system.status.mode ?? system.config.mode ?? "auto").toLowerCase(),
+                disconnected: Boolean(system.status.isDisconnected),
+                local_time: system.status.localTime,
+                cfgem: system.status.cfgem,
+                outdoor_temp_display: (0, carrier_api_1.formatFahrenheit)(system.status.oat, system.status.cfgem),
+                vacatrunning: system.status.vacatrunning,
+                vent: system.status.vent,
+                vent_level: system.status.ventlvl,
+                humidifier: system.status.humid,
+                humidifier_level: system.status.humlvl,
+                uv_level: system.status.uvlvl,
+                filter_remaining: system.status.filtrlvl,
+                idu: system.status.idu,
+                odu: system.status.odu,
+            }
+            : null,
+        zones: snapshot.zones.map((zone) => ({
+            id: zone.id,
+            name: zone.name,
+            sensor_rt: zone.sensor_rt,
+            temperature_display: zone.temperature_display,
+            humidity: zone.humidity,
+            heat_setpoint_display: zone.heat_setpoint_display,
+            cool_setpoint_display: zone.cool_setpoint_display,
+            fan: zone.fan,
+            fan_speed: zone.fan_speed,
+            fan_rpm_display: zone.fan_rpm_display,
+            fan_cfm_display: zone.fan_cfm_display,
+            conditioning: zone.conditioning,
+            operation_summary: zone.operation_summary,
+            operation_kind: zone.operation_kind,
+            operation_stage: zone.operation_stage,
+            operation_transition: zone.operation_transition,
+            hold: zone.hold,
+            hold_until: zone.hold_until,
+            activity: zone.activity,
+        })),
+    };
+}
 async function refreshCloudData(settings, force = false) {
     if (!isConfigured(settings)) {
         cachedSystems = [];
@@ -994,6 +1064,12 @@ const API_CATALOG = {
             path: "/api/maintenance",
             query: "?refresh=1 forces Carrier cloud sync",
             description: "Maintenance snapshot: air filter life plus local condensate line tracking.",
+        },
+        {
+            method: "GET",
+            path: "/api/diagnostics",
+            query: "?refresh=1 forces Carrier cloud sync",
+            description: "Connection, equipment, IDU/ODU telemetry, and per-zone diagnostic fields.",
         },
         {
             method: "POST",
@@ -1347,6 +1423,32 @@ function pageStyles() {
       gap: 0.75rem;
       margin-top: 0.5rem;
       font-size: 0.9rem;
+    }
+    .stat-row span:last-child {
+      text-align: right;
+      word-break: break-word;
+    }
+    .diagnostics-grid {
+      display: grid;
+      gap: 1rem;
+    }
+    .diagnostics-card h3 {
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+    }
+    .diagnostics-zone-card {
+      margin-top: 0.85rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .diagnostics-zone-card:first-of-type {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+    .diagnostics-zone-card h4 {
+      margin: 0 0 0.5rem;
+      font-size: 0.92rem;
     }
     label {
       display: grid;
@@ -1797,6 +1899,15 @@ function pageStyles() {
       padding: 0.45rem 0.5rem;
       gap: 0.15rem;
       border-radius: 0.7rem;
+      text-align: center;
+      justify-items: center;
+    }
+    .stat-chip-compact .chip-header {
+      justify-content: center;
+      width: 100%;
+    }
+    .stat-chip-compact .chip-header .chip-label {
+      flex: 0 1 auto;
     }
     .stat-chip-compact .icon {
       width: 0.85rem;
@@ -1808,9 +1919,13 @@ function pageStyles() {
     .stat-chip-compact .chip-value {
       font-size: 0.8rem;
       line-height: 1.2;
+      width: 100%;
+      text-align: center;
     }
     .stat-chip-compact .humidity-chip-body {
       gap: 0.35rem;
+      justify-content: center;
+      width: 100%;
     }
     .stat-chip-compact .humidity-bar-track {
       width: 0.4rem;
@@ -2673,6 +2788,7 @@ function renderPage(active, content) {
             items: [
                 { id: "weather", label: "Weather", href: "/weather" },
                 { id: "maintenance", label: "Maintenance", href: "/maintenance" },
+                { id: "diagnostics", label: "Diagnostics", href: "/diagnostics" },
             ],
         },
         {
@@ -2985,55 +3101,27 @@ function setupContent(settings) {
         <div class="step"><strong>Internet required.</strong> Umbrel must reach Carrier's servers. Your thermostat still uses WiFi as usual.</div>
       </div>
     </div>
-    <div class="card" style="margin-top:1rem">
-      <h3>Diagnostics</h3>
-      <div class="stat-row"><span class="muted">Cloud connection</span><span id="diag-cloud">Checking…</span></div>
-      <div class="stat-row"><span class="muted">Systems found</span><span id="diag-systems">—</span></div>
-      <div class="stat-row"><span class="muted">Last sync</span><span id="diag-sync">—</span></div>
-      <div class="stat-row"><span class="muted">Live update</span><span id="diag-live">—</span></div>
-      <div class="stat-row"><span class="muted">Zone sensor</span><span id="diag-sensor">—</span></div>
-      <p class="muted message" id="diag-error" style="margin-top:0.75rem"></p>
-    </div>
+    <p class="muted" style="margin-top:1rem">For connection details, equipment info, and live telemetry, open <a href="/diagnostics">Diagnostics</a>.</p>
     <script>
       async function refreshConnection(force) {
         const pill = document.getElementById("connection-pill");
-        const diagCloud = document.getElementById("diag-cloud");
-        const diagSystems = document.getElementById("diag-systems");
-        const diagSync = document.getElementById("diag-sync");
-        const diagLive = document.getElementById("diag-live");
-        const diagSensor = document.getElementById("diag-sensor");
-        const diagError = document.getElementById("diag-error");
         try {
           const res = await fetch("/api/status" + (force ? "?refresh=1" : ""));
           const data = await res.json();
-          diagSystems.textContent = String(data.systems?.length ?? 0);
-          diagSync.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never";
-          diagLive.textContent = data.last_live_update ? new Date(data.last_live_update).toLocaleString() : "Waiting…";
-          const zone = data.zones?.[0];
-          diagSensor.textContent = zone
-            ? "rt " + (zone.sensor_rt ?? "—") + " → " + (zone.temperature_display ?? "—") + "°F · heat " + (zone.heat_setpoint_display ?? "—") + "°F"
-            : "—";
           if (data.connected) {
             pill.className = "status-pill success";
             const zoneCount = data.zones?.length ?? 0;
             pill.textContent = zoneCount === 1 ? "Connected" : "Connected (" + zoneCount + " zones)";
-            diagCloud.textContent = "Online";
-            diagError.textContent = "";
           } else if (data.configured) {
             pill.className = "status-pill warning";
             pill.textContent = data.error ? "Connection issue" : "Waiting for data";
-            diagCloud.textContent = data.error ? "Error" : "Syncing";
-            diagError.textContent = data.error || "Credentials saved. Waiting for thermostat data from Carrier cloud.";
           } else {
             pill.className = "status-pill warning";
             pill.textContent = "Not configured";
-            diagCloud.textContent = "Not signed in";
-            diagError.textContent = "Enter your Bryant/Carrier account credentials above.";
           }
         } catch (error) {
           pill.className = "status-pill error";
           pill.textContent = "Cannot reach app";
-          diagError.textContent = String(error);
         }
       }
       document.getElementById("setup-form").addEventListener("submit", async (event) => {
@@ -4326,6 +4414,216 @@ function maintenanceContent() {
     </script>
   `;
 }
+function diagnosticsContent() {
+    return `
+    <div class="toolbar">
+      <h2>Diagnostics</h2>
+      <button type="button" class="tile-refresh" id="diagnostics-refresh" aria-label="Refresh diagnostics">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </div>
+    <div id="diagnostics-content" class="diagnostics-grid">
+      <div class="card"><p class="muted">Loading diagnostics…</p></div>
+    </div>
+    <script>
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function formatDiagValue(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        return escapeHtml(String(value));
+      }
+
+      function formatDiagTimestamp(value) {
+        if (!value) return "—";
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? formatDiagValue(value) : escapeHtml(date.toLocaleString());
+      }
+
+      function diagnosticsRow(label, valueHtml) {
+        return '<div class="stat-row"><span class="muted">' + escapeHtml(label) + "</span><span>" + valueHtml + "</span></div>";
+      }
+
+      function renderUnitRows(unit, prefix) {
+        if (!unit) {
+          return diagnosticsRow(prefix + " data", "—");
+        }
+        return (
+          diagnosticsRow(prefix + " type", formatDiagValue(unit.type)) +
+          diagnosticsRow(prefix + " status", formatDiagValue(unit.opstat)) +
+          (unit.blwrpm !== undefined ? diagnosticsRow("Blower RPM", formatDiagValue(unit.blwrpm)) : "") +
+          (unit.cfm !== undefined ? diagnosticsRow("CFM", formatDiagValue(unit.cfm)) : "") +
+          (unit.statpress !== undefined ? diagnosticsRow("Static pressure", formatDiagValue(unit.statpress)) : "") +
+          (unit.pwmblower !== undefined ? diagnosticsRow("Blower PWM", formatDiagValue(unit.pwmblower)) : "") +
+          (unit.iducfm !== undefined ? diagnosticsRow("IDU CFM", formatDiagValue(unit.iducfm)) : "")
+        );
+      }
+
+      function renderZoneDiagnostics(zone) {
+        const holdText = zone.hold
+          ? "Yes" + (zone.hold_until ? " until " + zone.hold_until : "")
+          : "No";
+        return (
+          '<div class="diagnostics-zone-card">' +
+          "<h4>" + escapeHtml(zone.name) + "</h4>" +
+          diagnosticsRow("Sensor rt", formatDiagValue(zone.sensor_rt)) +
+          diagnosticsRow("Display temp", formatDiagValue(zone.temperature_display) + (zone.temperature_display && zone.temperature_display !== "—" ? "°F" : "")) +
+          diagnosticsRow("Humidity", zone.humidity == null ? "—" : escapeHtml(String(zone.humidity)) + "%") +
+          diagnosticsRow("Heat setpoint", formatDiagValue(zone.heat_setpoint_display) + (zone.heat_setpoint_display ? "°F" : "")) +
+          diagnosticsRow("Cool setpoint", formatDiagValue(zone.cool_setpoint_display) + (zone.cool_setpoint_display ? "°F" : "")) +
+          diagnosticsRow("Fan setting", formatDiagValue(zone.fan)) +
+          diagnosticsRow("Fan speed", formatDiagValue(zone.fan_speed)) +
+          diagnosticsRow("Blower RPM", formatDiagValue(zone.fan_rpm_display)) +
+          diagnosticsRow("Blower CFM", formatDiagValue(zone.fan_cfm_display)) +
+          diagnosticsRow("Conditioning", formatDiagValue(zone.conditioning)) +
+          diagnosticsRow("Operation", formatDiagValue(zone.operation_summary)) +
+          diagnosticsRow("Operation kind", formatDiagValue(zone.operation_kind)) +
+          diagnosticsRow("Stage", formatDiagValue(zone.operation_stage)) +
+          diagnosticsRow("Transition", zone.operation_transition ? "Yes" : "No") +
+          diagnosticsRow("Activity", formatDiagValue(zone.activity)) +
+          diagnosticsRow("Hold", escapeHtml(holdText)) +
+          "</div>"
+        );
+      }
+
+      function renderDiagnostics(data) {
+        const root = document.getElementById("diagnostics-content");
+        if (!root) return;
+
+        if (!data.configured) {
+          root.innerHTML = '<div class="card"><p class="muted">No credentials saved yet. Open <a href="/setup">Setup</a> to connect.</p></div>';
+          return;
+        }
+
+        if (data.error && !data.system) {
+          root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(data.error) + "</p></div>";
+          return;
+        }
+
+        const system = data.system;
+        const connectionCard =
+          '<div class="card diagnostics-card">' +
+          "<h3>Connection</h3>" +
+          diagnosticsRow("App version", formatDiagValue(data.app_version)) +
+          diagnosticsRow("Cloud connection", data.connected ? "Connected" : "Not connected") +
+          diagnosticsRow("Last cloud sync", formatDiagTimestamp(data.last_sync)) +
+          diagnosticsRow("Last live update", formatDiagTimestamp(data.last_live_update)) +
+          diagnosticsRow("Systems on account", formatDiagValue(data.systems?.length ?? 0)) +
+          (data.error ? '<p class="message error" style="margin-top:0.75rem">' + escapeHtml(data.error) + "</p>" : "") +
+          "</div>";
+
+        const equipmentCard = system
+          ? '<div class="card diagnostics-card">' +
+            "<h3>Equipment</h3>" +
+            diagnosticsRow("Name", formatDiagValue(system.name)) +
+            diagnosticsRow("Serial", formatDiagValue(system.serial)) +
+            diagnosticsRow("Brand", formatDiagValue(system.brand)) +
+            diagnosticsRow("Model", formatDiagValue(system.model)) +
+            diagnosticsRow("Firmware", formatDiagValue(system.firmware)) +
+            diagnosticsRow("Indoor model", formatDiagValue(system.indoor_model)) +
+            diagnosticsRow("Indoor serial", formatDiagValue(system.indoor_serial)) +
+            diagnosticsRow("Outdoor model", formatDiagValue(system.outdoor_model)) +
+            diagnosticsRow("Outdoor serial", formatDiagValue(system.outdoor_serial)) +
+            diagnosticsRow("IDU type", formatDiagValue(system.idu_type)) +
+            diagnosticsRow("ODU type", formatDiagValue(system.odu_type)) +
+            "</div>"
+          : "";
+
+        const systemCard = system
+          ? '<div class="card diagnostics-card">' +
+            "<h3>System status</h3>" +
+            diagnosticsRow("Mode", formatDiagValue(system.mode)) +
+            diagnosticsRow("Thermostat time", formatDiagValue(system.local_time)) +
+            diagnosticsRow("Temp unit (cfgem)", formatDiagValue(system.cfgem)) +
+            diagnosticsRow("Outdoor temp", formatDiagValue(system.outdoor_temp_display) + (system.outdoor_temp_display ? "°F" : "")) +
+            diagnosticsRow("Vacation running", formatDiagValue(system.vacatrunning)) +
+            diagnosticsRow("Ventilation", formatDiagValue(system.vent)) +
+            diagnosticsRow("Vent level", formatDiagValue(system.vent_level)) +
+            diagnosticsRow("Humidifier", formatDiagValue(system.humidifier)) +
+            diagnosticsRow("Humidifier level", formatDiagValue(system.humidifier_level)) +
+            diagnosticsRow("UV level", formatDiagValue(system.uv_level)) +
+            diagnosticsRow("Filter remaining", system.filter_remaining == null ? "—" : escapeHtml(String(system.filter_remaining)) + "%") +
+            diagnosticsRow("Disconnected flag", system.disconnected ? "Yes" : "No") +
+            "</div>"
+          : "";
+
+        const iduCard = system
+          ? '<div class="card diagnostics-card"><h3>Indoor unit (IDU)</h3>' + renderUnitRows(system.idu, "IDU") + "</div>"
+          : "";
+        const oduCard = system
+          ? '<div class="card diagnostics-card"><h3>Outdoor unit (ODU)</h3>' + renderUnitRows(system.odu, "ODU") + "</div>"
+          : "";
+
+        const zonesCard =
+          '<div class="card diagnostics-card">' +
+          "<h3>Zones</h3>" +
+          (data.zones?.length
+            ? data.zones.map((zone) => renderZoneDiagnostics(zone)).join("")
+            : '<p class="muted">No zone data available.</p>') +
+          "</div>";
+
+        const accountsCard =
+          '<div class="card diagnostics-card">' +
+          "<h3>All systems</h3>" +
+          (data.systems?.length
+            ? data.systems
+                .map(
+                  (item) =>
+                    diagnosticsRow(
+                      item.name + (item.selected ? " (selected)" : ""),
+                      (item.disconnected ? "Disconnected" : "Connected") + (item.model ? " · " + item.model : ""),
+                    ),
+                )
+                .join("")
+            : '<p class="muted">No systems found.</p>') +
+          "</div>";
+
+        root.innerHTML =
+          connectionCard +
+          equipmentCard +
+          systemCard +
+          iduCard +
+          oduCard +
+          zonesCard +
+          accountsCard;
+      }
+
+      async function loadDiagnostics(force) {
+        const button = force ? window.hvacRefreshButton("diagnostics-refresh") : null;
+        if (button) {
+          button.disabled = true;
+          button.classList.add("spinning");
+        }
+        try {
+          const suffix = force ? "?refresh=1" : "";
+          const res = await fetch("/api/diagnostics" + suffix);
+          const data = await res.json();
+          renderDiagnostics(data);
+        } catch (error) {
+          const root = document.getElementById("diagnostics-content");
+          if (root) {
+            root.innerHTML = '<div class="card"><p class="message error">' + escapeHtml(String(error)) + "</p></div>";
+          }
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.classList.remove("spinning");
+          }
+        }
+      }
+
+      document.getElementById("diagnostics-refresh")?.addEventListener("click", () => loadDiagnostics(true));
+      window.addEventListener("hvac:refresh", () => loadDiagnostics(true));
+      loadDiagnostics(false);
+      setInterval(() => loadDiagnostics(false), 60000);
+    </script>
+  `;
+}
 function circulationContent() {
     return `
     <div class="toolbar">
@@ -5483,6 +5781,16 @@ async function handleApi(route, req, res, settings) {
         sendJson(res, 200, await buildMaintenanceSnapshot(settings));
         return;
     }
+    if (route === "/api/diagnostics" && req.method === "GET") {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        const forceRefresh = url.searchParams.get("refresh") === "1";
+        const needsRefresh = forceRefresh ||
+            !lastSyncAt ||
+            Date.now() - lastSyncAt.getTime() > STATUS_CACHE_MS;
+        await refreshCloudData(settings, needsRefresh);
+        sendJson(res, 200, buildDiagnosticsSnapshot(settings));
+        return;
+    }
     if (route === "/api/maintenance/condensate" && req.method === "POST") {
         if (!isConfigured(settings)) {
             sendJson(res, 400, { error: "Account not configured" });
@@ -5825,6 +6133,10 @@ async function handleRequest(req, res) {
     }
     if (route === "/maintenance") {
         sendText(res, 200, "text/html; charset=utf-8", renderPage("maintenance", maintenanceContent()));
+        return;
+    }
+    if (route === "/diagnostics") {
+        sendText(res, 200, "text/html; charset=utf-8", renderPage("diagnostics", diagnosticsContent()));
         return;
     }
     if (route === "/api") {

@@ -322,9 +322,16 @@ export type CarrierSystem = {
     firmware: string | null;
     model: string | null;
     brand: string | null;
+    indoorModel: string | null;
+    indoorSerial: string | null;
+    outdoorModel: string | null;
+    outdoorSerial: string | null;
+    idutype: string | null;
+    odutype: string | null;
   };
   status: {
     isDisconnected: boolean | null;
+    localTime: string | null;
     mode: string | null;
     cfgem: string | null;
     oat: number | null;
@@ -782,9 +789,16 @@ export class CarrierApiClient {
         firmware: nullableString(profile.firmware),
         model: nullableString(profile.model),
         brand: nullableString(profile.brand),
+        indoorModel: nullableString(profile.indoorModel),
+        indoorSerial: nullableString(profile.indoorSerial),
+        outdoorModel: nullableString(profile.outdoorModel),
+        outdoorSerial: nullableString(profile.outdoorSerial),
+        idutype: nullableString(profile.idutype),
+        odutype: nullableString(profile.odutype),
       },
       status: {
         isDisconnected: asBool(status.isDisconnected),
+        localTime: nullableString(status.localTime),
         mode: nullableString(status.mode),
         cfgem: nullableString(status.cfgem),
         oat: asNumber(status.oat),
