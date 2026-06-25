@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import {
+  buildIrobotDiagnostics,
   buildRoombaDiagnostics,
   discoverRobots,
   fetchCredentialsFromCloud,
@@ -34,6 +35,8 @@ type PublicSettings = {
   live_poll_seconds: number;
   configured: boolean;
   blid_preview: string | null;
+  irobot_username: string;
+  cloud_account_configured: boolean;
 };
 
 const DEFAULT_SETTINGS: RobotSettings = {
@@ -44,6 +47,8 @@ const DEFAULT_SETTINGS: RobotSettings = {
   firmware_version: "3",
   connection_mode: "on_demand",
   live_poll_seconds: 0,
+  irobot_username: "",
+  irobot_password: "",
 };
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -65,6 +70,8 @@ function publicSettings(settings: RobotSettings): PublicSettings {
     live_poll_seconds: settings.live_poll_seconds,
     configured: isConfigured(settings),
     blid_preview: settings.blid ? `${settings.blid.slice(0, 4)}…${settings.blid.slice(-4)}` : null,
+    irobot_username: settings.irobot_username,
+    cloud_account_configured: Boolean(settings.irobot_username.trim() && settings.irobot_password.trim()),
   };
 }
 
@@ -86,6 +93,8 @@ async function loadSettings(): Promise<RobotSettings> {
         typeof parsed.live_poll_seconds === "number" && parsed.live_poll_seconds >= 0
           ? parsed.live_poll_seconds
           : 0,
+      irobot_username: parsed.irobot_username?.trim() || "",
+      irobot_password: parsed.irobot_password?.trim() || "",
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -761,7 +770,7 @@ function setupPage(): string {
           .catch((error) => showError(error.message));
       });
       async function currentPayload() {
-        return {
+        const payload = {
           robot_name: document.getElementById("robot-name").value,
           robot_ip: document.getElementById("robot-ip").value,
           blid: document.getElementById("robot-blid").value,
@@ -769,7 +778,11 @@ function setupPage(): string {
           firmware_version: document.getElementById("firmware-version").value,
           connection_mode: "on_demand",
           live_poll_seconds: 0,
+          irobot_username: document.getElementById("irobot-user").value,
         };
+        const irobotPassword = document.getElementById("irobot-pass").value;
+        if (irobotPassword) payload.irobot_password = irobotPassword;
+        return payload;
       }
       document.getElementById("test-connection").addEventListener("click", () => {
         showError("");
@@ -904,6 +917,12 @@ function settingsPage(): string {
           <input id="live-poll-seconds" type="number" min="0" step="1" value="\${settings.live_poll_seconds || 0}" />
           <label>Robot MQTT password (leave blank to keep saved password)</label>
           <input id="robot-password" type="password" placeholder="unchanged" />
+          <h2 style="margin-top:18px">iRobot cloud (optional)</h2>
+          <p class="muted" style="margin-top:0">Used for the iRobot section on Diagnostics. Same account as the iRobot mobile app.</p>
+          <label>iRobot account email</label>
+          <input id="irobot-username" type="email" autocomplete="username" value="\${settings.irobot_username || ""}" />
+          <label>iRobot account password (leave blank to keep saved password)</label>
+          <input id="irobot-password" type="password" autocomplete="current-password" placeholder="\${settings.cloud_account_configured ? "unchanged" : ""}" />
         \`;
       }
       document.getElementById("save-settings").addEventListener("click", async () => {
@@ -914,9 +933,12 @@ function settingsPage(): string {
           firmware_version: document.getElementById("firmware-version").value,
           connection_mode: document.getElementById("connection-mode").value,
           live_poll_seconds: Number(document.getElementById("live-poll-seconds").value || 0),
+          irobot_username: document.getElementById("irobot-username").value,
         };
         const password = document.getElementById("robot-password").value;
         if (password) payload.password = password;
+        const irobotPassword = document.getElementById("irobot-password").value;
+        if (irobotPassword) payload.irobot_password = irobotPassword;
         const response = await fetch("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -963,10 +985,15 @@ function buildAppDiagnostics(settings: RobotSettings) {
 }
 
 async function buildDiagnosticsSnapshot(settings: RobotSettings) {
+  const [roomba, irobot] = await Promise.all([
+    buildRoombaDiagnostics(settings),
+    buildIrobotDiagnostics(settings),
+  ]);
   return {
     generated_at: new Date().toISOString(),
     app: buildAppDiagnostics(settings),
-    roomba: await buildRoombaDiagnostics(settings),
+    roomba,
+    irobot,
   };
 }
 
@@ -1027,6 +1054,7 @@ function diagnosticsPage(): string {
           row("Firmware protocol", formatValue(settings.firmware_version)),
           row("Connection mode", formatValue(settings.connection_mode)),
           row("Auto-refresh (s)", formatValue(settings.live_poll_seconds)),
+          row("Cloud account", formatBool(settings.cloud_account_configured, "Configured", "Not configured")),
         ].join("");
         const runtimeRows = [
           row("App version", formatValue(app.version)),
@@ -1057,7 +1085,8 @@ function diagnosticsPage(): string {
       }
       function renderRoomba(roomba) {
         const mqtt = roomba.mqtt || {};
-        const status = roomba.status || {};
+        const device = roomba.device || {};
+        const wireless = device.wireless || {};
         const identityRows = [
           row("Configured", formatBool(roomba.configured, "Yes", "No")),
           row("Name", formatValue(roomba.name)),
@@ -1070,16 +1099,20 @@ function diagnosticsPage(): string {
           row("TCP reachable", formatBool(mqtt.reachable, "Yes", "No")),
           row("TCP latency", mqtt.latency_ms == null ? "—" : formatValue(mqtt.latency_ms + " ms")),
         ].join("");
-        const statusRows = [
-          row("Connected", formatBool(status.connected, "Yes", "No")),
-          row("Battery", status.battery_percent == null ? "—" : formatValue(status.battery_percent + "%")),
-          row("Phase", formatValue(status.phase)),
-          row("Cycle", formatValue(status.cycle)),
-          row("Bin", status.bin_full == null ? "—" : formatValue(status.bin_full ? "Full" : "OK")),
-          row("Software", formatValue(status.software_version)),
-          row("SKU", formatValue(status.sku)),
-          row("Last sync", status.last_sync ? formatValue(new Date(status.last_sync).toLocaleString()) : "—"),
-          row("Status error", formatValue(status.error)),
+        const deviceRows = [
+          row("Connected", formatBool(device.connected, "Yes", "No")),
+          row("Battery", device.battery_percent == null ? "—" : formatValue(device.battery_percent + "%")),
+          row("Phase", formatValue(device.phase)),
+          row("Cycle", formatValue(device.cycle)),
+          row("Bin", device.bin_full == null ? "—" : formatValue(device.bin_full ? "Full" : "OK")),
+          row("Software", formatValue(device.software_version)),
+          row("SKU", formatValue(device.sku)),
+          row("Cloud env", formatValue(device.cloud_env)),
+          row("Wi-Fi status", wireless.wifi == null ? "—" : formatValue(wireless.wifi)),
+          row("Cloud link (device)", formatValue(wireless.cloud_status)),
+          row("SSID", formatValue(wireless.ssid)),
+          row("Last sync", device.last_sync ? formatValue(new Date(device.last_sync).toLocaleString()) : "—"),
+          row("Device error", formatValue(device.error)),
         ].join("");
         const errors = Array.isArray(roomba.errors) ? roomba.errors.filter(Boolean) : [];
         const errorsHtml = errors.length
@@ -1087,15 +1120,62 @@ function diagnosticsPage(): string {
           : "";
         return card(
           "Roomba",
-          "Network reachability and live state from the robot over local MQTT.",
+          "Live state fetched from the robot over local MQTT on your LAN.",
           section("Identity", identityRows) +
           section("MQTT", mqttRows) +
-          section("Live status", statusRows) +
+          section("Device", deviceRows) +
+          errorsHtml
+        );
+      }
+      function renderIrobot(irobot) {
+        const endpoints = irobot.endpoints || {};
+        const account = irobot.account || {};
+        const matched = irobot.matched_robot || null;
+        const endpointRows = [
+          row("Discovery URL", formatValue(endpoints.discovery_url)),
+          row("Discovery reachable", formatBool(endpoints.discovery_reachable, "Yes", "No")),
+          row("Discovery latency", endpoints.discovery_latency_ms == null ? "—" : formatValue(endpoints.discovery_latency_ms + " ms")),
+          row("Discovery HTTP", formatValue(endpoints.discovery_status)),
+          row("Gigya base", formatValue(endpoints.gigya_base)),
+          row("iRobot HTTP base", formatValue(endpoints.http_base)),
+        ].join("");
+        const accountRows = [
+          row("Account configured", formatBool(irobot.account_configured, "Yes", "No")),
+          row("Username", formatValue(irobot.username_preview)),
+          row("Authenticated", formatBool(account.authenticated, "Yes", "No")),
+          row("Robots on account", formatValue(account.robot_count)),
+        ].join("");
+        const matchedRows = matched
+          ? [
+              row("Name", formatValue(matched.name)),
+              row("BLID", formatValue(matched.blid)),
+              row("SKU", formatValue(matched.sku)),
+              row("Software", formatValue(matched.software_version)),
+              row("MQTT password matches", matched.password_matches_saved == null ? "—" : formatBool(matched.password_matches_saved, "Yes", "No")),
+            ].join("")
+          : row("Matched robot", "—");
+        const robotRows = (irobot.robots || []).map((robot) =>
+          row(
+            robot.name || "Roomba",
+            formatValue((robot.software_version || "unknown") + " · " + robot.blid)
+          )
+        ).join("");
+        const errors = Array.isArray(irobot.errors) ? irobot.errors.filter(Boolean) : [];
+        const errorsHtml = errors.length
+          ? '<div class="diag-errors"><strong>Issues</strong><br>' + errors.map(escapeHtml).join("<br>") + "</div>"
+          : "";
+        return card(
+          "iRobot",
+          "Cloud endpoint reachability and robot registry from iRobot servers.",
+          section("Endpoints", endpointRows) +
+          section("Account", accountRows) +
+          section("Matched robot", matchedRows) +
+          section("Cloud robots", robotRows || row("Robots", "—")) +
           errorsHtml
         );
       }
       function renderDiagnostics(data) {
-        return '<div class="diagnostics-grid">' + renderApp(data.app) + renderRoomba(data.roomba) + "</div>" +
+        return '<div class="diagnostics-grid">' + renderApp(data.app) + renderRoomba(data.roomba) + renderIrobot(data.irobot) + "</div>" +
           '<p class="muted" style="margin-top:12px;font-size:13px">Generated ' + escapeHtml(new Date(data.generated_at).toLocaleString()) + "</p>";
       }
       async function loadDiagnostics() {
@@ -1125,6 +1205,10 @@ function mergeSettings(current: RobotSettings, patch: Partial<RobotSettings>): R
       typeof patch.live_poll_seconds === "number" && patch.live_poll_seconds >= 0
         ? patch.live_poll_seconds
         : current.live_poll_seconds,
+    irobot_username: patch.irobot_username?.trim() ?? current.irobot_username,
+    irobot_password: patch.irobot_password?.trim()
+      ? patch.irobot_password.trim()
+      : current.irobot_password,
   };
 }
 

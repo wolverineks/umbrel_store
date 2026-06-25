@@ -21,6 +21,8 @@ export type RobotSettings = {
   firmware_version: string;
   connection_mode: ConnectionMode;
   live_poll_seconds: number;
+  irobot_username: string;
+  irobot_password: string;
 };
 
 export type DiscoveryRobot = {
@@ -53,6 +55,26 @@ export type RobotStatus = {
   last_sync: string;
 };
 
+export type RoombaDeviceDiagnostics = {
+  connected: boolean;
+  battery_percent: number | null;
+  phase: string | null;
+  cycle: string | null;
+  bin_full: boolean | null;
+  bin_present: boolean | null;
+  software_version: string | null;
+  sku: string | null;
+  last_sync: string | null;
+  wireless: {
+    wifi: number | null;
+    cloud: number | null;
+    cloud_status: string;
+    ssid: string | null;
+  } | null;
+  cloud_env: string | null;
+  error: string | null;
+};
+
 export type RoombaDiagnostics = {
   configured: boolean;
   host: string;
@@ -64,9 +86,43 @@ export type RoombaDiagnostics = {
     reachable: boolean;
     latency_ms: number | null;
   };
-  status: RobotStatus | null;
+  device: RoombaDeviceDiagnostics | null;
   errors: string[];
 };
+
+export type IrobotCloudRobot = {
+  blid: string;
+  name: string;
+  sku: string;
+  software_version: string;
+  password_matches_saved: boolean | null;
+};
+
+export type IrobotDiagnostics = {
+  account_configured: boolean;
+  username_preview: string | null;
+  endpoints: {
+    discovery_url: string;
+    discovery_reachable: boolean;
+    discovery_latency_ms: number | null;
+    discovery_status: number | null;
+    gigya_base: string | null;
+    http_base: string | null;
+  };
+  account: {
+    authenticated: boolean;
+    robot_count: number | null;
+  };
+  matched_robot: IrobotCloudRobot | null;
+  robots: IrobotCloudRobot[];
+  errors: string[];
+};
+
+const IROBOT_DISCOVERY_URL =
+  process.env.IROBOT_DISCOVERY_URL ??
+  `https://disc-prod.iot.irobotapi.com/v1/discover/endpoints?country_code=${process.env.IROBOT_COUNTRY_CODE ?? "US"}`;
+const IROBOT_APP_ID = "ANDROID-C7FB240E-DF34-42D7-AE4E-A8C17079A294";
+const HTTP_PROBE_TIMEOUT_MS = 10_000;
 
 type DoritaLocal = InstanceType<typeof dorita980.Local>;
 
@@ -311,6 +367,8 @@ export async function fetchCredentialsFromCloud(
       firmware_version: firmwareVersion,
       connection_mode: "on_demand" as const,
       live_poll_seconds: 0,
+      irobot_username: "",
+      irobot_password: "",
       sku: skuMatch?.[1]?.trim() ?? "",
       software_version: software,
     };
@@ -434,6 +492,232 @@ export function checkMqttReachable(host: string, timeoutMs = 5_000): Promise<{ r
   });
 }
 
+function cloudStatusLabel(cloud: number | null | undefined): string {
+  if (cloud === null || cloud === undefined) return "Unknown";
+  if (cloud === 0) return "Disconnected";
+  if (cloud === 4) return "Connected";
+  return `Code ${cloud}`;
+}
+
+async function probeHttpGet(
+  url: string,
+  timeoutMs = HTTP_PROBE_TIMEOUT_MS,
+): Promise<{ ok: boolean; status: number | null; latency_ms: number | null; error: string | null }> {
+  const started = Date.now();
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { Connection: "close" },
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      latency_ms: Date.now() - started,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      latency_ms: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+type IrobotEndpoints = {
+  apiKey: string;
+  gigyaBase: string;
+  httpBase: string;
+};
+
+async function discoverIrobotEndpoints(): Promise<IrobotEndpoints> {
+  const response = await fetch(IROBOT_DISCOVERY_URL, {
+    signal: AbortSignal.timeout(HTTP_PROBE_TIMEOUT_MS),
+    headers: { Connection: "close" },
+  });
+  if (!response.ok) {
+    throw new Error(`iRobot discovery endpoint returned HTTP ${response.status}`);
+  }
+
+  const body = (await response.json()) as Record<string, unknown>;
+  const gigya = (body.gigya ?? {}) as Record<string, unknown>;
+  const deployments = (body.deployments ?? {}) as Record<string, Record<string, unknown>>;
+  const apiKey = String(process.env.GIGYA_API_KEY ?? gigya.api_key ?? "");
+  const datacenter = String(gigya.datacenter_domain ?? "");
+  const gigyaBase =
+    process.env.GIGYA_BASE ?? (datacenter ? `https://accounts.${datacenter}` : "https://accounts.us1.gigya.com");
+
+  let httpBase = process.env.IROBOT_HTTP_BASE ?? "";
+  if (!httpBase) {
+    const deploymentKeys = Object.keys(deployments).sort().reverse();
+    for (const key of deploymentKeys) {
+      const candidate = deployments[key]?.httpBase;
+      if (typeof candidate === "string" && candidate.trim()) {
+        httpBase = candidate;
+        break;
+      }
+    }
+  }
+  if (!httpBase) {
+    httpBase = typeof body.httpBase === "string" ? body.httpBase : "https://unauth2.prod.iot.irobotapi.com";
+  }
+
+  if (!apiKey) {
+    throw new Error("No Gigya API key in iRobot discovery response");
+  }
+
+  return { apiKey, gigyaBase, httpBase };
+}
+
+type CloudLoginBody = {
+  robots?: Record<
+    string,
+    {
+      name?: string;
+      sku?: string;
+      softwareVer?: string;
+      password?: string;
+    }
+  >;
+};
+
+async function loginIrobotCloud(
+  username: string,
+  password: string,
+): Promise<{ endpoints: IrobotEndpoints; robots: Record<string, NonNullable<CloudLoginBody["robots"]>[string]> }> {
+  const endpoints = await discoverIrobotEndpoints();
+  const gigyaForm = new URLSearchParams({
+    apiKey: endpoints.apiKey,
+    targetenv: "mobile",
+    loginID: username.trim(),
+    password: password.trim(),
+    format: "json",
+    targetEnv: "mobile",
+  });
+
+  const gigyaResponse = await fetch(`${endpoints.gigyaBase}/accounts.login`, {
+    method: "POST",
+    body: gigyaForm,
+    signal: AbortSignal.timeout(HTTP_PROBE_TIMEOUT_MS),
+    headers: { Connection: "close" },
+  });
+  const gigyaBody = (await gigyaResponse.json()) as Record<string, unknown>;
+  if (!gigyaResponse.ok || Number(gigyaBody.statusCode) !== 200 || Number(gigyaBody.errorCode) !== 0) {
+    throw new Error("iRobot account login failed — check username and password");
+  }
+
+  const uid = String(gigyaBody.UID ?? "");
+  const signature = String(gigyaBody.UIDSignature ?? "");
+  const timestamp = String(gigyaBody.signatureTimestamp ?? "");
+  if (!uid || !signature || !timestamp) {
+    throw new Error("iRobot account login returned incomplete Gigya credentials");
+  }
+
+  const irobotResponse = await fetch(`${endpoints.httpBase}/v2/login`, {
+    method: "POST",
+    signal: AbortSignal.timeout(HTTP_PROBE_TIMEOUT_MS),
+    headers: {
+      Connection: "close",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      app_id: IROBOT_APP_ID,
+      assume_robot_ownership: 0,
+      gigya: {
+        signature,
+        timestamp,
+        uid,
+      },
+    }),
+  });
+  const irobotBody = (await irobotResponse.json()) as CloudLoginBody;
+  if (!irobotResponse.ok || !irobotBody.robots) {
+    throw new Error("iRobot cloud login failed — no robots returned");
+  }
+
+  return { endpoints, robots: irobotBody.robots };
+}
+
+function mapCloudRobots(
+  robots: Record<string, { name?: string; sku?: string; softwareVer?: string; password?: string }>,
+  savedBlid: string,
+  savedPassword: string,
+): IrobotCloudRobot[] {
+  return Object.entries(robots).map(([blid, robot]) => ({
+    blid,
+    name: String(robot.name ?? "Roomba"),
+    sku: String(robot.sku ?? ""),
+    software_version: String(robot.softwareVer ?? ""),
+    password_matches_saved:
+      savedBlid && savedPassword && blid === savedBlid
+        ? robot.password === savedPassword
+        : null,
+  }));
+}
+
+async function fetchRoombaDeviceDiagnostics(settings: RobotSettings): Promise<RoombaDeviceDiagnostics> {
+  const base: RoombaDeviceDiagnostics = {
+    connected: false,
+    battery_percent: null,
+    phase: null,
+    cycle: null,
+    bin_full: null,
+    bin_present: null,
+    software_version: null,
+    sku: null,
+    last_sync: new Date().toISOString(),
+    wireless: null,
+    cloud_env: null,
+    error: null,
+  };
+
+  try {
+    const snapshot = await withRobot(settings, async (robot) => {
+      const [state, wireless, cloudConfig] = await Promise.all([
+        robot.getRobotState(["batPct", "cleanMissionStatus", "bin", "lastCommand", "sku", "softwareVer"]),
+        robot.getWirelessStatus().catch(() => null),
+        robot.getCloudConfig().catch(() => null),
+      ]);
+      return { state, wireless, cloudConfig };
+    });
+
+    const state = snapshot.state as Record<string, unknown>;
+    const mission = (state.cleanMissionStatus ?? {}) as Record<string, unknown>;
+    const bin = (state.bin ?? {}) as Record<string, unknown>;
+    const wireless = (snapshot.wireless ?? {}) as Record<string, unknown>;
+    const wifistat = (wireless.wifistat ?? wireless) as Record<string, unknown>;
+    const wlcfg = (wireless.wlcfg ?? {}) as Record<string, unknown>;
+    const cloudConfig = (snapshot.cloudConfig ?? {}) as Record<string, unknown>;
+    const cloud = typeof wifistat.cloud === "number" ? wifistat.cloud : null;
+
+    base.connected = true;
+    base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
+    base.phase = typeof mission.phase === "string" ? mission.phase : null;
+    base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+    base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
+    base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
+    base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;
+    base.sku = typeof state.sku === "string" ? state.sku : null;
+    base.wireless = {
+      wifi: typeof wifistat.wifi === "number" ? wifistat.wifi : null,
+      cloud,
+      cloud_status: cloudStatusLabel(cloud),
+      ssid: typeof wlcfg.ssid === "string" ? wlcfg.ssid : null,
+    };
+    base.cloud_env =
+      typeof cloudConfig.cloudEnv === "string"
+        ? cloudConfig.cloudEnv
+        : typeof state.cloudEnv === "string"
+          ? state.cloudEnv
+          : null;
+    return base;
+  } catch (error) {
+    base.error = error instanceof Error ? error.message : String(error);
+    return base;
+  }
+}
+
 export async function buildRoombaDiagnostics(settings: RobotSettings): Promise<RoombaDiagnostics> {
   const configured = isConfigured(settings);
   const host = settings.robot_ip.trim();
@@ -441,12 +725,12 @@ export async function buildRoombaDiagnostics(settings: RobotSettings): Promise<R
     ? await checkMqttReachable(host)
     : { reachable: false, latencyMs: null };
   const errors: string[] = [];
-  let status: RobotStatus | null = null;
+  let device: RoombaDeviceDiagnostics | null = null;
 
   if (configured) {
-    status = await getRobotStatus(settings);
-    if (status.error) {
-      errors.push(status.error);
+    device = await fetchRoombaDeviceDiagnostics(settings);
+    if (device.error) {
+      errors.push(device.error);
     }
   } else {
     errors.push("Robot is not configured yet");
@@ -467,9 +751,75 @@ export async function buildRoombaDiagnostics(settings: RobotSettings): Promise<R
       reachable: reachability.reachable,
       latency_ms: reachability.latencyMs,
     },
-    status,
+    device,
     errors,
   };
+}
+
+export async function buildIrobotDiagnostics(settings: RobotSettings): Promise<IrobotDiagnostics> {
+  const username = settings.irobot_username.trim();
+  const password = settings.irobot_password.trim();
+  const accountConfigured = Boolean(username && password);
+  const errors: string[] = [];
+
+  const discoveryProbe = await probeHttpGet(IROBOT_DISCOVERY_URL);
+  if (!discoveryProbe.ok) {
+    errors.push(
+      discoveryProbe.error ??
+        `iRobot discovery endpoint unreachable (HTTP ${discoveryProbe.status ?? "error"})`,
+    );
+  }
+
+  let endpoints: IrobotEndpoints | null = null;
+  try {
+    if (discoveryProbe.ok) {
+      endpoints = await discoverIrobotEndpoints();
+    }
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  const result: IrobotDiagnostics = {
+    account_configured: accountConfigured,
+    username_preview: username ? `${username.slice(0, 3)}…${username.slice(-4)}` : null,
+    endpoints: {
+      discovery_url: IROBOT_DISCOVERY_URL,
+      discovery_reachable: discoveryProbe.ok,
+      discovery_latency_ms: discoveryProbe.latency_ms,
+      discovery_status: discoveryProbe.status,
+      gigya_base: endpoints?.gigyaBase ?? null,
+      http_base: endpoints?.httpBase ?? null,
+    },
+    account: {
+      authenticated: false,
+      robot_count: null,
+    },
+    matched_robot: null,
+    robots: [],
+    errors,
+  };
+
+  if (!accountConfigured) {
+    errors.push("Add optional iRobot account credentials in Settings to load cloud robot registry");
+    return result;
+  }
+
+  try {
+    const login = await loginIrobotCloud(username, password);
+    result.endpoints.gigya_base = login.endpoints.gigyaBase;
+    result.endpoints.http_base = login.endpoints.httpBase;
+    result.account.authenticated = true;
+    result.robots = mapCloudRobots(login.robots, settings.blid.trim(), settings.password.trim());
+    result.account.robot_count = result.robots.length;
+    result.matched_robot = result.robots.find((robot) => robot.blid === settings.blid.trim()) ?? null;
+    if (settings.blid.trim() && !result.matched_robot) {
+      errors.push("Configured BLID was not found on this iRobot cloud account");
+    }
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  return result;
 }
 
 export function getDorita980Version(): string | null {

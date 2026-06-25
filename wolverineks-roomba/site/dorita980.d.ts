@@ -24,6 +24,8 @@ declare module "dorita980" {
     getRobotState(fields?: string[]): Promise<Record<string, unknown>>;
     getWeek(): Promise<Record<string, unknown>>;
     getPreferences(): Promise<Record<string, unknown>>;
+    getWirelessStatus(): Promise<Record<string, unknown>>;
+    getCloudConfig(): Promise<Record<string, unknown>>;
   }
 
   export function discovery(
