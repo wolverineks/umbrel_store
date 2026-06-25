@@ -490,6 +490,111 @@ async function readRobotState(robot: DoritaLocal): Promise<Record<string, unknow
   );
 }
 
+const COMMAND_SETTLE_MS = 2_500;
+
+export type RobotActionResult = {
+  ok: true;
+  phase: string | null;
+  cycle: string | null;
+};
+
+async function readMissionSnapshot(robot: DoritaLocal): Promise<{
+  mission: Record<string, unknown>;
+  bin: Record<string, unknown>;
+  batPct: number | null;
+}> {
+  const state = await readRobotState(robot);
+  return {
+    mission: (state.cleanMissionStatus ?? {}) as Record<string, unknown>,
+    bin: (state.bin ?? {}) as Record<string, unknown>,
+    batPct: typeof state.batPct === "number" ? state.batPct : null,
+  };
+}
+
+function missionIsActive(mission: Record<string, unknown>): boolean {
+  const phase = String(mission.phase ?? "");
+  const cycle = String(mission.cycle ?? "");
+  if (cycle !== "none") return true;
+  return ["run", "resume", "spot"].includes(phase);
+}
+
+function formatMissionState(mission: Record<string, unknown>): { phase: string | null; cycle: string | null } {
+  const phase = typeof mission.phase === "string" ? mission.phase : null;
+  const cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+  return { phase, cycle };
+}
+
+function buildMissionFailureMessage(
+  mission: Record<string, unknown>,
+  bin: Record<string, unknown>,
+  batPct: number | null,
+  actionLabel: string,
+): string {
+  const phase = String(mission.phase ?? "unknown");
+  const cycle = String(mission.cycle ?? "none");
+  const hints: string[] = [];
+  if (bin.full === true) hints.push("bin is full");
+  if (batPct !== null && batPct < 15) hints.push("battery is low");
+  if (typeof mission.error === "number" && mission.error > 0) hints.push(`robot error code ${mission.error}`);
+  if (typeof mission.notReady === "number" && mission.notReady > 0) {
+    hints.push(`robot not ready (code ${mission.notReady})`);
+  }
+  const hintText = hints.length ? ` ${hints.join(", ")}.` : "";
+  return `${actionLabel} was sent, but the robot did not start (phase=${phase}, cycle=${cycle}).${hintText} Close the iRobot app and try again.`;
+}
+
+async function waitForMissionChange(
+  robot: DoritaLocal,
+  previous: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let latest = previous;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const snapshot = await readMissionSnapshot(robot);
+    latest = snapshot.mission;
+    if (missionIsActive(latest)) return latest;
+    if (String(latest.phase ?? "") !== String(previous.phase ?? "")) return latest;
+    if (String(latest.cycle ?? "") !== String(previous.cycle ?? "")) return latest;
+  }
+  return latest;
+}
+
+async function sendStartClean(robot: DoritaLocal): Promise<RobotActionResult> {
+  const before = await readMissionSnapshot(robot);
+  if (missionIsActive(before.mission)) {
+    return { ok: true, ...formatMissionState(before.mission) };
+  }
+
+  const phase = String(before.mission.phase ?? "");
+  if (phase === "pause") {
+    await robot.resume();
+  } else {
+    await robot.start();
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+  const after = await waitForMissionChange(robot, before.mission, 8_000);
+  if (!missionIsActive(after)) {
+    throw new Error(buildMissionFailureMessage(after, before.bin, before.batPct, "Start clean"));
+  }
+  return { ok: true, ...formatMissionState(after) };
+}
+
+async function sendDock(robot: DoritaLocal): Promise<RobotActionResult> {
+  const before = await readMissionSnapshot(robot);
+  const phase = String(before.mission.phase ?? "");
+  if (["run", "resume", "spot"].includes(phase) || String(before.mission.cycle ?? "") !== "none") {
+    await robot.pause();
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  await robot.dock();
+  await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+  const after = await readMissionSnapshot(robot);
+  return { ok: true, ...formatMissionState(after.mission) };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -825,12 +930,11 @@ export async function runRobotFavorite(settings: RobotSettings, favoriteId: stri
 export async function runRobotAction(
   settings: RobotSettings,
   action: "clean" | "pause" | "resume" | "stop" | "dock",
-): Promise<{ ok: true }> {
-  await withRobot(settings, async (robot) => {
+): Promise<RobotActionResult> {
+  return withRobot(settings, async (robot) => {
     switch (action) {
       case "clean":
-        await robot.clean();
-        break;
+        return sendStartClean(robot);
       case "pause":
         await robot.pause();
         break;
@@ -841,11 +945,13 @@ export async function runRobotAction(
         await robot.stop();
         break;
       case "dock":
-        await robot.dock();
-        break;
+        return sendDock(robot);
     }
+
+    await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+    const snapshot = await readMissionSnapshot(robot);
+    return { ok: true, ...formatMissionState(snapshot.mission) };
   });
-  return { ok: true };
 }
 
 export async function getRobotSchedule(settings: RobotSettings): Promise<unknown> {

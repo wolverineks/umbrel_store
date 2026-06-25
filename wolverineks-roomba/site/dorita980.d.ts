@@ -28,6 +28,7 @@ declare module "dorita980" {
       options?: DoritaLocalOptions,
     );
     end(force?: boolean, callback?: () => void): void;
+    start(): Promise<void>;
     clean(): Promise<void>;
     cleanRoom(args: Record<string, unknown>): Promise<void>;
     pause(): Promise<void>;

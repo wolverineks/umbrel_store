@@ -4,7 +4,7 @@ name: Roomba Local Control
 tagline: Control your iRobot Roomba J7 over local MQTT
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-roomba/icon.svg
 category: automation
-version: "1.2.0"
+version: "1.2.1"
 port: 4050
 description: >-
   Control a Wi-Fi Roomba (J7, i7, s9, 900 series, and similar) from your Umbrel
@@ -18,9 +18,9 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Dashboard lists iRobot favorites from the robot map and adds Run buttons for
-  each saved routine. Status reads favorites over local MQTT in the same session
-  as battery and mission state.
+  Fix Start clean on J7 by sending the start command instead of legacy clean,
+  waiting for the robot to confirm the mission, and returning clearer errors when
+  the Roomba stays docked or idle.
 dependencies: []
 path: ""
 defaultUsername: ""

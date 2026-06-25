@@ -335,6 +335,90 @@ async function discoverRobots(robotIpHint = "") {
 async function readRobotState(robot) {
     return withTimeout(robot.getRobotState(["batPct", "cleanMissionStatus", "bin"]), ROBOT_READ_TIMEOUT_MS, "Robot status");
 }
+const COMMAND_SETTLE_MS = 2_500;
+async function readMissionSnapshot(robot) {
+    const state = await readRobotState(robot);
+    return {
+        mission: (state.cleanMissionStatus ?? {}),
+        bin: (state.bin ?? {}),
+        batPct: typeof state.batPct === "number" ? state.batPct : null,
+    };
+}
+function missionIsActive(mission) {
+    const phase = String(mission.phase ?? "");
+    const cycle = String(mission.cycle ?? "");
+    if (cycle !== "none")
+        return true;
+    return ["run", "resume", "spot"].includes(phase);
+}
+function formatMissionState(mission) {
+    const phase = typeof mission.phase === "string" ? mission.phase : null;
+    const cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+    return { phase, cycle };
+}
+function buildMissionFailureMessage(mission, bin, batPct, actionLabel) {
+    const phase = String(mission.phase ?? "unknown");
+    const cycle = String(mission.cycle ?? "none");
+    const hints = [];
+    if (bin.full === true)
+        hints.push("bin is full");
+    if (batPct !== null && batPct < 15)
+        hints.push("battery is low");
+    if (typeof mission.error === "number" && mission.error > 0)
+        hints.push(`robot error code ${mission.error}`);
+    if (typeof mission.notReady === "number" && mission.notReady > 0) {
+        hints.push(`robot not ready (code ${mission.notReady})`);
+    }
+    const hintText = hints.length ? ` ${hints.join(", ")}.` : "";
+    return `${actionLabel} was sent, but the robot did not start (phase=${phase}, cycle=${cycle}).${hintText} Close the iRobot app and try again.`;
+}
+async function waitForMissionChange(robot, previous, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let latest = previous;
+    while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const snapshot = await readMissionSnapshot(robot);
+        latest = snapshot.mission;
+        if (missionIsActive(latest))
+            return latest;
+        if (String(latest.phase ?? "") !== String(previous.phase ?? ""))
+            return latest;
+        if (String(latest.cycle ?? "") !== String(previous.cycle ?? ""))
+            return latest;
+    }
+    return latest;
+}
+async function sendStartClean(robot) {
+    const before = await readMissionSnapshot(robot);
+    if (missionIsActive(before.mission)) {
+        return { ok: true, ...formatMissionState(before.mission) };
+    }
+    const phase = String(before.mission.phase ?? "");
+    if (phase === "pause") {
+        await robot.resume();
+    }
+    else {
+        await robot.start();
+    }
+    await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+    const after = await waitForMissionChange(robot, before.mission, 8_000);
+    if (!missionIsActive(after)) {
+        throw new Error(buildMissionFailureMessage(after, before.bin, before.batPct, "Start clean"));
+    }
+    return { ok: true, ...formatMissionState(after) };
+}
+async function sendDock(robot) {
+    const before = await readMissionSnapshot(robot);
+    const phase = String(before.mission.phase ?? "");
+    if (["run", "resume", "spot"].includes(phase) || String(before.mission.cycle ?? "") !== "none") {
+        await robot.pause();
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    await robot.dock();
+    await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+    const after = await readMissionSnapshot(robot);
+    return { ok: true, ...formatMissionState(after.mission) };
+}
 function asRecord(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
         return null;
@@ -619,11 +703,10 @@ async function runRobotFavorite(settings, favoriteId) {
     return { ok: true };
 }
 async function runRobotAction(settings, action) {
-    await withRobot(settings, async (robot) => {
+    return withRobot(settings, async (robot) => {
         switch (action) {
             case "clean":
-                await robot.clean();
-                break;
+                return sendStartClean(robot);
             case "pause":
                 await robot.pause();
                 break;
@@ -634,11 +717,12 @@ async function runRobotAction(settings, action) {
                 await robot.stop();
                 break;
             case "dock":
-                await robot.dock();
-                break;
+                return sendDock(robot);
         }
+        await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+        const snapshot = await readMissionSnapshot(robot);
+        return { ok: true, ...formatMissionState(snapshot.mission) };
     });
-    return { ok: true };
 }
 async function getRobotSchedule(settings) {
     return withRobot(settings, async (robot) => robot.getWeek());

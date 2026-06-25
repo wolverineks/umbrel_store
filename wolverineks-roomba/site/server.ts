@@ -21,7 +21,7 @@ import {
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -748,13 +748,24 @@ function dashboardPage(): string {
           showError(message);
         }
       }
+      function actionSuccessMessage(action, data) {
+        const phase = data.phase || "unknown";
+        const cycle = data.cycle || "none";
+        if (action === "clean") {
+          return cycle !== "none" || phase === "run" || phase === "resume"
+            ? "Cleaning started (" + phase + ")."
+            : "Clean command sent (" + phase + ").";
+        }
+        if (action === "dock") return "Dock command sent (" + phase + ").";
+        return action.charAt(0).toUpperCase() + action.slice(1) + " sent (" + phase + ").";
+      }
       async function runAction(action) {
         showError("");
         showSuccess("");
         const response = await fetch("/api/action/" + action, { method: "POST" });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Action failed");
-        showSuccess(action.charAt(0).toUpperCase() + action.slice(1) + " sent.");
+        showSuccess(actionSuccessMessage(action, data));
         await loadStatus();
       }
       async function runFavorite(favoriteId) {
@@ -1538,8 +1549,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     try {
-      await runRobotAction(settings, action);
-      sendJson(res, 200, { ok: true });
+      const result = await runRobotAction(settings, action);
+      sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
     }
