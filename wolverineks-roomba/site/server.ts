@@ -3,12 +3,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import {
-  buildDiagnostics,
+  buildRoombaDiagnostics,
   discoverRobots,
   fetchCredentialsFromCloud,
+  getDorita980Version,
+  getLastError,
   getRobotPreferences,
   getRobotSchedule,
   getRobotStatus,
+  isDiscoveryBusy,
+  isMutexBusy,
   runRobotAction,
   testConnection,
   type ConnectionMode,
@@ -375,6 +379,54 @@ function pageStyles(): string {
       padding: 10px 8px;
       border-bottom: 1px solid var(--border);
       font-size: 14px;
+    }
+    .diagnostics-grid {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      margin-top: 16px;
+    }
+    .diagnostics-card h3 {
+      margin: 0 0 4px;
+      font-size: 18px;
+    }
+    .diagnostics-card .card-hint {
+      margin: 0 0 14px;
+      font-size: 13px;
+    }
+    .diagnostics-section h4 {
+      margin: 16px 0 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .diagnostics-section:first-of-type h4 { margin-top: 0; }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .stat-row:last-child { border-bottom: 0; }
+    .stat-row span:last-child {
+      text-align: right;
+      word-break: break-word;
+      max-width: 58%;
+    }
+    .diag-ok { color: var(--success); font-weight: 600; }
+    .diag-bad { color: var(--danger); font-weight: 600; }
+    .diag-errors {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      font-size: 13px;
     }
     @media (max-width: 900px) {
       .layout {
@@ -881,14 +933,53 @@ function settingsPage(): string {
   );
 }
 
+function buildAppDiagnostics(settings: RobotSettings) {
+  return {
+    version: APP_VERSION,
+    dev_mode: IS_LOCAL_DEV,
+    configured: isConfigured(settings),
+    settings: publicSettings(settings),
+    runtime: {
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      uptime_seconds: Math.round(process.uptime()),
+      port: PORT,
+      node_env: process.env.NODE_ENV ?? "development",
+      data_root: DATA_ROOT,
+      settings_file_exists: existsSync(SETTINGS_PATH),
+    },
+    library: {
+      dorita980_version: getDorita980Version(),
+    },
+    connection: {
+      mqtt_mutex_busy: isMutexBusy(),
+      discovery_busy: isDiscoveryBusy(),
+      last_error: getLastError(),
+      coexistence_note:
+        "This app connects briefly over local MQTT, then disconnects so the official iRobot app can keep using iRobot cloud.",
+    },
+  };
+}
+
+async function buildDiagnosticsSnapshot(settings: RobotSettings) {
+  return {
+    generated_at: new Date().toISOString(),
+    app: buildAppDiagnostics(settings),
+    roomba: await buildRoombaDiagnostics(settings),
+  };
+}
+
 function diagnosticsPage(): string {
   return layout(
     "diagnostics",
     "Diagnostics",
     `
     <div class="panel">
-      <button type="button" id="refresh-diagnostics">Refresh diagnostics</button>
-      <pre id="diagnostics" class="muted" style="white-space:pre-wrap; margin-top:16px"></pre>
+      <button type="button" class="secondary" id="refresh-diagnostics">Refresh diagnostics</button>
+      <div id="diagnostics-content">
+        <p class="muted">Loading diagnostics…</p>
+      </div>
       <div class="error" id="error"></div>
     </div>
     <script>
@@ -897,11 +988,121 @@ function diagnosticsPage(): string {
         errorEl.style.display = message ? "block" : "none";
         errorEl.textContent = message || "";
       }
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+      function formatValue(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        return escapeHtml(String(value));
+      }
+      function formatBool(value, trueLabel, falseLabel) {
+        return value
+          ? '<span class="diag-ok">' + escapeHtml(trueLabel) + "</span>"
+          : '<span class="diag-bad">' + escapeHtml(falseLabel) + "</span>";
+      }
+      function row(label, valueHtml) {
+        return '<div class="stat-row"><span class="muted">' + escapeHtml(label) + '</span><span>' + valueHtml + "</span></div>";
+      }
+      function section(title, rowsHtml) {
+        if (!rowsHtml) return "";
+        return '<div class="diagnostics-section"><h4>' + escapeHtml(title) + "</h4>" + rowsHtml + "</div>";
+      }
+      function card(title, hint, bodyHtml) {
+        return '<div class="panel diagnostics-card"><h3>' + escapeHtml(title) + '</h3><p class="muted card-hint">' + escapeHtml(hint) + '</p>' + bodyHtml + "</div>";
+      }
+      function renderApp(app) {
+        const settings = app.settings || {};
+        const runtime = app.runtime || {};
+        const library = app.library || {};
+        const connection = app.connection || {};
+        const settingsRows = [
+          row("Configured", formatBool(app.configured, "Yes", "No")),
+          row("Robot name", formatValue(settings.robot_name)),
+          row("Robot IP", formatValue(settings.robot_ip)),
+          row("BLID", formatValue(settings.blid_preview)),
+          row("Firmware protocol", formatValue(settings.firmware_version)),
+          row("Connection mode", formatValue(settings.connection_mode)),
+          row("Auto-refresh (s)", formatValue(settings.live_poll_seconds)),
+        ].join("");
+        const runtimeRows = [
+          row("App version", formatValue(app.version)),
+          row("Dev mode", formatBool(app.dev_mode, "On", "Off")),
+          row("Node.js", formatValue(runtime.node_version)),
+          row("Platform", formatValue(runtime.platform + " / " + runtime.arch)),
+          row("Uptime", formatValue(runtime.uptime_seconds + "s")),
+          row("Port", formatValue(runtime.port)),
+          row("NODE_ENV", formatValue(runtime.node_env)),
+          row("Data root", formatValue(runtime.data_root)),
+          row("Settings file", formatBool(runtime.settings_file_exists, "Present", "Missing")),
+        ].join("");
+        const libraryRows = row("dorita980", formatValue(library.dorita980_version));
+        const connectionRows = [
+          row("MQTT mutex busy", formatBool(!connection.mqtt_mutex_busy, "Idle", "Busy")),
+          row("Discovery busy", formatBool(!connection.discovery_busy, "Idle", "Busy")),
+          row("Last error", formatValue(connection.last_error)),
+        ].join("");
+        return card(
+          "App",
+          "Umbrel runtime, saved settings, and local control library.",
+          section("Settings", settingsRows) +
+          section("Runtime", runtimeRows) +
+          section("Library", libraryRows) +
+          section("Connection state", connectionRows) +
+          (connection.coexistence_note ? '<p class="muted" style="margin-top:12px;font-size:13px">' + escapeHtml(connection.coexistence_note) + "</p>" : "")
+        );
+      }
+      function renderRoomba(roomba) {
+        const mqtt = roomba.mqtt || {};
+        const status = roomba.status || {};
+        const identityRows = [
+          row("Configured", formatBool(roomba.configured, "Yes", "No")),
+          row("Name", formatValue(roomba.name)),
+          row("Host", formatValue(roomba.host)),
+          row("Firmware protocol", formatValue(roomba.firmware_protocol)),
+        ].join("");
+        const mqttRows = [
+          row("MQTT host", formatValue(mqtt.host)),
+          row("MQTT port", formatValue(mqtt.port)),
+          row("TCP reachable", formatBool(mqtt.reachable, "Yes", "No")),
+          row("TCP latency", mqtt.latency_ms == null ? "—" : formatValue(mqtt.latency_ms + " ms")),
+        ].join("");
+        const statusRows = [
+          row("Connected", formatBool(status.connected, "Yes", "No")),
+          row("Battery", status.battery_percent == null ? "—" : formatValue(status.battery_percent + "%")),
+          row("Phase", formatValue(status.phase)),
+          row("Cycle", formatValue(status.cycle)),
+          row("Bin", status.bin_full == null ? "—" : formatValue(status.bin_full ? "Full" : "OK")),
+          row("Software", formatValue(status.software_version)),
+          row("SKU", formatValue(status.sku)),
+          row("Last sync", status.last_sync ? formatValue(new Date(status.last_sync).toLocaleString()) : "—"),
+          row("Status error", formatValue(status.error)),
+        ].join("");
+        const errors = Array.isArray(roomba.errors) ? roomba.errors.filter(Boolean) : [];
+        const errorsHtml = errors.length
+          ? '<div class="diag-errors"><strong>Issues</strong><br>' + errors.map(escapeHtml).join("<br>") + "</div>"
+          : "";
+        return card(
+          "Roomba",
+          "Network reachability and live state from the robot over local MQTT.",
+          section("Identity", identityRows) +
+          section("MQTT", mqttRows) +
+          section("Live status", statusRows) +
+          errorsHtml
+        );
+      }
+      function renderDiagnostics(data) {
+        return '<div class="diagnostics-grid">' + renderApp(data.app) + renderRoomba(data.roomba) + "</div>" +
+          '<p class="muted" style="margin-top:12px;font-size:13px">Generated ' + escapeHtml(new Date(data.generated_at).toLocaleString()) + "</p>";
+      }
       async function loadDiagnostics() {
         const response = await fetch("/api/diagnostics");
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Failed to load diagnostics");
-        document.getElementById("diagnostics").textContent = JSON.stringify(data, null, 2);
+        document.getElementById("diagnostics-content").innerHTML = renderDiagnostics(data);
       }
       document.getElementById("refresh-diagnostics").addEventListener("click", () => {
         loadDiagnostics().catch((error) => showError(error.message));
@@ -1059,8 +1260,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (method === "GET" && pathname === "/api/diagnostics") {
-    const diagnostics = await buildDiagnostics(settings, existsSync(SETTINGS_PATH));
-    sendJson(res, 200, diagnostics);
+    sendJson(res, 200, await buildDiagnosticsSnapshot(settings));
     return;
   }
 

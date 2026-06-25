@@ -53,20 +53,19 @@ export type RobotStatus = {
   last_sync: string;
 };
 
-export type DiagnosticsSnapshot = {
+export type RoombaDiagnostics = {
   configured: boolean;
-  robot_ip: string;
-  robot_name: string;
-  firmware_version: string;
-  connection_mode: ConnectionMode;
-  live_poll_seconds: number;
-  mqtt_reachable: boolean;
-  mqtt_latency_ms: number | null;
-  mutex_busy: boolean;
-  last_error: string | null;
-  dorita980_version: string | null;
-  settings_file_exists: boolean;
-  coexistence_note: string;
+  host: string;
+  name: string;
+  firmware_protocol: string;
+  mqtt: {
+    host: string;
+    port: number;
+    reachable: boolean;
+    latency_ms: number | null;
+  };
+  status: RobotStatus | null;
+  errors: string[];
 };
 
 type DoritaLocal = InstanceType<typeof dorita980.Local>;
@@ -87,6 +86,10 @@ export function getLastError(): string | null {
 
 export function isMutexBusy(): boolean {
   return mutexBusy;
+}
+
+export function isDiscoveryBusy(): boolean {
+  return discoveryBusy;
 }
 
 async function acquireMutex(): Promise<void> {
@@ -431,36 +434,49 @@ export function checkMqttReachable(host: string, timeoutMs = 5_000): Promise<{ r
   });
 }
 
-export async function buildDiagnostics(
-  settings: RobotSettings,
-  settingsFileExists: boolean,
-): Promise<DiagnosticsSnapshot> {
-  const reachability = settings.robot_ip
-    ? await checkMqttReachable(settings.robot_ip)
+export async function buildRoombaDiagnostics(settings: RobotSettings): Promise<RoombaDiagnostics> {
+  const configured = isConfigured(settings);
+  const host = settings.robot_ip.trim();
+  const reachability = host
+    ? await checkMqttReachable(host)
     : { reachable: false, latencyMs: null };
+  const errors: string[] = [];
+  let status: RobotStatus | null = null;
 
-  let doritaVersion: string | null = null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    doritaVersion = require("dorita980/package.json").version as string;
-  } catch {
-    doritaVersion = null;
+  if (configured) {
+    status = await getRobotStatus(settings);
+    if (status.error) {
+      errors.push(status.error);
+    }
+  } else {
+    errors.push("Robot is not configured yet");
+  }
+
+  if (host && !reachability.reachable) {
+    errors.push(`MQTT port ${MQTT_PORT} is not reachable at ${host}`);
   }
 
   return {
-    configured: isConfigured(settings),
-    robot_ip: settings.robot_ip,
-    robot_name: settings.robot_name,
-    firmware_version: settings.firmware_version,
-    connection_mode: settings.connection_mode,
-    live_poll_seconds: settings.live_poll_seconds,
-    mqtt_reachable: reachability.reachable,
-    mqtt_latency_ms: reachability.latencyMs,
-    mutex_busy: mutexBusy,
-    last_error: lastError,
-    dorita980_version: doritaVersion,
-    settings_file_exists: settingsFileExists,
-    coexistence_note:
-      "This app connects briefly over local MQTT, then disconnects so the official iRobot app can keep using iRobot cloud.",
+    configured,
+    host,
+    name: settings.robot_name,
+    firmware_protocol: settings.firmware_version,
+    mqtt: {
+      host,
+      port: MQTT_PORT,
+      reachable: reachability.reachable,
+      latency_ms: reachability.latencyMs,
+    },
+    status,
+    errors,
   };
+}
+
+export function getDorita980Version(): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("dorita980/package.json").version as string;
+  } catch {
+    return null;
+  }
 }
