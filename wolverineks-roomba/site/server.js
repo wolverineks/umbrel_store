@@ -115,9 +115,13 @@ function pageStyles() {
       --muted: #64748b;
       --border: #e2e8f0;
       --accent: #0284c7;
+      --accent-hover: #0369a1;
+      --accent-active: #075985;
       --accent-soft: #e0f2fe;
       --success: #16a34a;
       --danger: #dc2626;
+      --danger-hover: #b91c1c;
+      --danger-active: #991b1b;
       --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
     }
     * { box-sizing: border-box; }
@@ -156,8 +160,15 @@ function pageStyles() {
       padding: 10px 12px;
       border-radius: 10px;
       margin-bottom: 6px;
+      transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
     }
-    .nav a.active, .nav a:hover { background: rgba(56, 189, 248, 0.15); color: #fff; }
+    .nav a:hover { background: rgba(56, 189, 248, 0.15); color: #fff; }
+    .nav a.active { background: rgba(56, 189, 248, 0.22); color: #fff; }
+    .nav a:active { background: rgba(56, 189, 248, 0.3); transform: scale(0.98); }
+    .nav a:focus-visible {
+      outline: 2px solid #38bdf8;
+      outline-offset: 2px;
+    }
     .nav { flex: 1; }
     .sidebar-version {
       margin-top: auto;
@@ -179,6 +190,20 @@ function pageStyles() {
       padding: 8px 10px;
       cursor: pointer;
       color: var(--text);
+      transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .menu-toggle:hover {
+      background: var(--accent-soft);
+      border-color: #bae6fd;
+    }
+    .menu-toggle:active {
+      background: #bae6fd;
+      transform: scale(0.96);
+    }
+    .menu-toggle:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     .menu-toggle .icon {
       width: 20px;
@@ -232,12 +257,53 @@ function pageStyles() {
       display: inline-flex;
       align-items: center;
       gap: 8px;
+      transition: background-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    button:hover:not(:disabled), .button:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.28);
+    }
+    button:active:not(:disabled), .button:active {
+      background: var(--accent-active);
+      transform: scale(0.97);
+      box-shadow: none;
+    }
+    button:focus-visible, .button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     button.secondary, .button.secondary {
       background: #e2e8f0;
       color: #0f172a;
     }
+    button.secondary:hover:not(:disabled), .button.secondary:hover {
+      background: #cbd5e1;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+    }
+    button.secondary:active:not(:disabled), .button.secondary:active {
+      background: #94a3b8;
+      color: #0f172a;
+      transform: scale(0.97);
+      box-shadow: none;
+    }
     button.danger { background: var(--danger); }
+    button.danger:hover:not(:disabled) {
+      background: var(--danger-hover);
+      box-shadow: 0 2px 8px rgba(220, 38, 38, 0.28);
+    }
+    button.danger:active:not(:disabled) {
+      background: var(--danger-active);
+      transform: scale(0.97);
+      box-shadow: none;
+    }
+    button:disabled, .button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
     label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
     input, select {
       width: 100%;
