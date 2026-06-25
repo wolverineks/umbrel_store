@@ -165,6 +165,9 @@ function pageStyles(): string {
       background: #0f172a;
       color: #e2e8f0;
       padding: 24px 18px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
     }
     .brand {
       display: flex;
@@ -184,6 +187,13 @@ function pageStyles(): string {
       margin-bottom: 6px;
     }
     .nav a.active, .nav a:hover { background: rgba(56, 189, 248, 0.15); color: #fff; }
+    .nav { flex: 1; }
+    .sidebar-version {
+      margin-top: auto;
+      padding-top: 18px;
+      color: #64748b;
+      font-size: 12px;
+    }
     .content { padding: 28px; }
     .panel {
       background: var(--panel);
@@ -309,10 +319,10 @@ function layout(page: string, title: string, body: string): string {
         <img src="/icon.svg" alt="" />
         <div>
           <strong>Roomba Local</strong>
-          <span>v${APP_VERSION}</span>
         </div>
       </div>
       <nav class="nav">${nav}</nav>
+      <div class="sidebar-version">v${APP_VERSION}</div>
     </aside>
     <main class="content">
       <h1>${escapeHtml(title)}</h1>
