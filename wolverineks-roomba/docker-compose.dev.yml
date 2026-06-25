@@ -1,0 +1,18 @@
+# Local UI development — faster iteration than the Umbrel deployment.
+# From wolverineks-roomba/: docker compose -f docker-compose.dev.yml up
+version: "3.7"
+
+services:
+  server:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev:local"
+    ports:
+      - "4050:4050"
+    volumes:
+      - ./site:/app
+    environment:
+      ROOMBA_DEV: "1"
+      ROOMBA_DATA_DIR: /app/.local-data
+      PORT: "4050"
+    init: true

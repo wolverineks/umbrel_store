@@ -1,0 +1,28 @@
+manifestVersion: 1
+id: wolverineks-roomba
+name: Roomba Local Control
+tagline: Control your iRobot Roomba J7 over local MQTT
+icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-roomba/icon.svg
+category: automation
+version: "1.0.0"
+port: 4050
+description: >-
+  Control a Wi-Fi Roomba (J7, i7, s9, 900 series, and similar) from your Umbrel
+  over local MQTT on your LAN. Uses short-lived connections so the official
+  iRobot app can keep working through iRobot cloud for maps, remote access, and
+  account features. One-time iRobot account login is required during setup to
+  fetch robot credentials.
+developer: Wolverineks
+website: https://github.com/wolverineks
+repo: https://github.com/wolverineks/umbrel_store
+support: https://github.com/wolverineks/umbrel_store/issues
+gallery: []
+releaseNotes: >-
+  Initial release with setup wizard, dashboard controls, schedule view,
+  diagnostics, and on-demand MQTT connections for official app coexistence.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+backupIgnore:
+  - data

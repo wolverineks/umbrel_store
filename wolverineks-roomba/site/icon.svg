@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Roomba">
+  <rect width="128" height="128" rx="24" fill="#1e3a5f"/>
+  <circle cx="64" cy="68" r="36" fill="#38bdf8"/>
+  <circle cx="64" cy="68" r="28" fill="#0ea5e9"/>
+  <circle cx="64" cy="68" r="10" fill="#e0f2fe"/>
+  <rect x="44" y="28" width="40" height="10" rx="5" fill="#64748b"/>
+  <circle cx="48" cy="88" r="4" fill="#0f172a"/>
+  <circle cx="80" cy="88" r="4" fill="#0f172a"/>
+</svg>

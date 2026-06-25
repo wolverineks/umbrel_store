@@ -12,3 +12,8 @@ wolverineks-hvac/data/*
 !wolverineks-hvac/data/state/.gitkeep
 wolverineks-hvac/site/node_modules/
 wolverineks-hvac/site/dist/
+wolverineks-roomba/data/*
+!wolverineks-roomba/data/.gitkeep
+wolverineks-roomba/site/node_modules/
+wolverineks-roomba/site/dist/
+wolverineks-roomba/site/.local-data/

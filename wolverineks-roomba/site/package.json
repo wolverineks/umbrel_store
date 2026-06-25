@@ -1,0 +1,17 @@
+{
+  "name": "wolverineks-roomba",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc && cp dist/server.js server.js && cp dist/roomba-client.js roomba-client.js",
+    "start": "node server.js",
+    "dev:local": "tsc && node server.js"
+  },
+  "dependencies": {
+    "dorita980": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}

@@ -11,6 +11,7 @@ Add this repo to your Umbrel: `https://github.com/wolverineks/umbrel_store`
 - Recipes — self-hosted recipe library
 - Brother Print & Scan — web interface for Brother MFC-J1360DW
 - Bryant/Carrier HVAC — cloud UI for Infinity/Evolution heat pumps
+- Roomba Local Control — local MQTT control for iRobot Roomba J7 and similar models
 
 ## How to contribute / add more apps
 

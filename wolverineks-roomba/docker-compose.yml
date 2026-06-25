@@ -1,0 +1,29 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: wolverineks-roomba_server_1
+      APP_PORT: 3000
+
+  server:
+    image: node:22-alpine
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /data /runtime
+        cp -a /app/. /runtime/
+        cd /runtime
+        npm install --omit=dev
+        chown -R 1000:1000 /data /runtime
+        exec su -s /bin/sh node -c "cd /runtime && node server.js"
+    volumes:
+      - ${APP_DATA_DIR}/site:/app:ro
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      ROOMBA_DATA_DIR: /data
+      ROOMBA_IP: ${ROOMBA_IP:-}
+      NODE_ENV: production
+    restart: on-failure
+    init: true
