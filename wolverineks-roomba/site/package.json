@@ -5,13 +5,15 @@
   "scripts": {
     "build": "tsc && cp dist/server.js server.js && cp dist/roomba-client.js roomba-client.js",
     "start": "node server.js",
-    "dev:local": "tsc && node server.js"
+    "dev": "ROOMBA_DEV=1 ROOMBA_DATA_DIR=./.local-data PORT=4050 tsx watch server.ts",
+    "dev:local": "ROOMBA_DEV=1 ROOMBA_DATA_DIR=./.local-data PORT=4050 tsx watch server.ts"
   },
   "dependencies": {
     "dorita980": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
+    "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }
 }

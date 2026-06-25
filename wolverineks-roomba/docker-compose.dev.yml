@@ -6,7 +6,7 @@ services:
   server:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm install && npm run dev:local"
+    command: sh -c "npm install && npm run dev"
     ports:
       - "4050:4050"
     volumes:
