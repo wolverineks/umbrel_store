@@ -128,12 +128,8 @@ function createRobotClient(settings) {
         reconnectPeriod: 0,
     });
 }
-async function assertMqttReachable(settings) {
-    const host = settings.robot_ip.trim();
-    const reachability = await checkMqttReachable(host, 5_000);
-    if (!reachability.reachable) {
-        throw new Error(`Cannot reach ${host}:${MQTT_PORT} from this server. Enter the correct robot IP and make sure Umbrel is on the same LAN.`);
-    }
+function mqttBusyHint() {
+    return " Close the iRobot mobile app and wait a few seconds, then try again.";
 }
 function withTimeout(promise, timeoutMs, label) {
     return new Promise((resolve, reject) => {
@@ -151,26 +147,42 @@ function withTimeout(promise, timeoutMs, label) {
         });
     });
 }
+function isRobotConnected(robot) {
+    return Boolean(robot.connected);
+}
 function waitForConnect(robot) {
+    if (isRobotConnected(robot)) {
+        return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
+        let settled = false;
+        const finish = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timeout);
             robot.removeListener("connect", onConnect);
             robot.removeListener("error", onError);
-            void endRobot(robot);
-            reject(new Error("Timed out connecting to the robot over local MQTT"));
-        }, CONNECT_TIMEOUT_MS);
-        const onConnect = () => {
-            clearTimeout(timeout);
-            robot.removeListener("error", onError);
-            resolve();
+            robot.removeListener("close", onClose);
+            if (error)
+                reject(error);
+            else
+                resolve();
         };
-        const onError = (error) => {
-            clearTimeout(timeout);
-            robot.removeListener("connect", onConnect);
-            reject(error);
+        const timeout = setTimeout(() => {
+            void endRobot(robot);
+            finish(new Error(`Timed out connecting to the robot over local MQTT.${mqttBusyHint()}`));
+        }, CONNECT_TIMEOUT_MS);
+        const onConnect = () => finish();
+        const onError = (error) => finish(error);
+        const onClose = () => {
+            if (!isRobotConnected(robot)) {
+                finish(new Error(`Local MQTT connection closed before the robot responded.${mqttBusyHint()}`));
+            }
         };
         robot.once("connect", onConnect);
         robot.once("error", onError);
+        robot.once("close", onClose);
     });
 }
 async function endRobot(robot) {
@@ -377,7 +389,6 @@ async function fetchCredentialsFromCloud(username, password) {
     return { robots };
 }
 async function testConnection(settings) {
-    await assertMqttReachable(settings);
     return getRobotStatus(settings);
 }
 async function getRobotStatus(settings) {
@@ -406,7 +417,6 @@ async function getRobotStatus(settings) {
         return base;
     }
     try {
-        await assertMqttReachable(settings);
         const state = await withRobot(settings, async (robot) => readRobotState(robot));
         const mission = (state.cleanMissionStatus ?? {});
         const bin = (state.bin ?? {});
@@ -663,9 +673,6 @@ async function fetchRoombaDeviceDiagnostics(settings) {
 async function buildRoombaDiagnostics(settings) {
     const configured = isConfigured(settings);
     const host = settings.robot_ip.trim();
-    const reachability = host
-        ? await checkMqttReachable(host)
-        : { reachable: false, latencyMs: null };
     const errors = [];
     let device = null;
     if (configured) {
@@ -677,7 +684,11 @@ async function buildRoombaDiagnostics(settings) {
     else {
         errors.push("Robot is not configured yet");
     }
-    if (host && !reachability.reachable) {
+    // Probe TCP only after MQTT — a raw socket to :8883 blocks the robot's single local MQTT slot.
+    const reachability = device?.connected || !host
+        ? { reachable: device?.connected ?? false, latencyMs: null }
+        : await checkMqttReachable(host);
+    if (host && !device?.connected && !reachability.reachable) {
         errors.push(`MQTT port ${MQTT_PORT} is not reachable at ${host}`);
     }
     return {
@@ -688,7 +699,7 @@ async function buildRoombaDiagnostics(settings) {
         mqtt: {
             host,
             port: MQTT_PORT,
-            reachable: reachability.reachable,
+            reachable: device?.connected || reachability.reachable,
             latency_ms: reachability.latencyMs,
         },
         device,

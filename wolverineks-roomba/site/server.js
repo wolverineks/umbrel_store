@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const roomba_client_1 = require("./roomba-client");
-const APP_VERSION = "1.1.3";
+const APP_VERSION = "1.1.4";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";

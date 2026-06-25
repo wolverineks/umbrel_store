@@ -20,7 +20,7 @@ import {
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.1.3";
+const APP_VERSION = "1.1.4";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
