@@ -24,6 +24,7 @@ services:
     environment:
       ROOMBA_DATA_DIR: /data
       ROOMBA_IP: ${ROOMBA_IP:-}
+      ROOMBA_SCAN_SUBNETS: ${ROOMBA_SCAN_SUBNETS:-}
       NODE_ENV: production
     restart: on-failure
     init: true

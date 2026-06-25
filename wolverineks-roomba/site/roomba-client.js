@@ -24,11 +24,14 @@ const node_net_1 = require("node:net");
 const node_util_1 = require("node:util");
 const dorita980_1 = __importDefault(require("dorita980"));
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
-const CONNECT_TIMEOUT_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 20_000;
+const ROBOT_READ_TIMEOUT_MS = 12_000;
+const ROBOT_OPERATION_TIMEOUT_MS = 35_000;
 const MQTT_PORT = 8883;
 const DISCOVERY_PORT = 5678;
 const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
-const DISCOVERY_TIMEOUT_MS = 5_000;
+const DISCOVERY_TIMEOUT_MS = 4_000;
+const SUBNET_SCAN_TIMEOUT_MS = 10_000;
 const IROBOT_DISCOVERY_URL = process.env.IROBOT_DISCOVERY_URL ??
     `https://disc-prod.iot.irobotapi.com/v1/discover/endpoints?country_code=${process.env.IROBOT_COUNTRY_CODE ?? "US"}`;
 const IROBOT_APP_ID = "ANDROID-C7FB240E-DF34-42D7-AE4E-A8C17079A294";
@@ -106,9 +109,28 @@ function parseDiscoveryRobot(parsed) {
 function isConfigured(settings) {
     return Boolean(settings.robot_ip.trim() && settings.blid.trim() && settings.password.trim());
 }
+function withTimeout(promise, timeoutMs, label) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
+        }, timeoutMs);
+        promise
+            .then((value) => {
+            clearTimeout(timer);
+            resolve(value);
+        })
+            .catch((error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
 function waitForConnect(robot) {
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
+            robot.removeListener("connect", onConnect);
+            robot.removeListener("error", onError);
+            void endRobot(robot);
             reject(new Error("Timed out connecting to the robot over local MQTT"));
         }, CONNECT_TIMEOUT_MS);
         const onConnect = () => {
@@ -138,10 +160,8 @@ async function withRobot(settings, fn) {
         throw new Error("Robot is not configured yet");
     }
     await acquireMutex();
-    const robot = new dorita980_1.default.Local(settings.blid.trim(), settings.password.trim(), settings.robot_ip.trim(), settings.firmware_version.trim() || "3");
     try {
-        await waitForConnect(robot);
-        const result = await fn(robot);
+        const result = await withTimeout(withRobotSession(settings, fn), ROBOT_OPERATION_TIMEOUT_MS, "Robot operation");
         setLastError(null);
         return result;
     }
@@ -151,12 +171,38 @@ async function withRobot(settings, fn) {
         throw error;
     }
     finally {
-        await endRobot(robot);
         releaseMutex();
     }
 }
-async function discoverRobots() {
-    await acquireDiscoveryMutex();
+async function withRobotSession(settings, fn) {
+    const robot = new dorita980_1.default.Local(settings.blid.trim(), settings.password.trim(), settings.robot_ip.trim(), settings.firmware_version.trim() || "3");
+    try {
+        await waitForConnect(robot);
+        return await fn(robot);
+    }
+    finally {
+        await endRobot(robot);
+    }
+}
+function normalizeSubnetPrefix(value) {
+    return value.replace(/\/24$/i, "").replace(/\.\d+$/, "").trim();
+}
+function getScanSubnets(robotIpHint = "") {
+    const fromEnv = (process.env.ROOMBA_SCAN_SUBNETS ?? "")
+        .split(",")
+        .map((value) => normalizeSubnetPrefix(value.trim()))
+        .filter(Boolean);
+    if (fromEnv.length)
+        return fromEnv;
+    const hint = robotIpHint.trim() || process.env.ROOMBA_IP?.trim() || "";
+    if (hint) {
+        const parts = hint.split(".");
+        if (parts.length === 4)
+            return [`${parts[0]}.${parts[1]}.${parts[2]}`];
+    }
+    return ["192.168.1", "192.168.0", "192.168.86", "192.168.4"];
+}
+function collectDiscoveryResponses(durationMs, targetIps) {
     return new Promise((resolve, reject) => {
         const robots = [];
         const seenIps = new Set();
@@ -174,16 +220,12 @@ async function discoverRobots() {
             catch {
                 // ignore close errors
             }
-            releaseDiscoveryMutex();
-            if (error) {
-                setLastError(error.message);
+            if (error)
                 reject(error);
-                return;
-            }
-            setLastError(null);
-            resolve(robots);
+            else
+                resolve(robots);
         };
-        const timeout = setTimeout(() => finish(), DISCOVERY_TIMEOUT_MS);
+        const timeout = setTimeout(() => finish(), durationMs);
         server.on("error", (error) => finish(error));
         server.on("message", (message) => {
             try {
@@ -199,13 +241,48 @@ async function discoverRobots() {
             }
         });
         server.bind(DISCOVERY_PORT, () => {
-            server.setBroadcast(true);
-            server.send(DISCOVERY_MESSAGE, DISCOVERY_PORT, "255.255.255.255", (error) => {
-                if (error)
-                    finish(error);
-            });
+            for (const ip of targetIps) {
+                if (ip === "255.255.255.255") {
+                    server.setBroadcast(true);
+                }
+                server.send(DISCOVERY_MESSAGE, DISCOVERY_PORT, ip, () => { });
+            }
         });
     });
+}
+async function discoverRobots(robotIpHint = "") {
+    await acquireDiscoveryMutex();
+    try {
+        const broadcast = await collectDiscoveryResponses(DISCOVERY_TIMEOUT_MS, ["255.255.255.255"]);
+        if (broadcast.length > 0) {
+            setLastError(null);
+            return broadcast;
+        }
+        const subnets = getScanSubnets(robotIpHint);
+        const targetIps = subnets.flatMap((prefix) => Array.from({ length: 254 }, (_, index) => `${prefix}.${index + 1}`));
+        const scanned = await collectDiscoveryResponses(SUBNET_SCAN_TIMEOUT_MS, targetIps);
+        setLastError(null);
+        return scanned;
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLastError(message);
+        throw error;
+    }
+    finally {
+        releaseDiscoveryMutex();
+    }
+}
+async function readRobotState(robot) {
+    return withTimeout(robot.getRobotState(["batPct", "cleanMissionStatus", "bin"]), ROBOT_READ_TIMEOUT_MS, "Robot status");
+}
+async function readOptionalRobotValue(label, timeoutMs, read) {
+    try {
+        return await withTimeout(read(), timeoutMs, label);
+    }
+    catch {
+        return null;
+    }
 }
 async function fetchCredentialsFromCloud(username, password) {
     const cliPath = require.resolve("dorita980/bin/getPasswordCloud.js");
@@ -277,9 +354,7 @@ async function getRobotStatus(settings) {
         return base;
     }
     try {
-        const state = await withRobot(settings, async (robot) => {
-            return robot.getRobotState(["batPct", "cleanMissionStatus", "bin", "lastCommand", "sku", "softwareVer"]);
-        });
+        const state = await withRobot(settings, async (robot) => readRobotState(robot));
         const mission = (state.cleanMissionStatus ?? {});
         const bin = (state.bin ?? {});
         const lastCommand = (state.lastCommand ?? {});
@@ -492,11 +567,9 @@ async function fetchRoombaDeviceDiagnostics(settings) {
     };
     try {
         const snapshot = await withRobot(settings, async (robot) => {
-            const [state, wireless, cloudConfig] = await Promise.all([
-                robot.getRobotState(["batPct", "cleanMissionStatus", "bin", "lastCommand", "sku", "softwareVer"]),
-                robot.getWirelessStatus().catch(() => null),
-                robot.getCloudConfig().catch(() => null),
-            ]);
+            const state = await readRobotState(robot);
+            const wireless = await readOptionalRobotValue("Wireless status", 5_000, () => robot.getWirelessStatus());
+            const cloudConfig = await readOptionalRobotValue("Cloud config", 5_000, () => robot.getCloudConfig());
             return { state, wireless, cloudConfig };
         });
         const state = snapshot.state;

@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const roomba_client_1 = require("./roomba-client");
-const APP_VERSION = "1.1.1";
+const APP_VERSION = "1.1.2";
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
@@ -615,6 +615,7 @@ function dashboardPage() {
         if (message) errorEl.style.display = "none";
       }
       async function loadStatus() {
+        document.getElementById("meta").textContent = "Loading status…";
         const response = await fetch("/api/status");
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Failed to load status");
@@ -625,10 +626,15 @@ function dashboardPage() {
         const bin =
           data.bin_full == null ? "—" : data.bin_full ? "Full" : data.bin_present === false ? "Missing" : "OK";
         document.getElementById("bin").textContent = bin;
-        document.getElementById("meta").textContent = data.connected
-          ? (data.robot_name || "Roomba") + " · " + (data.software_version || "unknown firmware") + " · synced " + new Date(data.last_sync).toLocaleString()
-          : data.error || "Robot not connected";
-        if (!data.connected && data.error) showError(data.error);
+        if (data.connected) {
+          showError("");
+          document.getElementById("meta").textContent =
+            (data.robot_name || "Roomba") + " · " + (data.software_version || "unknown firmware") + " · synced " + new Date(data.last_sync).toLocaleString();
+        } else {
+          const message = data.error || "Robot not connected";
+          document.getElementById("meta").textContent = message;
+          showError(message);
+        }
       }
       async function runAction(action) {
         showError("");
@@ -659,7 +665,7 @@ function setupPage() {
     </div>
     <div class="panel">
       <h2>1. Discover robot on LAN</h2>
-      <p class="muted">UDP discovery finds Roombas on your local network. You can also enter the IP manually below.</p>
+      <p class="muted">UDP discovery finds Roombas on your local network. On Umbrel this may take up to 10 seconds and scans common subnets. You can also enter the IP manually below.</p>
       <button type="button" id="discover">Discover robots</button>
       <pre id="discover-results" class="muted" style="white-space:pre-wrap"></pre>
     </div>
@@ -726,20 +732,36 @@ function setupPage() {
         }
       }
       document.getElementById("discover").addEventListener("click", () => {
+        const discoverButton = document.getElementById("discover");
         setTestResult("");
         showError("");
-        fetch("/api/setup/discover", { method: "POST" })
+        discoverButton.disabled = true;
+        discoverButton.textContent = "Discovering…";
+        fetch("/api/setup/discover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ robot_ip: document.getElementById("robot-ip").value }),
+        })
           .then((response) => response.json().then((data) => ({ response, data })))
           .then(({ response, data }) => {
             if (!response.ok) throw new Error(data.error || "Discovery failed");
             document.getElementById("discover-results").textContent = JSON.stringify(data.robots, null, 2);
+            if (!data.robots?.length) {
+              showError("No robots found. Enter your Roomba IP manually, or set ROOMBA_SCAN_SUBNETS on Umbrel.");
+            } else {
+              showSuccess("Found " + data.robots.length + " robot(s).");
+            }
             if (data.robots?.[0]) {
               document.getElementById("robot-ip").value = data.robots[0].ip || "";
               document.getElementById("robot-name").value = data.robots[0].robotname || "Roomba";
               if (data.robots[0].blid) document.getElementById("robot-blid").value = data.robots[0].blid;
             }
           })
-          .catch((error) => showError(error.message));
+          .catch((error) => showError(error.message))
+          .finally(() => {
+            discoverButton.disabled = false;
+            discoverButton.textContent = "Discover robots";
+          });
       });
       document.getElementById("fetch-credentials").addEventListener("click", () => {
         setTestResult("");
@@ -1284,8 +1306,17 @@ async function handleRequest(req, res) {
     }
     if (method === "POST" && pathname === "/api/setup/discover") {
         try {
-            const robots = await (0, roomba_client_1.discoverRobots)();
-            sendJson(res, 200, { robots });
+            let robotIpHint = settings.robot_ip;
+            try {
+                const body = await readJson(req);
+                if (body.robot_ip?.trim())
+                    robotIpHint = body.robot_ip.trim();
+            }
+            catch {
+                // ignore empty or invalid discover request bodies
+            }
+            const robots = await (0, roomba_client_1.discoverRobots)(robotIpHint);
+            sendJson(res, 200, { robots, method: robots.length ? "found" : "none" });
         }
         catch (error) {
             sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
