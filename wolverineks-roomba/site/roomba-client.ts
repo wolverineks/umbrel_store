@@ -5,9 +5,10 @@ import { promisify } from "node:util";
 import dorita980 from "dorita980";
 
 const execFileAsync = promisify(execFile);
-const CONNECT_TIMEOUT_MS = 20_000;
-const ROBOT_READ_TIMEOUT_MS = 12_000;
-const ROBOT_OPERATION_TIMEOUT_MS = 35_000;
+const CONNECT_TIMEOUT_MS = 15_000;
+const ROBOT_READ_TIMEOUT_MS = 10_000;
+const ROBOT_OPERATION_TIMEOUT_MS = 25_000;
+const ROBOT_DISCONNECT_TIMEOUT_MS = 4_000;
 const MQTT_PORT = 8883;
 const DISCOVERY_PORT = 5678;
 const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
@@ -214,6 +215,42 @@ function isConfigured(settings: RobotSettings): boolean {
   return Boolean(settings.robot_ip.trim() && settings.blid.trim() && settings.password.trim());
 }
 
+function isValidIpv4(value: string): boolean {
+  const parts = value.trim().split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((part) => {
+    const octet = Number(part);
+    return Number.isInteger(octet) && octet >= 0 && octet <= 255;
+  });
+}
+
+function localProtocolVersion(firmwareVersion: string): number {
+  return firmwareVersion.trim() === "1" ? 1 : 2;
+}
+
+function createRobotClient(settings: RobotSettings): DoritaLocal {
+  return new dorita980.Local(
+    settings.blid.trim(),
+    settings.password.trim(),
+    settings.robot_ip.trim(),
+    localProtocolVersion(settings.firmware_version),
+    {
+      connectTimeout: CONNECT_TIMEOUT_MS,
+      reconnectPeriod: 0,
+    },
+  );
+}
+
+async function assertMqttReachable(settings: RobotSettings): Promise<void> {
+  const host = settings.robot_ip.trim();
+  const reachability = await checkMqttReachable(host, 5_000);
+  if (!reachability.reachable) {
+    throw new Error(
+      `Cannot reach ${host}:${MQTT_PORT} from this server. Enter the correct robot IP and make sure Umbrel is on the same LAN.`,
+    );
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -258,11 +295,27 @@ function waitForConnect(robot: DoritaLocal): Promise<void> {
 }
 
 async function endRobot(robot: DoritaLocal): Promise<void> {
-  try {
-    await robot.end();
-  } catch {
-    // ignore disconnect errors
-  }
+  await withTimeout(
+    new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+
+      try {
+        robot.end(true, finish);
+      } catch {
+        finish();
+        return;
+      }
+
+      setTimeout(finish, ROBOT_DISCONNECT_TIMEOUT_MS);
+    }),
+    ROBOT_DISCONNECT_TIMEOUT_MS + 1_000,
+    "Robot disconnect",
+  ).catch(() => {});
 }
 
 export async function withRobot<T>(
@@ -295,12 +348,7 @@ async function withRobotSession<T>(
   settings: RobotSettings,
   fn: (robot: DoritaLocal) => Promise<T>,
 ): Promise<T> {
-  const robot = new dorita980.Local(
-    settings.blid.trim(),
-    settings.password.trim(),
-    settings.robot_ip.trim(),
-    settings.firmware_version.trim() || "3",
-  );
+  const robot = createRobotClient(settings);
 
   try {
     await waitForConnect(robot);
@@ -327,7 +375,7 @@ function getScanSubnets(robotIpHint = ""): string[] {
     if (parts.length === 4) return [`${parts[0]}.${parts[1]}.${parts[2]}`];
   }
 
-  return ["192.168.1", "192.168.0", "192.168.86", "192.168.4"];
+  return [];
 }
 
 function collectDiscoveryResponses(durationMs: number, targetIps: string[]): Promise<DiscoveryRobot[]> {
@@ -381,6 +429,16 @@ function collectDiscoveryResponses(durationMs: number, targetIps: string[]): Pro
 export async function discoverRobots(robotIpHint = ""): Promise<DiscoveryRobot[]> {
   await acquireDiscoveryMutex();
   try {
+    const hint = robotIpHint.trim();
+
+    if (isValidIpv4(hint)) {
+      const direct = await collectDiscoveryResponses(3_000, [hint]);
+      if (direct.length > 0) {
+        setLastError(null);
+        return direct;
+      }
+    }
+
     const broadcast = await collectDiscoveryResponses(DISCOVERY_TIMEOUT_MS, ["255.255.255.255"]);
     if (broadcast.length > 0) {
       setLastError(null);
@@ -388,12 +446,17 @@ export async function discoverRobots(robotIpHint = ""): Promise<DiscoveryRobot[]
     }
 
     const subnets = getScanSubnets(robotIpHint);
-    const targetIps = subnets.flatMap((prefix) =>
-      Array.from({ length: 254 }, (_, index) => `${prefix}.${index + 1}`),
-    );
-    const scanned = await collectDiscoveryResponses(SUBNET_SCAN_TIMEOUT_MS, targetIps);
+    for (const prefix of subnets) {
+      const targetIps = Array.from({ length: 254 }, (_, index) => `${prefix}.${index + 1}`);
+      const scanned = await collectDiscoveryResponses(6_000, targetIps);
+      if (scanned.length > 0) {
+        setLastError(null);
+        return scanned;
+      }
+    }
+
     setLastError(null);
-    return scanned;
+    return [];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setLastError(message);
@@ -474,6 +537,7 @@ export async function fetchCredentialsFromCloud(
 }
 
 export async function testConnection(settings: RobotSettings): Promise<RobotStatus> {
+  await assertMqttReachable(settings);
   return getRobotStatus(settings);
 }
 
@@ -505,6 +569,7 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
   }
 
   try {
+    await assertMqttReachable(settings);
     const state = await withRobot(settings, async (robot) => readRobotState(robot));
 
     const mission = (state.cleanMissionStatus ?? {}) as Record<string, unknown>;

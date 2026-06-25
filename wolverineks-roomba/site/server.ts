@@ -20,7 +20,8 @@ import {
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.1.2";
+const APP_VERSION = "1.1.3";
+const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
@@ -661,7 +662,7 @@ function dashboardPage(): string {
       }
       async function loadStatus() {
         document.getElementById("meta").textContent = "Loading status…";
-        const response = await fetch("/api/status");
+        const response = await fetch("/api/status", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Failed to load status");
         document.getElementById("battery").textContent =
@@ -715,7 +716,7 @@ function setupPage(): string {
     </div>
     <div class="panel">
       <h2>1. Discover robot on LAN</h2>
-      <p class="muted">UDP discovery finds Roombas on your local network. On Umbrel this may take up to 10 seconds and scans common subnets. You can also enter the IP manually below.</p>
+      <p class="muted">Enter your robot IP first for the best results on Umbrel, then click Discover. Discovery probes that IP directly, then scans its subnet if needed.</p>
       <button type="button" id="discover">Discover robots</button>
       <pre id="discover-results" class="muted" style="white-space:pre-wrap"></pre>
     </div>
@@ -790,6 +791,7 @@ function setupPage(): string {
         fetch("/api/setup/discover", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(${API_TIMEOUT_MS}),
           body: JSON.stringify({ robot_ip: document.getElementById("robot-ip").value }),
         })
           .then((response) => response.json().then((data) => ({ response, data })))
@@ -862,6 +864,7 @@ function setupPage(): string {
             fetch("/api/setup/test", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              signal: AbortSignal.timeout(${API_TIMEOUT_MS}),
               body: JSON.stringify(payload),
             }),
           )
@@ -1262,7 +1265,7 @@ function diagnosticsPage(): string {
           '<p class="muted" style="margin-top:12px;font-size:13px">Generated ' + escapeHtml(new Date(data.generated_at).toLocaleString()) + "</p>";
       }
       async function loadDiagnostics() {
-        const response = await fetch("/api/diagnostics");
+        const response = await fetch("/api/diagnostics", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Failed to load diagnostics");
         document.getElementById("diagnostics-content").innerHTML = renderDiagnostics(data);

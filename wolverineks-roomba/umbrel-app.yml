@@ -4,7 +4,7 @@ name: Roomba Local Control
 tagline: Control your iRobot Roomba J7 over local MQTT
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-roomba/icon.svg
 category: automation
-version: "1.1.2"
+version: "1.1.3"
 port: 4050
 description: >-
   Control a Wi-Fi Roomba (J7, i7, s9, 900 series, and similar) from your Umbrel
@@ -18,9 +18,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fix dashboard and diagnostics hanging on robot reads by adding MQTT timeouts.
-  Discovery now falls back to subnet scanning on Umbrel Docker where UDP
-  broadcast does not reach the LAN.
+  Fix setup test connection hanging with MQTT connect/disconnect timeouts, TCP
+  preflight checks, and direct-IP discovery when the robot address is entered.
 dependencies: []
 path: ""
 defaultUsername: ""

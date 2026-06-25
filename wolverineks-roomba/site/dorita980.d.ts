@@ -13,9 +13,21 @@ declare module "dorita980" {
     proto?: string;
   };
 
+  export type DoritaLocalOptions = {
+    connectTimeout?: number;
+    reconnectPeriod?: number;
+    port?: number;
+  };
+
   export class Local extends EventEmitter {
-    constructor(blid: string, password: string, ip: string, firmwareVersion?: string);
-    end(): Promise<void>;
+    constructor(
+      blid: string,
+      password: string,
+      ip: string,
+      protocolVersion?: number,
+      options?: DoritaLocalOptions,
+    );
+    end(force?: boolean, callback?: () => void): void;
     clean(): Promise<void>;
     pause(): Promise<void>;
     resume(): Promise<void>;
