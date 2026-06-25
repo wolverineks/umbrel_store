@@ -16,14 +16,20 @@ exports.getRobotPreferences = getRobotPreferences;
 exports.checkMqttReachable = checkMqttReachable;
 exports.buildDiagnostics = buildDiagnostics;
 const node_child_process_1 = require("node:child_process");
+const node_dgram_1 = require("node:dgram");
 const node_net_1 = require("node:net");
 const node_util_1 = require("node:util");
 const dorita980_1 = __importDefault(require("dorita980"));
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
 const CONNECT_TIMEOUT_MS = 30_000;
 const MQTT_PORT = 8883;
+const DISCOVERY_PORT = 5678;
+const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
+const DISCOVERY_TIMEOUT_MS = 5_000;
 let mutexBusy = false;
 const mutexQueue = [];
+let discoveryBusy = false;
+const discoveryQueue = [];
 let lastError = null;
 function setLastError(message) {
     lastError = message;
@@ -50,6 +56,42 @@ function releaseMutex() {
         return;
     }
     mutexBusy = false;
+}
+async function acquireDiscoveryMutex() {
+    if (!discoveryBusy) {
+        discoveryBusy = true;
+        return;
+    }
+    await new Promise((resolve) => {
+        discoveryQueue.push(resolve);
+    });
+}
+function releaseDiscoveryMutex() {
+    const next = discoveryQueue.shift();
+    if (next) {
+        next();
+        return;
+    }
+    discoveryBusy = false;
+}
+function isRoombaDiscoveryHost(hostname) {
+    const prefix = hostname.split("-")[0];
+    return prefix === "Roomba" || prefix === "iRobot";
+}
+function parseDiscoveryRobot(parsed) {
+    const hostname = String(parsed.hostname ?? "");
+    const ip = String(parsed.ip ?? "");
+    if (!hostname || !ip || !isRoombaDiscoveryHost(hostname)) {
+        return null;
+    }
+    return {
+        ip,
+        robotname: String(parsed.robotname ?? "Roomba"),
+        hostname,
+        sw: String(parsed.sw ?? ""),
+        sku: String(parsed.sku ?? ""),
+        blid: hostname.replace(/^(Roomba|iRobot)-/, ""),
+    };
 }
 function isConfigured(settings) {
     return Boolean(settings.robot_ip.trim() && settings.blid.trim() && settings.password.trim());
@@ -103,22 +145,55 @@ async function withRobot(settings, fn) {
         releaseMutex();
     }
 }
-function discoverRobots() {
+async function discoverRobots() {
+    await acquireDiscoveryMutex();
     return new Promise((resolve, reject) => {
-        dorita980_1.default.discovery((error, robots) => {
+        const robots = [];
+        const seenIps = new Set();
+        const server = (0, node_dgram_1.createSocket)({ type: "udp4", reuseAddr: true });
+        let settled = false;
+        const finish = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timeout);
+            server.removeAllListeners();
+            try {
+                server.close();
+            }
+            catch {
+                // ignore close errors
+            }
+            releaseDiscoveryMutex();
             if (error) {
+                setLastError(error.message);
                 reject(error);
                 return;
             }
-            const list = Array.isArray(robots) ? robots : robots ? [robots] : [];
-            resolve(list.map((robot) => ({
-                ip: String(robot.ip ?? ""),
-                robotname: String(robot.robotname ?? "Roomba"),
-                hostname: String(robot.hostname ?? ""),
-                sw: String(robot.sw ?? ""),
-                sku: String(robot.sku ?? ""),
-                blid: robot.hostname?.replace(/^Roomba-/, ""),
-            })));
+            setLastError(null);
+            resolve(robots);
+        };
+        const timeout = setTimeout(() => finish(), DISCOVERY_TIMEOUT_MS);
+        server.on("error", (error) => finish(error));
+        server.on("message", (message) => {
+            try {
+                const parsed = JSON.parse(message.toString());
+                const robot = parseDiscoveryRobot(parsed);
+                if (!robot || seenIps.has(robot.ip))
+                    return;
+                seenIps.add(robot.ip);
+                robots.push(robot);
+            }
+            catch {
+                // ignore malformed discovery payloads
+            }
+        });
+        server.bind(DISCOVERY_PORT, () => {
+            server.setBroadcast(true);
+            server.send(DISCOVERY_MESSAGE, DISCOVERY_PORT, "255.255.255.255", (error) => {
+                if (error)
+                    finish(error);
+            });
         });
     });
 }

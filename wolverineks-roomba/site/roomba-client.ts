@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createSocket } from "node:dgram";
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
 import dorita980 from "dorita980";
@@ -6,6 +7,9 @@ import dorita980 from "dorita980";
 const execFileAsync = promisify(execFile);
 const CONNECT_TIMEOUT_MS = 30_000;
 const MQTT_PORT = 8883;
+const DISCOVERY_PORT = 5678;
+const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
+const DISCOVERY_TIMEOUT_MS = 5_000;
 
 export type ConnectionMode = "on_demand" | "live";
 
@@ -69,6 +73,8 @@ type DoritaLocal = InstanceType<typeof dorita980.Local>;
 
 let mutexBusy = false;
 const mutexQueue: Array<() => void> = [];
+let discoveryBusy = false;
+const discoveryQueue: Array<() => void> = [];
 let lastError: string | null = null;
 
 function setLastError(message: string | null): void {
@@ -100,6 +106,46 @@ function releaseMutex(): void {
     return;
   }
   mutexBusy = false;
+}
+
+async function acquireDiscoveryMutex(): Promise<void> {
+  if (!discoveryBusy) {
+    discoveryBusy = true;
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    discoveryQueue.push(resolve);
+  });
+}
+
+function releaseDiscoveryMutex(): void {
+  const next = discoveryQueue.shift();
+  if (next) {
+    next();
+    return;
+  }
+  discoveryBusy = false;
+}
+
+function isRoombaDiscoveryHost(hostname: string): boolean {
+  const prefix = hostname.split("-")[0];
+  return prefix === "Roomba" || prefix === "iRobot";
+}
+
+function parseDiscoveryRobot(parsed: Record<string, unknown>): DiscoveryRobot | null {
+  const hostname = String(parsed.hostname ?? "");
+  const ip = String(parsed.ip ?? "");
+  if (!hostname || !ip || !isRoombaDiscoveryHost(hostname)) {
+    return null;
+  }
+  return {
+    ip,
+    robotname: String(parsed.robotname ?? "Roomba"),
+    hostname,
+    sw: String(parsed.sw ?? ""),
+    sku: String(parsed.sku ?? ""),
+    blid: hostname.replace(/^(Roomba|iRobot)-/, ""),
+  };
 }
 
 function isConfigured(settings: RobotSettings): boolean {
@@ -168,24 +214,56 @@ export async function withRobot<T>(
   }
 }
 
-export function discoverRobots(): Promise<DiscoveryRobot[]> {
+export async function discoverRobots(): Promise<DiscoveryRobot[]> {
+  await acquireDiscoveryMutex();
+
   return new Promise((resolve, reject) => {
-    dorita980.discovery((error, robots) => {
+    const robots: DiscoveryRobot[] = [];
+    const seenIps = new Set<string>();
+    const server = createSocket({ type: "udp4", reuseAddr: true });
+    let settled = false;
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      server.removeAllListeners();
+      try {
+        server.close();
+      } catch {
+        // ignore close errors
+      }
+      releaseDiscoveryMutex();
       if (error) {
+        setLastError(error.message);
         reject(error);
         return;
       }
-      const list = Array.isArray(robots) ? robots : robots ? [robots] : [];
-      resolve(
-        list.map((robot) => ({
-          ip: String(robot.ip ?? ""),
-          robotname: String(robot.robotname ?? "Roomba"),
-          hostname: String(robot.hostname ?? ""),
-          sw: String(robot.sw ?? ""),
-          sku: String(robot.sku ?? ""),
-          blid: robot.hostname?.replace(/^Roomba-/, ""),
-        })),
-      );
+      setLastError(null);
+      resolve(robots);
+    };
+
+    const timeout = setTimeout(() => finish(), DISCOVERY_TIMEOUT_MS);
+
+    server.on("error", (error) => finish(error));
+
+    server.on("message", (message) => {
+      try {
+        const parsed = JSON.parse(message.toString()) as Record<string, unknown>;
+        const robot = parseDiscoveryRobot(parsed);
+        if (!robot || seenIps.has(robot.ip)) return;
+        seenIps.add(robot.ip);
+        robots.push(robot);
+      } catch {
+        // ignore malformed discovery payloads
+      }
+    });
+
+    server.bind(DISCOVERY_PORT, () => {
+      server.setBroadcast(true);
+      server.send(DISCOVERY_MESSAGE, DISCOVERY_PORT, "255.255.255.255", (error) => {
+        if (error) finish(error);
+      });
     });
   });
 }
