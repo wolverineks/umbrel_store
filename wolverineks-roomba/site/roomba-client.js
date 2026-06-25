@@ -8,9 +8,11 @@ exports.isMutexBusy = isMutexBusy;
 exports.isDiscoveryBusy = isDiscoveryBusy;
 exports.withRobot = withRobot;
 exports.discoverRobots = discoverRobots;
+exports.parseFavoritesFromPmaps = parseFavoritesFromPmaps;
 exports.fetchCredentialsFromCloud = fetchCredentialsFromCloud;
 exports.testConnection = testConnection;
 exports.getRobotStatus = getRobotStatus;
+exports.runRobotFavorite = runRobotFavorite;
 exports.runRobotAction = runRobotAction;
 exports.getRobotSchedule = getRobotSchedule;
 exports.getRobotPreferences = getRobotPreferences;
@@ -26,7 +28,8 @@ const dorita980_1 = __importDefault(require("dorita980"));
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
 const CONNECT_TIMEOUT_MS = 15_000;
 const ROBOT_READ_TIMEOUT_MS = 10_000;
-const ROBOT_OPERATION_TIMEOUT_MS = 25_000;
+const ROBOT_PMAPS_TIMEOUT_MS = 15_000;
+const ROBOT_OPERATION_TIMEOUT_MS = 35_000;
 const ROBOT_DISCONNECT_TIMEOUT_MS = 4_000;
 const MQTT_PORT = 8883;
 const DISCOVERY_PORT = 5678;
@@ -163,7 +166,6 @@ function waitForConnect(robot) {
             clearTimeout(timeout);
             robot.removeListener("connect", onConnect);
             robot.removeListener("error", onError);
-            robot.removeListener("close", onClose);
             if (error)
                 reject(error);
             else
@@ -175,14 +177,8 @@ function waitForConnect(robot) {
         }, CONNECT_TIMEOUT_MS);
         const onConnect = () => finish();
         const onError = (error) => finish(error);
-        const onClose = () => {
-            if (!isRobotConnected(robot)) {
-                finish(new Error(`Local MQTT connection closed before the robot responded.${mqttBusyHint()}`));
-            }
-        };
         robot.once("connect", onConnect);
         robot.once("error", onError);
-        robot.once("close", onClose);
     });
 }
 async function endRobot(robot) {
@@ -339,6 +335,164 @@ async function discoverRobots(robotIpHint = "") {
 async function readRobotState(robot) {
     return withTimeout(robot.getRobotState(["batPct", "cleanMissionStatus", "bin"]), ROBOT_READ_TIMEOUT_MS, "Robot status");
 }
+function asRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+        return null;
+    return value;
+}
+function favoriteDisplayName(favorite, index) {
+    const name = favorite.name ?? favorite.favorite_name ?? favorite.label ?? favorite.display_name;
+    if (typeof name === "string" && name.trim())
+        return name.trim();
+    return `Favorite ${index + 1}`;
+}
+function favoriteIdentifier(favorite, index) {
+    const id = favorite.favorite_id ?? favorite.id ?? favorite.fav_id;
+    if (typeof id === "string" || typeof id === "number")
+        return String(id);
+    return String(index);
+}
+function normalizeFavoriteRegions(regions) {
+    if (!Array.isArray(regions))
+        return [];
+    return regions
+        .map((region) => asRecord(region))
+        .filter((region) => region !== null)
+        .map((region) => ({
+        region_id: String(region.region_id ?? region.id ?? ""),
+        region_name: String(region.region_name ?? region.name ?? ""),
+        region_type: String(region.region_type ?? "rid"),
+        type: String(region.type ?? "rid"),
+    }))
+        .filter((region) => region.region_id);
+}
+function summarizeRegions(regions) {
+    if (!regions.length)
+        return "";
+    const labels = regions.map((region) => region.region_name || region.region_id);
+    return labels.join(", ");
+}
+function extractFavoritesFromPmapEntry(entry, fallbackPmapId = "") {
+    const pmapId = String(entry.pmap_id ?? fallbackPmapId ?? "").trim();
+    const activeDetails = asRecord(entry.active_pmapv_details);
+    const activePmapv = activeDetails ? asRecord(activeDetails.active_pmapv) : null;
+    const defaultPmapVersion = String(entry.user_pmapv_id ?? entry.active_pmapv_id ?? activePmapv?.user_pmapv_id ?? "").trim();
+    const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
+    for (const list of favoriteLists) {
+        if (!Array.isArray(list))
+            continue;
+        return list
+            .map((item, index) => {
+            const favorite = asRecord(item);
+            if (!favorite)
+                return null;
+            const regions = normalizeFavoriteRegions(favorite.regions);
+            const userPmapvId = String(favorite.user_pmapv_id ?? defaultPmapVersion ?? "").trim();
+            const ordered = Boolean(favorite.ordered ?? favorite.order ?? false);
+            const runnable = Boolean(pmapId && regions.length);
+            return {
+                id: favoriteIdentifier(favorite, index),
+                name: favoriteDisplayName(favorite, index),
+                pmap_id: pmapId || null,
+                user_pmapv_id: userPmapvId || null,
+                ordered,
+                region_count: regions.length,
+                regions_summary: summarizeRegions(regions) || (regions.length ? `${regions.length} room(s)` : "Whole home"),
+                runnable,
+            };
+        })
+            .filter((favorite) => favorite !== null);
+    }
+    return [];
+}
+function parseFavoritesFromPmaps(pmaps) {
+    const favorites = [];
+    const seen = new Set();
+    const addFavorites = (items) => {
+        for (const favorite of items) {
+            const key = `${favorite.id}:${favorite.name}`;
+            if (seen.has(key))
+                continue;
+            seen.add(key);
+            favorites.push(favorite);
+        }
+    };
+    if (Array.isArray(pmaps)) {
+        for (const item of pmaps) {
+            const entry = asRecord(item);
+            if (!entry)
+                continue;
+            addFavorites(extractFavoritesFromPmapEntry(entry));
+        }
+        return favorites;
+    }
+    const root = asRecord(pmaps);
+    if (!root)
+        return favorites;
+    if (root.smart_clean_favs || root.smartCleanFavs || root.favorites || root.favs) {
+        addFavorites(extractFavoritesFromPmapEntry(root));
+        return favorites;
+    }
+    for (const [pmapId, value] of Object.entries(root)) {
+        const entry = asRecord(value);
+        if (!entry)
+            continue;
+        addFavorites(extractFavoritesFromPmapEntry(entry, pmapId));
+    }
+    return favorites;
+}
+function buildFavoriteCommand(favorite, regions) {
+    return {
+        ordered: favorite.ordered ? 1 : 0,
+        pmap_id: favorite.pmap_id,
+        user_pmapv_id: favorite.user_pmapv_id,
+        regions: regions.map((region) => ({
+            region_id: region.region_id,
+            region_name: region.region_name,
+            region_type: region.region_type,
+            type: region.type,
+        })),
+    };
+}
+async function readFavoriteCommand(robot, favoriteId) {
+    const snapshot = await withTimeout(robot.getRobotState(["pmaps"]), ROBOT_PMAPS_TIMEOUT_MS, "Robot favorites");
+    const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
+    const favorite = favorites.find((entry) => entry.id === favoriteId);
+    if (!favorite?.runnable || !favorite.pmap_id) {
+        throw new Error("Favorite not found on the robot");
+    }
+    const pmapState = asRecord(snapshot.pmaps);
+    let regions = [];
+    const pmapLists = Array.isArray(snapshot.pmaps)
+        ? snapshot.pmaps.map((item) => asRecord(item)).filter((item) => item !== null)
+        : pmapState
+            ? [pmapState]
+            : [];
+    for (const entry of pmapLists) {
+        if (String(entry.pmap_id ?? "") !== favorite.pmap_id)
+            continue;
+        const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
+        for (const list of favoriteLists) {
+            if (!Array.isArray(list))
+                continue;
+            for (const [index, item] of list.entries()) {
+                const record = asRecord(item);
+                if (!record || favoriteIdentifier(record, index) !== favorite.id)
+                    continue;
+                regions = normalizeFavoriteRegions(record.regions);
+                break;
+            }
+            if (regions.length)
+                break;
+        }
+        if (regions.length)
+            break;
+    }
+    if (!regions.length) {
+        throw new Error("Favorite has no rooms configured");
+    }
+    return buildFavoriteCommand(favorite, regions);
+}
 async function readOptionalRobotValue(label, timeoutMs, read) {
     try {
         return await withTimeout(read(), timeoutMs, label);
@@ -410,6 +564,8 @@ async function getRobotStatus(settings) {
         last_command: null,
         software_version: null,
         sku: null,
+        favorites: [],
+        favorites_error: null,
         last_sync: new Date().toISOString(),
     };
     if (!base.configured) {
@@ -417,7 +573,12 @@ async function getRobotStatus(settings) {
         return base;
     }
     try {
-        const state = await withRobot(settings, async (robot) => readRobotState(robot));
+        const snapshot = await withRobot(settings, async (robot) => {
+            const state = await readRobotState(robot);
+            const pmapState = await readOptionalRobotValue("Robot favorites", ROBOT_PMAPS_TIMEOUT_MS, () => robot.getRobotState(["pmaps"]));
+            return { state, pmapState };
+        });
+        const state = snapshot.state;
         const mission = (state.cleanMissionStatus ?? {});
         const bin = (state.bin ?? {});
         const lastCommand = (state.lastCommand ?? {});
@@ -433,12 +594,29 @@ async function getRobotStatus(settings) {
         base.last_command = typeof lastCommand.command === "string" ? lastCommand.command : null;
         base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;
         base.sku = typeof state.sku === "string" ? state.sku : null;
+        if (snapshot.pmapState && typeof snapshot.pmapState.pmaps !== "undefined") {
+            base.favorites = parseFavoritesFromPmaps(snapshot.pmapState.pmaps);
+        }
+        else {
+            base.favorites_error = "Favorites were not returned by the robot on this connection";
+        }
         return base;
     }
     catch (error) {
         base.error = error instanceof Error ? error.message : String(error);
         return base;
     }
+}
+async function runRobotFavorite(settings, favoriteId) {
+    const trimmedId = favoriteId.trim();
+    if (!trimmedId) {
+        throw new Error("favorite_id is required");
+    }
+    await withRobot(settings, async (robot) => {
+        const command = await readFavoriteCommand(robot, trimmedId);
+        await robot.cleanRoom(command);
+    });
+    return { ok: true };
 }
 async function runRobotAction(settings, action) {
     await withRobot(settings, async (robot) => {

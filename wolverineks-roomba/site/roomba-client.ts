@@ -7,7 +7,8 @@ import dorita980 from "dorita980";
 const execFileAsync = promisify(execFile);
 const CONNECT_TIMEOUT_MS = 15_000;
 const ROBOT_READ_TIMEOUT_MS = 10_000;
-const ROBOT_OPERATION_TIMEOUT_MS = 25_000;
+const ROBOT_PMAPS_TIMEOUT_MS = 15_000;
+const ROBOT_OPERATION_TIMEOUT_MS = 35_000;
 const ROBOT_DISCONNECT_TIMEOUT_MS = 4_000;
 const MQTT_PORT = 8883;
 const DISCOVERY_PORT = 5678;
@@ -38,6 +39,17 @@ export type DiscoveryRobot = {
   blid?: string;
 };
 
+export type RoombaFavorite = {
+  id: string;
+  name: string;
+  pmap_id: string | null;
+  user_pmapv_id: string | null;
+  ordered: boolean;
+  region_count: number;
+  regions_summary: string;
+  runnable: boolean;
+};
+
 export type RobotStatus = {
   connected: boolean;
   configured: boolean;
@@ -56,6 +68,8 @@ export type RobotStatus = {
   last_command: string | null;
   software_version: string | null;
   sku: string | null;
+  favorites: RoombaFavorite[];
+  favorites_error: string | null;
   last_sync: string;
 };
 
@@ -279,7 +293,6 @@ function waitForConnect(robot: DoritaLocal): Promise<void> {
       clearTimeout(timeout);
       robot.removeListener("connect", onConnect);
       robot.removeListener("error", onError);
-      robot.removeListener("close", onClose);
       if (error) reject(error);
       else resolve();
     };
@@ -291,15 +304,9 @@ function waitForConnect(robot: DoritaLocal): Promise<void> {
 
     const onConnect = () => finish();
     const onError = (error: Error) => finish(error);
-    const onClose = () => {
-      if (!isRobotConnected(robot)) {
-        finish(new Error(`Local MQTT connection closed before the robot responded.${mqttBusyHint()}`));
-      }
-    };
 
     robot.once("connect", onConnect);
     robot.once("error", onError);
-    robot.once("close", onClose);
   });
 }
 
@@ -483,6 +490,193 @@ async function readRobotState(robot: DoritaLocal): Promise<Record<string, unknow
   );
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function favoriteDisplayName(favorite: Record<string, unknown>, index: number): string {
+  const name = favorite.name ?? favorite.favorite_name ?? favorite.label ?? favorite.display_name;
+  if (typeof name === "string" && name.trim()) return name.trim();
+  return `Favorite ${index + 1}`;
+}
+
+function favoriteIdentifier(favorite: Record<string, unknown>, index: number): string {
+  const id = favorite.favorite_id ?? favorite.id ?? favorite.fav_id;
+  if (typeof id === "string" || typeof id === "number") return String(id);
+  return String(index);
+}
+
+function normalizeFavoriteRegions(
+  regions: unknown,
+): Array<{ region_id: string; region_name: string; region_type: string; type: string }> {
+  if (!Array.isArray(regions)) return [];
+  return regions
+    .map((region) => asRecord(region))
+    .filter((region): region is Record<string, unknown> => region !== null)
+    .map((region) => ({
+      region_id: String(region.region_id ?? region.id ?? ""),
+      region_name: String(region.region_name ?? region.name ?? ""),
+      region_type: String(region.region_type ?? "rid"),
+      type: String(region.type ?? "rid"),
+    }))
+    .filter((region) => region.region_id);
+}
+
+function summarizeRegions(
+  regions: Array<{ region_id: string; region_name: string; region_type: string; type: string }>,
+): string {
+  if (!regions.length) return "";
+  const labels = regions.map((region) => region.region_name || region.region_id);
+  return labels.join(", ");
+}
+
+function extractFavoritesFromPmapEntry(
+  entry: Record<string, unknown>,
+  fallbackPmapId = "",
+): RoombaFavorite[] {
+  const pmapId = String(entry.pmap_id ?? fallbackPmapId ?? "").trim();
+  const activeDetails = asRecord(entry.active_pmapv_details);
+  const activePmapv = activeDetails ? asRecord(activeDetails.active_pmapv) : null;
+  const defaultPmapVersion = String(
+    entry.user_pmapv_id ?? entry.active_pmapv_id ?? activePmapv?.user_pmapv_id ?? "",
+  ).trim();
+  const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
+
+  for (const list of favoriteLists) {
+    if (!Array.isArray(list)) continue;
+
+    return list
+      .map((item, index) => {
+        const favorite = asRecord(item);
+        if (!favorite) return null;
+
+        const regions = normalizeFavoriteRegions(favorite.regions);
+        const userPmapvId = String(favorite.user_pmapv_id ?? defaultPmapVersion ?? "").trim();
+        const ordered = Boolean(favorite.ordered ?? favorite.order ?? false);
+        const runnable = Boolean(pmapId && regions.length);
+
+        return {
+          id: favoriteIdentifier(favorite, index),
+          name: favoriteDisplayName(favorite, index),
+          pmap_id: pmapId || null,
+          user_pmapv_id: userPmapvId || null,
+          ordered,
+          region_count: regions.length,
+          regions_summary: summarizeRegions(regions) || (regions.length ? `${regions.length} room(s)` : "Whole home"),
+          runnable,
+        } satisfies RoombaFavorite;
+      })
+      .filter((favorite): favorite is RoombaFavorite => favorite !== null);
+  }
+
+  return [];
+}
+
+export function parseFavoritesFromPmaps(pmaps: unknown): RoombaFavorite[] {
+  const favorites: RoombaFavorite[] = [];
+  const seen = new Set<string>();
+
+  const addFavorites = (items: RoombaFavorite[]) => {
+    for (const favorite of items) {
+      const key = `${favorite.id}:${favorite.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      favorites.push(favorite);
+    }
+  };
+
+  if (Array.isArray(pmaps)) {
+    for (const item of pmaps) {
+      const entry = asRecord(item);
+      if (!entry) continue;
+      addFavorites(extractFavoritesFromPmapEntry(entry));
+    }
+    return favorites;
+  }
+
+  const root = asRecord(pmaps);
+  if (!root) return favorites;
+
+  if (root.smart_clean_favs || root.smartCleanFavs || root.favorites || root.favs) {
+    addFavorites(extractFavoritesFromPmapEntry(root));
+    return favorites;
+  }
+
+  for (const [pmapId, value] of Object.entries(root)) {
+    const entry = asRecord(value);
+    if (!entry) continue;
+    addFavorites(extractFavoritesFromPmapEntry(entry, pmapId));
+  }
+
+  return favorites;
+}
+
+function buildFavoriteCommand(
+  favorite: RoombaFavorite,
+  regions: Array<{ region_id: string; region_name: string; region_type: string; type: string }>,
+): Record<string, unknown> {
+  return {
+    ordered: favorite.ordered ? 1 : 0,
+    pmap_id: favorite.pmap_id,
+    user_pmapv_id: favorite.user_pmapv_id,
+    regions: regions.map((region) => ({
+      region_id: region.region_id,
+      region_name: region.region_name,
+      region_type: region.region_type,
+      type: region.type,
+    })),
+  };
+}
+
+async function readFavoriteCommand(
+  robot: DoritaLocal,
+  favoriteId: string,
+): Promise<Record<string, unknown>> {
+  const snapshot = await withTimeout(
+    robot.getRobotState(["pmaps"]),
+    ROBOT_PMAPS_TIMEOUT_MS,
+    "Robot favorites",
+  );
+  const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
+  const favorite = favorites.find((entry) => entry.id === favoriteId);
+  if (!favorite?.runnable || !favorite.pmap_id) {
+    throw new Error("Favorite not found on the robot");
+  }
+
+  const pmapState = asRecord(snapshot.pmaps);
+  let regions: Array<{ region_id: string; region_name: string; region_type: string; type: string }> =
+    [];
+
+  const pmapLists = Array.isArray(snapshot.pmaps)
+    ? snapshot.pmaps.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null)
+    : pmapState
+      ? [pmapState]
+      : [];
+
+  for (const entry of pmapLists) {
+    if (String(entry.pmap_id ?? "") !== favorite.pmap_id) continue;
+    const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
+    for (const list of favoriteLists) {
+      if (!Array.isArray(list)) continue;
+      for (const [index, item] of list.entries()) {
+        const record = asRecord(item);
+        if (!record || favoriteIdentifier(record, index) !== favorite.id) continue;
+        regions = normalizeFavoriteRegions(record.regions);
+        break;
+      }
+      if (regions.length) break;
+    }
+    if (regions.length) break;
+  }
+
+  if (!regions.length) {
+    throw new Error("Favorite has no rooms configured");
+  }
+
+  return buildFavoriteCommand(favorite, regions);
+}
+
 async function readOptionalRobotValue<T>(
   label: string,
   timeoutMs: number,
@@ -568,6 +762,8 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     last_command: null,
     software_version: null,
     sku: null,
+    favorites: [],
+    favorites_error: null,
     last_sync: new Date().toISOString(),
   };
 
@@ -577,8 +773,15 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
   }
 
   try {
-    const state = await withRobot(settings, async (robot) => readRobotState(robot));
+    const snapshot = await withRobot(settings, async (robot) => {
+      const state = await readRobotState(robot);
+      const pmapState = await readOptionalRobotValue("Robot favorites", ROBOT_PMAPS_TIMEOUT_MS, () =>
+        robot.getRobotState(["pmaps"]),
+      );
+      return { state, pmapState };
+    });
 
+    const state = snapshot.state;
     const mission = (state.cleanMissionStatus ?? {}) as Record<string, unknown>;
     const bin = (state.bin ?? {}) as Record<string, unknown>;
     const lastCommand = (state.lastCommand ?? {}) as Record<string, unknown>;
@@ -594,11 +797,29 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     base.last_command = typeof lastCommand.command === "string" ? lastCommand.command : null;
     base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;
     base.sku = typeof state.sku === "string" ? state.sku : null;
+    if (snapshot.pmapState && typeof snapshot.pmapState.pmaps !== "undefined") {
+      base.favorites = parseFavoritesFromPmaps(snapshot.pmapState.pmaps);
+    } else {
+      base.favorites_error = "Favorites were not returned by the robot on this connection";
+    }
     return base;
   } catch (error) {
     base.error = error instanceof Error ? error.message : String(error);
     return base;
   }
+}
+
+export async function runRobotFavorite(settings: RobotSettings, favoriteId: string): Promise<{ ok: true }> {
+  const trimmedId = favoriteId.trim();
+  if (!trimmedId) {
+    throw new Error("favorite_id is required");
+  }
+
+  await withRobot(settings, async (robot) => {
+    const command = await readFavoriteCommand(robot, trimmedId);
+    await robot.cleanRoom(command);
+  });
+  return { ok: true };
 }
 
 export async function runRobotAction(

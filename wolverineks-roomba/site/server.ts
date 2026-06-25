@@ -15,12 +15,13 @@ import {
   isDiscoveryBusy,
   isMutexBusy,
   runRobotAction,
+  runRobotFavorite,
   testConnection,
   type ConnectionMode,
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.1.4";
+const APP_VERSION = "1.2.0";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -390,6 +391,30 @@ function pageStyles(): string {
       border-bottom: 1px solid var(--border);
       font-size: 14px;
     }
+    .favorite-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .favorite-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: #f8fafc;
+    }
+    .favorite-card strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+    .favorite-card .muted {
+      margin: 0;
+      font-size: 13px;
+    }
     .diagnostics-grid {
       display: grid;
       gap: 18px;
@@ -647,6 +672,11 @@ function dashboardPage(): string {
       <div class="error" id="error"></div>
       <div class="success" id="success"></div>
     </div>
+    <div class="panel">
+      <h2>Favorites</h2>
+      <p class="muted">Saved routines from your robot map. Create or edit favorites in the official iRobot app.</p>
+      <div id="favorites-list" class="favorite-list muted">Loading favorites…</div>
+    </div>
     <script>
       const errorEl = document.getElementById("error");
       const successEl = document.getElementById("success");
@@ -660,8 +690,43 @@ function dashboardPage(): string {
         successEl.textContent = message || "";
         if (message) errorEl.style.display = "none";
       }
+      function renderFavorites(data) {
+        const favoritesEl = document.getElementById("favorites-list");
+        const favorites = Array.isArray(data.favorites) ? data.favorites : [];
+        if (!data.connected) {
+          favoritesEl.className = "favorite-list muted";
+          favoritesEl.textContent = "Connect to the robot to load favorites.";
+          return;
+        }
+        if (!favorites.length) {
+          favoritesEl.className = "favorite-list muted";
+          favoritesEl.textContent =
+            data.favorites_error ||
+            "No favorites found. Add favorites in the iRobot app, then refresh.";
+          return;
+        }
+        favoritesEl.className = "favorite-list";
+        favoritesEl.innerHTML = favorites
+          .map((favorite) => {
+            const summary = favorite.regions_summary || (favorite.region_count ? favorite.region_count + " room(s)" : "Routine");
+            const disabled = favorite.runnable ? "" : " disabled";
+            return (
+              '<div class="favorite-card">' +
+              '<div><strong>' + favorite.name + '</strong><p class="muted">' + summary + '</p></div>' +
+              '<button type="button" class="secondary" data-favorite-id="' + favorite.id + '"' + disabled + '>Run</button>' +
+              "</div>"
+            );
+          })
+          .join("");
+        favoritesEl.querySelectorAll("[data-favorite-id]").forEach((button) => {
+          button.addEventListener("click", () => {
+            runFavorite(button.getAttribute("data-favorite-id")).catch((error) => showError(error.message));
+          });
+        });
+      }
       async function loadStatus() {
         document.getElementById("meta").textContent = "Loading status…";
+        document.getElementById("favorites-list").textContent = "Loading favorites…";
         const response = await fetch("/api/status", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Failed to load status");
@@ -672,6 +737,7 @@ function dashboardPage(): string {
         const bin =
           data.bin_full == null ? "—" : data.bin_full ? "Full" : data.bin_present === false ? "Missing" : "OK";
         document.getElementById("bin").textContent = bin;
+        renderFavorites(data);
         if (data.connected) {
           showError("");
           document.getElementById("meta").textContent =
@@ -689,6 +755,19 @@ function dashboardPage(): string {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Action failed");
         showSuccess(action.charAt(0).toUpperCase() + action.slice(1) + " sent.");
+        await loadStatus();
+      }
+      async function runFavorite(favoriteId) {
+        showError("");
+        showSuccess("");
+        const response = await fetch("/api/action/favorite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ favorite_id: favoriteId }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Favorite failed");
+        showSuccess("Favorite started.");
         await loadStatus();
       }
       document.getElementById("refresh").addEventListener("click", () => {
@@ -1438,6 +1517,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   if (method === "GET" && pathname === "/api/diagnostics") {
     sendJson(res, 200, await buildDiagnosticsSnapshot(settings));
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/action/favorite") {
+    try {
+      const body = await readJson<{ favorite_id?: string }>(req);
+      await runRobotFavorite(settings, body.favorite_id ?? "");
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

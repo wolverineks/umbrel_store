@@ -29,6 +29,7 @@ declare module "dorita980" {
     );
     end(force?: boolean, callback?: () => void): void;
     clean(): Promise<void>;
+    cleanRoom(args: Record<string, unknown>): Promise<void>;
     pause(): Promise<void>;
     resume(): Promise<void>;
     stop(): Promise<void>;
@@ -38,6 +39,7 @@ declare module "dorita980" {
     getPreferences(): Promise<Record<string, unknown>>;
     getWirelessStatus(): Promise<Record<string, unknown>>;
     getCloudConfig(): Promise<Record<string, unknown>>;
+    connected?: boolean;
   }
 
   export function discovery(
