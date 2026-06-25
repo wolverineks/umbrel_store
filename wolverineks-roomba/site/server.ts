@@ -21,7 +21,7 @@ import {
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.2.2";
+const APP_VERSION = "1.2.3";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -749,16 +749,16 @@ function dashboardPage(): string {
         }
       }
       function actionSuccessMessage(action, data) {
-        const status = data.status_label || data.phase_label || data.phase || "updated";
+        const job = data.cycle_label || data.status_label || data.phase_label || "updated";
         if (action === "clean") {
           const cycle = data.cycle || "none";
           const phase = data.phase || "";
           return cycle !== "none" || phase === "run" || phase === "resume"
-            ? "Cleaning started — " + status + "."
-            : "Clean command sent — " + status + ".";
+            ? "Cleaning started — " + job + "."
+            : "Clean command sent — " + job + ".";
         }
-        if (action === "dock") return "Dock command sent — " + status + ".";
-        return action.charAt(0).toUpperCase() + action.slice(1) + " sent — " + status + ".";
+        if (action === "dock") return "Dock command sent — " + job + ".";
+        return action.charAt(0).toUpperCase() + action.slice(1) + " sent — " + job + ".";
       }
       async function runAction(action) {
         showError("");
@@ -1027,14 +1027,18 @@ function schedulePage(): string {
         const hours = Array.isArray(week.h) ? week.h : [];
         const minutes = Array.isArray(week.m) ? week.m : [];
         let rows = "";
+        const scheduleJobLabels = { none: "Off", start: "Scheduled clean", clean: "Scheduled clean" };
+        function scheduleJobLabel(cycle) {
+          return scheduleJobLabels[cycle] || (cycle === "none" ? "Off" : cycle);
+        }
         for (let i = 0; i < 7; i += 1) {
           const cycle = cycles[i] || "none";
           const time =
             cycle === "none" ? "—" : String(hours[i] ?? 0).padStart(2, "0") + ":" + String(minutes[i] ?? 0).padStart(2, "0");
-          rows += "<tr><td>" + days[i] + "</td><td>" + cycle + "</td><td>" + time + "</td></tr>";
+          rows += "<tr><td>" + days[i] + "</td><td>" + scheduleJobLabel(cycle) + "</td><td>" + time + "</td></tr>";
         }
         document.getElementById("schedule-table").innerHTML =
-          "<table><thead><tr><th>Day</th><th>Cycle</th><th>Time</th></tr></thead><tbody>" + rows + "</tbody></table>";
+          "<table><thead><tr><th>Day</th><th>Job</th><th>Time</th></tr></thead><tbody>" + rows + "</tbody></table>";
       }
       document.getElementById("refresh-schedule").addEventListener("click", () => {
         loadSchedule().catch((error) => showError(error.message));

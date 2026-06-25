@@ -4,7 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.formatPhaseLabel = formatPhaseLabel;
+exports.formatJobLabel = formatJobLabel;
 exports.formatCycleLabel = formatCycleLabel;
+exports.formatScheduleCycleLabel = formatScheduleCycleLabel;
 exports.formatMissionStatus = formatMissionStatus;
 exports.getLastError = getLastError;
 exports.isMutexBusy = isMutexBusy;
@@ -59,11 +61,36 @@ const PHASE_LABELS = {
     chargingerror: "Base unplugged",
 };
 const CYCLE_LABELS = {
-    "": "No active job",
-    none: "No active job",
     clean: "Whole-home clean",
     spot: "Spot clean",
     quick: "Quick clean",
+    mop: "Mop",
+    train: "Mapping run",
+    manual: "Manual clean",
+};
+const JOB_WHEN_IDLE = {
+    "": "Idle",
+    charge: "Ready on dock",
+    run: "Cleaning",
+    resume: "Cleaning",
+    pause: "Paused",
+    stop: "Stopped",
+    dock: "Docking",
+    hmUsrDock: "Returning to dock",
+    hmPostMsn: "Finishing — heading home",
+    hmMidMsn: "Recharging mid-mission",
+    recharge: "Recharging on dock",
+    evac: "Emptying bin",
+    stuck: "Needs attention",
+    new: "Starting up",
+    completed: "Mission finished",
+    cancelled: "Cancelled",
+    chargingerror: "Dock issue",
+};
+const SCHEDULE_CYCLE_LABELS = {
+    none: "Off",
+    start: "Scheduled clean",
+    clean: "Scheduled clean",
 };
 function formatPhaseLabel(phase) {
     const key = (phase ?? "").trim();
@@ -71,19 +98,43 @@ function formatPhaseLabel(phase) {
         return PHASE_LABELS[""];
     return PHASE_LABELS[key] ?? key.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
+function formatJobLabel(phase, cycle) {
+    const cycleKey = (cycle ?? "").trim() || "none";
+    const phaseKey = (phase ?? "").trim();
+    if (cycleKey !== "none") {
+        const base = CYCLE_LABELS[cycleKey] ?? cycleKey.charAt(0).toUpperCase() + cycleKey.slice(1).replace(/([a-z])([A-Z])/g, "$1 $2");
+        if (phaseKey === "pause")
+            return `${base} — paused`;
+        if (phaseKey === "stop")
+            return `${base} — stopped`;
+        if (phaseKey === "stuck")
+            return `${base} — stuck`;
+        if (["hmPostMsn", "hmMidMsn", "hmUsrDock", "dock"].includes(phaseKey)) {
+            return `${base} — heading home`;
+        }
+        if (phaseKey === "evac")
+            return `${base} — emptying bin`;
+        if (phaseKey === "recharge")
+            return `${base} — recharging`;
+        return base;
+    }
+    return JOB_WHEN_IDLE[phaseKey] ?? JOB_WHEN_IDLE[""];
+}
+/** @deprecated Use formatJobLabel(phase, cycle) for dashboard job text. */
 function formatCycleLabel(cycle) {
-    const key = (cycle ?? "").trim();
-    if (!key)
-        return CYCLE_LABELS.none;
-    return CYCLE_LABELS[key] ?? key;
+    return formatJobLabel(null, cycle);
+}
+function formatScheduleCycleLabel(cycle) {
+    const key = (cycle ?? "").trim() || "none";
+    return SCHEDULE_CYCLE_LABELS[key] ?? formatJobLabel(null, key === "none" ? "none" : key);
 }
 function formatMissionStatus(phase, cycle) {
+    const jobLabel = formatJobLabel(phase, cycle);
     const phaseLabel = formatPhaseLabel(phase);
-    const cycleLabel = formatCycleLabel(cycle);
     const cycleKey = (cycle ?? "").trim() || "none";
     if (cycleKey === "none")
-        return phaseLabel;
-    return `${cycleLabel} · ${phaseLabel}`;
+        return `${jobLabel} — ${phaseLabel}`;
+    return `${jobLabel} — ${phaseLabel}`;
 }
 const IROBOT_DISCOVERY_URL = process.env.IROBOT_DISCOVERY_URL ??
     `https://disc-prod.iot.irobotapi.com/v1/discover/endpoints?country_code=${process.env.IROBOT_COUNTRY_CODE ?? "US"}`;
@@ -407,7 +458,7 @@ function formatMissionState(mission) {
         phase,
         cycle,
         phase_label: formatPhaseLabel(phase),
-        cycle_label: formatCycleLabel(cycle),
+        cycle_label: formatJobLabel(phase, cycle),
         status_label: formatMissionStatus(phase, cycle),
     };
 }
@@ -730,7 +781,7 @@ async function getRobotStatus(settings) {
         base.phase = typeof mission.phase === "string" ? mission.phase : null;
         base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
         base.phase_label = formatPhaseLabel(base.phase);
-        base.cycle_label = formatCycleLabel(base.cycle);
+        base.cycle_label = formatJobLabel(base.phase, base.cycle);
         base.status_label = formatMissionStatus(base.phase, base.cycle);
         base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
         base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
@@ -975,7 +1026,7 @@ async function fetchRoombaDeviceDiagnostics(settings) {
         base.phase = typeof mission.phase === "string" ? mission.phase : null;
         base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
         base.phase_label = formatPhaseLabel(base.phase);
-        base.cycle_label = formatCycleLabel(base.cycle);
+        base.cycle_label = formatJobLabel(base.phase, base.cycle);
         base.status_label = formatMissionStatus(base.phase, base.cycle);
         base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
         base.bin_present = typeof bin.present === "boolean" ? bin.present : null;

@@ -71,11 +71,38 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 const CYCLE_LABELS: Record<string, string> = {
-  "": "No active job",
-  none: "No active job",
   clean: "Whole-home clean",
   spot: "Spot clean",
   quick: "Quick clean",
+  mop: "Mop",
+  train: "Mapping run",
+  manual: "Manual clean",
+};
+
+const JOB_WHEN_IDLE: Record<string, string> = {
+  "": "Idle",
+  charge: "Ready on dock",
+  run: "Cleaning",
+  resume: "Cleaning",
+  pause: "Paused",
+  stop: "Stopped",
+  dock: "Docking",
+  hmUsrDock: "Returning to dock",
+  hmPostMsn: "Finishing — heading home",
+  hmMidMsn: "Recharging mid-mission",
+  recharge: "Recharging on dock",
+  evac: "Emptying bin",
+  stuck: "Needs attention",
+  new: "Starting up",
+  completed: "Mission finished",
+  cancelled: "Cancelled",
+  chargingerror: "Dock issue",
+};
+
+const SCHEDULE_CYCLE_LABELS: Record<string, string> = {
+  none: "Off",
+  start: "Scheduled clean",
+  clean: "Scheduled clean",
 };
 
 export function formatPhaseLabel(phase: string | null | undefined): string {
@@ -84,21 +111,49 @@ export function formatPhaseLabel(phase: string | null | undefined): string {
   return PHASE_LABELS[key] ?? key.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
+export function formatJobLabel(
+  phase: string | null | undefined,
+  cycle: string | null | undefined,
+): string {
+  const cycleKey = (cycle ?? "").trim() || "none";
+  const phaseKey = (phase ?? "").trim();
+
+  if (cycleKey !== "none") {
+    const base =
+      CYCLE_LABELS[cycleKey] ?? cycleKey.charAt(0).toUpperCase() + cycleKey.slice(1).replace(/([a-z])([A-Z])/g, "$1 $2");
+    if (phaseKey === "pause") return `${base} — paused`;
+    if (phaseKey === "stop") return `${base} — stopped`;
+    if (phaseKey === "stuck") return `${base} — stuck`;
+    if (["hmPostMsn", "hmMidMsn", "hmUsrDock", "dock"].includes(phaseKey)) {
+      return `${base} — heading home`;
+    }
+    if (phaseKey === "evac") return `${base} — emptying bin`;
+    if (phaseKey === "recharge") return `${base} — recharging`;
+    return base;
+  }
+
+  return JOB_WHEN_IDLE[phaseKey] ?? JOB_WHEN_IDLE[""];
+}
+
+/** @deprecated Use formatJobLabel(phase, cycle) for dashboard job text. */
 export function formatCycleLabel(cycle: string | null | undefined): string {
-  const key = (cycle ?? "").trim();
-  if (!key) return CYCLE_LABELS.none;
-  return CYCLE_LABELS[key] ?? key;
+  return formatJobLabel(null, cycle);
+}
+
+export function formatScheduleCycleLabel(cycle: string | null | undefined): string {
+  const key = (cycle ?? "").trim() || "none";
+  return SCHEDULE_CYCLE_LABELS[key] ?? formatJobLabel(null, key === "none" ? "none" : key);
 }
 
 export function formatMissionStatus(
   phase: string | null | undefined,
   cycle: string | null | undefined,
 ): string {
+  const jobLabel = formatJobLabel(phase, cycle);
   const phaseLabel = formatPhaseLabel(phase);
-  const cycleLabel = formatCycleLabel(cycle);
   const cycleKey = (cycle ?? "").trim() || "none";
-  if (cycleKey === "none") return phaseLabel;
-  return `${cycleLabel} · ${phaseLabel}`;
+  if (cycleKey === "none") return `${jobLabel} — ${phaseLabel}`;
+  return `${jobLabel} — ${phaseLabel}`;
 }
 
 export type RobotStatus = {
@@ -591,7 +646,7 @@ function formatMissionState(mission: Record<string, unknown>): {
     phase,
     cycle,
     phase_label: formatPhaseLabel(phase),
-    cycle_label: formatCycleLabel(cycle),
+    cycle_label: formatJobLabel(phase, cycle),
     status_label: formatMissionStatus(phase, cycle),
   };
 }
@@ -971,7 +1026,7 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     base.phase = typeof mission.phase === "string" ? mission.phase : null;
     base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
     base.phase_label = formatPhaseLabel(base.phase);
-    base.cycle_label = formatCycleLabel(base.cycle);
+    base.cycle_label = formatJobLabel(base.phase, base.cycle);
     base.status_label = formatMissionStatus(base.phase, base.cycle);
     base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
     base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
@@ -1269,7 +1324,7 @@ async function fetchRoombaDeviceDiagnostics(settings: RobotSettings): Promise<Ro
     base.phase = typeof mission.phase === "string" ? mission.phase : null;
     base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
     base.phase_label = formatPhaseLabel(base.phase);
-    base.cycle_label = formatCycleLabel(base.cycle);
+    base.cycle_label = formatJobLabel(base.phase, base.cycle);
     base.status_label = formatMissionStatus(base.phase, base.cycle);
     base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
     base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
