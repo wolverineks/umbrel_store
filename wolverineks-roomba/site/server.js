@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const roomba_client_1 = require("./roomba-client");
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.1.1";
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
@@ -401,6 +401,32 @@ function pageStyles() {
       color: #991b1b;
       font-size: 13px;
     }
+    .test-result {
+      display: none;
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .test-result.pending {
+      display: block;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1e3a8a;
+    }
+    .test-result.success {
+      display: block;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      color: #166534;
+    }
+    .test-result.error {
+      display: block;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+    }
     @media (max-width: 900px) {
       .layout {
         grid-template-columns: 1fr;
@@ -665,6 +691,7 @@ function setupPage() {
         <button type="button" id="test-connection">Test connection</button>
         <button type="button" id="save-setup">Save settings</button>
       </div>
+      <div id="test-result" class="test-result" role="status" aria-live="polite"></div>
       <div class="error" id="error"></div>
       <div class="success" id="success"></div>
     </div>
@@ -681,7 +708,25 @@ function setupPage() {
         successEl.textContent = message || "";
         if (message) errorEl.style.display = "none";
       }
+      function setTestResult(state, message) {
+        const testResultEl = document.getElementById("test-result");
+        if (!state) {
+          testResultEl.className = "test-result";
+          testResultEl.textContent = "";
+          showError("");
+          showSuccess("");
+          return;
+        }
+        testResultEl.className = "test-result " + state;
+        testResultEl.textContent = message || "";
+        if (state === "success") {
+          showSuccess(message);
+        } else if (state === "error") {
+          showError(message);
+        }
+      }
       document.getElementById("discover").addEventListener("click", () => {
+        setTestResult("");
         showError("");
         fetch("/api/setup/discover", { method: "POST" })
           .then((response) => response.json().then((data) => ({ response, data })))
@@ -697,6 +742,7 @@ function setupPage() {
           .catch((error) => showError(error.message));
       });
       document.getElementById("fetch-credentials").addEventListener("click", () => {
+        setTestResult("");
         showError("");
         fetch("/api/setup/fetch-credentials", {
           method: "POST",
@@ -735,7 +781,10 @@ function setupPage() {
         return payload;
       }
       document.getElementById("test-connection").addEventListener("click", () => {
-        showError("");
+        const testButton = document.getElementById("test-connection");
+        setTestResult("pending", "Testing connection to the robot…");
+        testButton.disabled = true;
+        testButton.textContent = "Testing…";
         currentPayload()
           .then((payload) =>
             fetch("/api/setup/test", {
@@ -747,9 +796,21 @@ function setupPage() {
           .then((response) => response.json().then((data) => ({ response, data })))
           .then(({ response, data }) => {
             if (!response.ok) throw new Error(data.error || "Connection test failed");
-            showSuccess("Connected to " + (data.robot_name || "robot") + " with " + (data.battery_percent ?? "?") + "% battery.");
+            if (!data.connected) throw new Error(data.error || "Robot did not connect");
+            setTestResult(
+              "success",
+              "Connection successful — " +
+                (data.robot_name || "Roomba") +
+                " responded with " +
+                (data.battery_percent ?? "?") +
+                "% battery.",
+            );
           })
-          .catch((error) => showError(error.message));
+          .catch((error) => setTestResult("error", error.message || "Connection test failed"))
+          .finally(() => {
+            testButton.disabled = false;
+            testButton.textContent = "Test connection";
+          });
       });
       document.getElementById("save-setup").addEventListener("click", () => {
         showError("");
