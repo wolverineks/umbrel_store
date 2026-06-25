@@ -165,7 +165,36 @@ function pageStyles() {
       color: #64748b;
       font-size: 12px;
     }
+    .mobile-header,
+    .sidebar-backdrop {
+      display: none;
+    }
+    .menu-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .menu-toggle .icon {
+      width: 20px;
+      height: 20px;
+    }
+    .mobile-header-title {
+      flex: 1;
+      min-width: 0;
+      font-size: 16px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .content { padding: 28px; }
+    .content > h1 { margin-top: 0; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -253,10 +282,67 @@ function pageStyles() {
       font-size: 14px;
     }
     @media (max-width: 900px) {
-      .layout { grid-template-columns: 1fr; }
-      .sidebar { padding-bottom: 10px; }
-      .nav { display: flex; flex-wrap: wrap; gap: 6px; }
-      .nav a { margin: 0; }
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .mobile-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.45);
+        z-index: 35;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+      }
+      .sidebar-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(280px, 86vw);
+        height: 100vh;
+        z-index: 40;
+        transform: translateX(-105%);
+        transition: transform 0.22s ease;
+        box-shadow: var(--shadow);
+      }
+      .sidebar.open {
+        transform: translateX(0);
+      }
+      .nav {
+        display: block;
+        flex: 1;
+      }
+      .nav a {
+        margin-bottom: 6px;
+      }
+      .content {
+        padding: 18px 16px;
+        grid-column: 1;
+        grid-row: 2;
+      }
+      .content > h1 {
+        display: none;
+      }
     }
   `;
 }
@@ -268,7 +354,7 @@ function layout(page, title, body) {
         ["settings", "Settings", "/settings"],
         ["diagnostics", "Diagnostics", "/diagnostics"],
     ]
-        .map(([id, label, href]) => `<a href="${href}" class="${page === id ? "active" : ""}">${label}</a>`)
+        .map(([id, label, href]) => `<a href="${href}" class="nav-link ${page === id ? "active" : ""}">${label}</a>`)
         .join("");
     return `<!doctype html>
 <html lang="en">
@@ -280,7 +366,16 @@ function layout(page, title, body) {
 </head>
 <body>
   <div class="layout">
-    <aside class="sidebar">
+    <header class="mobile-header">
+      <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <div class="mobile-header-title">${escapeHtml(title)}</div>
+    </header>
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <img src="/icon.svg" alt="" />
         <div>
@@ -295,6 +390,43 @@ function layout(page, title, body) {
       ${body}
     </main>
   </div>
+  <script>
+    (function () {
+      const toggle = document.getElementById("menu-toggle");
+      const sidebar = document.getElementById("sidebar");
+      const backdrop = document.getElementById("sidebar-backdrop");
+      if (!toggle || !sidebar || !backdrop) return;
+
+      const mq = window.matchMedia("(max-width: 900px)");
+
+      function setOpen(open) {
+        sidebar.classList.toggle("open", open);
+        backdrop.classList.toggle("open", open);
+        backdrop.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        toggle.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+        document.body.style.overflow = open && mq.matches ? "hidden" : "";
+      }
+
+      function closeSidebar() {
+        setOpen(false);
+      }
+
+      toggle.addEventListener("click", () => {
+        setOpen(!sidebar.classList.contains("open"));
+      });
+      backdrop.addEventListener("click", closeSidebar);
+      sidebar.querySelectorAll(".nav-link").forEach((link) => {
+        link.addEventListener("click", closeSidebar);
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeSidebar();
+      });
+      mq.addEventListener("change", () => {
+        if (!mq.matches) closeSidebar();
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
