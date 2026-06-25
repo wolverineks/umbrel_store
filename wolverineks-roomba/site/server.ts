@@ -20,7 +20,7 @@ import {
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
