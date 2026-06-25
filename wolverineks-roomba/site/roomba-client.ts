@@ -50,6 +50,57 @@ export type RoombaFavorite = {
   runnable: boolean;
 };
 
+const PHASE_LABELS: Record<string, string> = {
+  "": "Idle",
+  charge: "Charging on dock",
+  run: "Cleaning",
+  resume: "Resuming clean",
+  pause: "Paused",
+  stop: "Stopped",
+  dock: "Docking",
+  hmUsrDock: "Heading to dock",
+  hmPostMsn: "Heading home after mission",
+  hmMidMsn: "Heading home to recharge",
+  recharge: "Recharging",
+  stuck: "Stuck",
+  evac: "Emptying bin",
+  new: "Starting mission",
+  completed: "Mission complete",
+  cancelled: "Cancelled",
+  chargingerror: "Base unplugged",
+};
+
+const CYCLE_LABELS: Record<string, string> = {
+  "": "No active job",
+  none: "No active job",
+  clean: "Whole-home clean",
+  spot: "Spot clean",
+  quick: "Quick clean",
+};
+
+export function formatPhaseLabel(phase: string | null | undefined): string {
+  const key = (phase ?? "").trim();
+  if (!key) return PHASE_LABELS[""];
+  return PHASE_LABELS[key] ?? key.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+export function formatCycleLabel(cycle: string | null | undefined): string {
+  const key = (cycle ?? "").trim();
+  if (!key) return CYCLE_LABELS.none;
+  return CYCLE_LABELS[key] ?? key;
+}
+
+export function formatMissionStatus(
+  phase: string | null | undefined,
+  cycle: string | null | undefined,
+): string {
+  const phaseLabel = formatPhaseLabel(phase);
+  const cycleLabel = formatCycleLabel(cycle);
+  const cycleKey = (cycle ?? "").trim() || "none";
+  if (cycleKey === "none") return phaseLabel;
+  return `${cycleLabel} · ${phaseLabel}`;
+}
+
 export type RobotStatus = {
   connected: boolean;
   configured: boolean;
@@ -60,6 +111,9 @@ export type RobotStatus = {
   battery_percent: number | null;
   phase: string | null;
   cycle: string | null;
+  phase_label: string | null;
+  cycle_label: string | null;
+  status_label: string | null;
   bin_full: boolean | null;
   bin_present: boolean | null;
   docked: boolean | null;
@@ -78,6 +132,9 @@ export type RoombaDeviceDiagnostics = {
   battery_percent: number | null;
   phase: string | null;
   cycle: string | null;
+  phase_label: string | null;
+  cycle_label: string | null;
+  status_label: string | null;
   bin_full: boolean | null;
   bin_present: boolean | null;
   software_version: string | null;
@@ -496,6 +553,9 @@ export type RobotActionResult = {
   ok: true;
   phase: string | null;
   cycle: string | null;
+  phase_label: string | null;
+  cycle_label: string | null;
+  status_label: string | null;
 };
 
 async function readMissionSnapshot(robot: DoritaLocal): Promise<{
@@ -518,10 +578,22 @@ function missionIsActive(mission: Record<string, unknown>): boolean {
   return ["run", "resume", "spot"].includes(phase);
 }
 
-function formatMissionState(mission: Record<string, unknown>): { phase: string | null; cycle: string | null } {
+function formatMissionState(mission: Record<string, unknown>): {
+  phase: string | null;
+  cycle: string | null;
+  phase_label: string | null;
+  cycle_label: string | null;
+  status_label: string | null;
+} {
   const phase = typeof mission.phase === "string" ? mission.phase : null;
   const cycle = typeof mission.cycle === "string" ? mission.cycle : null;
-  return { phase, cycle };
+  return {
+    phase,
+    cycle,
+    phase_label: formatPhaseLabel(phase),
+    cycle_label: formatCycleLabel(cycle),
+    status_label: formatMissionStatus(phase, cycle),
+  };
 }
 
 function buildMissionFailureMessage(
@@ -530,8 +602,9 @@ function buildMissionFailureMessage(
   batPct: number | null,
   actionLabel: string,
 ): string {
-  const phase = String(mission.phase ?? "unknown");
-  const cycle = String(mission.cycle ?? "none");
+  const phase = typeof mission.phase === "string" ? mission.phase : null;
+  const cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+  const status = formatMissionStatus(phase, cycle);
   const hints: string[] = [];
   if (bin.full === true) hints.push("bin is full");
   if (batPct !== null && batPct < 15) hints.push("battery is low");
@@ -540,7 +613,7 @@ function buildMissionFailureMessage(
     hints.push(`robot not ready (code ${mission.notReady})`);
   }
   const hintText = hints.length ? ` ${hints.join(", ")}.` : "";
-  return `${actionLabel} was sent, but the robot did not start (phase=${phase}, cycle=${cycle}).${hintText} Close the iRobot app and try again.`;
+  return `${actionLabel} was sent, but the robot did not start (${status}).${hintText} Close the iRobot app and try again.`;
 }
 
 async function waitForMissionChange(
@@ -859,6 +932,9 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     battery_percent: null,
     phase: null,
     cycle: null,
+    phase_label: null,
+    cycle_label: null,
+    status_label: null,
     bin_full: null,
     bin_present: null,
     docked: null,
@@ -894,6 +970,9 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
     base.phase = typeof mission.phase === "string" ? mission.phase : null;
     base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+    base.phase_label = formatPhaseLabel(base.phase);
+    base.cycle_label = formatCycleLabel(base.cycle);
+    base.status_label = formatMissionStatus(base.phase, base.cycle);
     base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
     base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
     base.docked = base.phase === "charge" || base.phase === "dock";
@@ -1155,6 +1234,9 @@ async function fetchRoombaDeviceDiagnostics(settings: RobotSettings): Promise<Ro
     battery_percent: null,
     phase: null,
     cycle: null,
+    phase_label: null,
+    cycle_label: null,
+    status_label: null,
     bin_full: null,
     bin_present: null,
     software_version: null,
@@ -1186,6 +1268,9 @@ async function fetchRoombaDeviceDiagnostics(settings: RobotSettings): Promise<Ro
     base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
     base.phase = typeof mission.phase === "string" ? mission.phase : null;
     base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+    base.phase_label = formatPhaseLabel(base.phase);
+    base.cycle_label = formatCycleLabel(base.cycle);
+    base.status_label = formatMissionStatus(base.phase, base.cycle);
     base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
     base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
     base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;

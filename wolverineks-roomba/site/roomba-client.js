@@ -3,6 +3,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.formatPhaseLabel = formatPhaseLabel;
+exports.formatCycleLabel = formatCycleLabel;
+exports.formatMissionStatus = formatMissionStatus;
 exports.getLastError = getLastError;
 exports.isMutexBusy = isMutexBusy;
 exports.isDiscoveryBusy = isDiscoveryBusy;
@@ -36,6 +39,52 @@ const DISCOVERY_PORT = 5678;
 const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
 const DISCOVERY_TIMEOUT_MS = 4_000;
 const SUBNET_SCAN_TIMEOUT_MS = 10_000;
+const PHASE_LABELS = {
+    "": "Idle",
+    charge: "Charging on dock",
+    run: "Cleaning",
+    resume: "Resuming clean",
+    pause: "Paused",
+    stop: "Stopped",
+    dock: "Docking",
+    hmUsrDock: "Heading to dock",
+    hmPostMsn: "Heading home after mission",
+    hmMidMsn: "Heading home to recharge",
+    recharge: "Recharging",
+    stuck: "Stuck",
+    evac: "Emptying bin",
+    new: "Starting mission",
+    completed: "Mission complete",
+    cancelled: "Cancelled",
+    chargingerror: "Base unplugged",
+};
+const CYCLE_LABELS = {
+    "": "No active job",
+    none: "No active job",
+    clean: "Whole-home clean",
+    spot: "Spot clean",
+    quick: "Quick clean",
+};
+function formatPhaseLabel(phase) {
+    const key = (phase ?? "").trim();
+    if (!key)
+        return PHASE_LABELS[""];
+    return PHASE_LABELS[key] ?? key.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+function formatCycleLabel(cycle) {
+    const key = (cycle ?? "").trim();
+    if (!key)
+        return CYCLE_LABELS.none;
+    return CYCLE_LABELS[key] ?? key;
+}
+function formatMissionStatus(phase, cycle) {
+    const phaseLabel = formatPhaseLabel(phase);
+    const cycleLabel = formatCycleLabel(cycle);
+    const cycleKey = (cycle ?? "").trim() || "none";
+    if (cycleKey === "none")
+        return phaseLabel;
+    return `${cycleLabel} · ${phaseLabel}`;
+}
 const IROBOT_DISCOVERY_URL = process.env.IROBOT_DISCOVERY_URL ??
     `https://disc-prod.iot.irobotapi.com/v1/discover/endpoints?country_code=${process.env.IROBOT_COUNTRY_CODE ?? "US"}`;
 const IROBOT_APP_ID = "ANDROID-C7FB240E-DF34-42D7-AE4E-A8C17079A294";
@@ -354,11 +403,18 @@ function missionIsActive(mission) {
 function formatMissionState(mission) {
     const phase = typeof mission.phase === "string" ? mission.phase : null;
     const cycle = typeof mission.cycle === "string" ? mission.cycle : null;
-    return { phase, cycle };
+    return {
+        phase,
+        cycle,
+        phase_label: formatPhaseLabel(phase),
+        cycle_label: formatCycleLabel(cycle),
+        status_label: formatMissionStatus(phase, cycle),
+    };
 }
 function buildMissionFailureMessage(mission, bin, batPct, actionLabel) {
-    const phase = String(mission.phase ?? "unknown");
-    const cycle = String(mission.cycle ?? "none");
+    const phase = typeof mission.phase === "string" ? mission.phase : null;
+    const cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+    const status = formatMissionStatus(phase, cycle);
     const hints = [];
     if (bin.full === true)
         hints.push("bin is full");
@@ -370,7 +426,7 @@ function buildMissionFailureMessage(mission, bin, batPct, actionLabel) {
         hints.push(`robot not ready (code ${mission.notReady})`);
     }
     const hintText = hints.length ? ` ${hints.join(", ")}.` : "";
-    return `${actionLabel} was sent, but the robot did not start (phase=${phase}, cycle=${cycle}).${hintText} Close the iRobot app and try again.`;
+    return `${actionLabel} was sent, but the robot did not start (${status}).${hintText} Close the iRobot app and try again.`;
 }
 async function waitForMissionChange(robot, previous, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
@@ -640,6 +696,9 @@ async function getRobotStatus(settings) {
         battery_percent: null,
         phase: null,
         cycle: null,
+        phase_label: null,
+        cycle_label: null,
+        status_label: null,
         bin_full: null,
         bin_present: null,
         docked: null,
@@ -670,6 +729,9 @@ async function getRobotStatus(settings) {
         base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
         base.phase = typeof mission.phase === "string" ? mission.phase : null;
         base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+        base.phase_label = formatPhaseLabel(base.phase);
+        base.cycle_label = formatCycleLabel(base.cycle);
+        base.status_label = formatMissionStatus(base.phase, base.cycle);
         base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
         base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
         base.docked = base.phase === "charge" || base.phase === "dock";
@@ -881,6 +943,9 @@ async function fetchRoombaDeviceDiagnostics(settings) {
         battery_percent: null,
         phase: null,
         cycle: null,
+        phase_label: null,
+        cycle_label: null,
+        status_label: null,
         bin_full: null,
         bin_present: null,
         software_version: null,
@@ -909,6 +974,9 @@ async function fetchRoombaDeviceDiagnostics(settings) {
         base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
         base.phase = typeof mission.phase === "string" ? mission.phase : null;
         base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
+        base.phase_label = formatPhaseLabel(base.phase);
+        base.cycle_label = formatCycleLabel(base.cycle);
+        base.status_label = formatMissionStatus(base.phase, base.cycle);
         base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
         base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
         base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;

@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const roomba_client_1 = require("./roomba-client");
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.2.2";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -610,8 +610,8 @@ function dashboardPage() {
     <div class="panel">
       <div class="grid" id="stats">
         <div class="stat"><div class="label">Battery</div><div class="value" id="battery">—</div></div>
-        <div class="stat"><div class="label">Phase</div><div class="value" id="phase">—</div></div>
-        <div class="stat"><div class="label">Cycle</div><div class="value" id="cycle">—</div></div>
+        <div class="stat"><div class="label">Status</div><div class="value" id="phase">—</div></div>
+        <div class="stat"><div class="label">Job</div><div class="value" id="cycle">—</div></div>
         <div class="stat"><div class="label">Bin</div><div class="value" id="bin">—</div></div>
       </div>
       <p class="muted" id="meta">Loading status…</p>
@@ -686,8 +686,8 @@ function dashboardPage() {
         if (!response.ok) throw new Error(data.error || "Failed to load status");
         document.getElementById("battery").textContent =
           data.battery_percent == null ? "—" : data.battery_percent + "%";
-        document.getElementById("phase").textContent = data.phase || "—";
-        document.getElementById("cycle").textContent = data.cycle || "—";
+        document.getElementById("phase").textContent = data.phase_label || data.phase || "—";
+        document.getElementById("cycle").textContent = data.cycle_label || data.cycle || "—";
         const bin =
           data.bin_full == null ? "—" : data.bin_full ? "Full" : data.bin_present === false ? "Missing" : "OK";
         document.getElementById("bin").textContent = bin;
@@ -703,15 +703,16 @@ function dashboardPage() {
         }
       }
       function actionSuccessMessage(action, data) {
-        const phase = data.phase || "unknown";
-        const cycle = data.cycle || "none";
+        const status = data.status_label || data.phase_label || data.phase || "updated";
         if (action === "clean") {
+          const cycle = data.cycle || "none";
+          const phase = data.phase || "";
           return cycle !== "none" || phase === "run" || phase === "resume"
-            ? "Cleaning started (" + phase + ")."
-            : "Clean command sent (" + phase + ").";
+            ? "Cleaning started — " + status + "."
+            : "Clean command sent — " + status + ".";
         }
-        if (action === "dock") return "Dock command sent (" + phase + ").";
-        return action.charAt(0).toUpperCase() + action.slice(1) + " sent (" + phase + ").";
+        if (action === "dock") return "Dock command sent — " + status + ".";
+        return action.charAt(0).toUpperCase() + action.slice(1) + " sent — " + status + ".";
       }
       async function runAction(action) {
         showError("");
@@ -1209,8 +1210,10 @@ function diagnosticsPage() {
         const deviceRows = [
           row("Connected", formatBool(device.connected, "Yes", "No")),
           row("Battery", device.battery_percent == null ? "—" : formatValue(device.battery_percent + "%")),
-          row("Phase", formatValue(device.phase)),
-          row("Cycle", formatValue(device.cycle)),
+          row("Status", formatValue(device.status_label || device.phase)),
+          row("Job", formatValue(device.cycle_label || device.cycle)),
+          row("Raw phase", formatValue(device.phase)),
+          row("Raw cycle", formatValue(device.cycle)),
           row("Bin", device.bin_full == null ? "—" : formatValue(device.bin_full ? "Full" : "OK")),
           row("Software", formatValue(device.software_version)),
           row("SKU", formatValue(device.sku)),
