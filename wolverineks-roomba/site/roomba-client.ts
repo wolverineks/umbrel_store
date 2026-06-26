@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { createConnection } from "node:net";
 import { promisify } from "node:util";
@@ -8,13 +9,32 @@ const execFileAsync = promisify(execFile);
 const CONNECT_TIMEOUT_MS = 15_000;
 const ROBOT_READ_TIMEOUT_MS = 10_000;
 const ROBOT_PMAPS_TIMEOUT_MS = 15_000;
-const ROBOT_OPERATION_TIMEOUT_MS = 35_000;
+const ROBOT_DASHBOARD_TIMEOUT_MS = 10_000;
+const ROBOT_MAINTENANCE_TIMEOUT_MS = 12_000;
+const CLOUD_API_TIMEOUT_MS = 12_000;
+const ROBOT_OPERATION_TIMEOUT_MS = 45_000;
 const ROBOT_DISCONNECT_TIMEOUT_MS = 4_000;
 const MQTT_PORT = 8883;
 const DISCOVERY_PORT = 5678;
 const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
 const DISCOVERY_TIMEOUT_MS = 4_000;
 const SUBNET_SCAN_TIMEOUT_MS = 10_000;
+
+type CloudPmapsResult =
+  | { ok: true; pmaps: unknown[]; error: null }
+  | { ok: false; pmaps: unknown[]; error: string };
+
+const favoritesCache = new Map<string, RoombaFavorite[]>();
+
+function cacheFavorites(blid: string, favorites: RoombaFavorite[]): void {
+  if (favorites.length) {
+    favoritesCache.set(blid, favorites);
+  }
+}
+
+function getCachedFavorites(blid: string): RoombaFavorite[] {
+  return favoritesCache.get(blid) ?? [];
+}
 
 export type ConnectionMode = "on_demand" | "live";
 
@@ -39,6 +59,13 @@ export type DiscoveryRobot = {
   blid?: string;
 };
 
+type FavoriteRegion = {
+  region_id: string;
+  region_name: string;
+  region_type: string;
+  type: string;
+};
+
 export type RoombaFavorite = {
   id: string;
   name: string;
@@ -48,6 +75,8 @@ export type RoombaFavorite = {
   region_count: number;
   regions_summary: string;
   runnable: boolean;
+  source?: "local" | "cloud";
+  command_regions?: FavoriteRegion[];
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -99,12 +128,6 @@ const JOB_WHEN_IDLE: Record<string, string> = {
   chargingerror: "Dock issue",
 };
 
-const SCHEDULE_CYCLE_LABELS: Record<string, string> = {
-  none: "Off",
-  start: "Scheduled clean",
-  clean: "Scheduled clean",
-};
-
 export function formatPhaseLabel(phase: string | null | undefined): string {
   const key = (phase ?? "").trim();
   if (!key) return PHASE_LABELS[""];
@@ -140,20 +163,241 @@ export function formatCycleLabel(cycle: string | null | undefined): string {
   return formatJobLabel(null, cycle);
 }
 
-export function formatScheduleCycleLabel(cycle: string | null | undefined): string {
-  const key = (cycle ?? "").trim() || "none";
-  return SCHEDULE_CYCLE_LABELS[key] ?? formatJobLabel(null, key === "none" ? "none" : key);
-}
-
 export function formatMissionStatus(
   phase: string | null | undefined,
   cycle: string | null | undefined,
+  jobLabel?: string | null,
 ): string {
-  const jobLabel = formatJobLabel(phase, cycle);
+  const resolvedJobLabel = jobLabel ?? formatJobLabel(phase, cycle);
   const phaseLabel = formatPhaseLabel(phase);
   const cycleKey = (cycle ?? "").trim() || "none";
-  if (cycleKey === "none") return `${jobLabel} — ${phaseLabel}`;
-  return `${jobLabel} — ${phaseLabel}`;
+  if (cycleKey === "none") return `${resolvedJobLabel} — ${phaseLabel}`;
+  return `${resolvedJobLabel} — ${phaseLabel}`;
+}
+
+type MissionCommandRegion = {
+  region_id: string;
+  region_name: string;
+  two_pass: boolean;
+};
+
+type MissionCommandContext = {
+  ordered: boolean;
+  regions: MissionCommandRegion[];
+};
+
+type CloudRegionInfo = {
+  name: string;
+  estimate_seconds: number | null;
+};
+
+function parseCmdStr(cmdStr: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(cmdStr.replace(/'/g, '"')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMissionCommandRegions(regions: unknown): MissionCommandRegion[] {
+  if (!Array.isArray(regions)) return [];
+  return regions
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => {
+      const params = asRecord(item.params);
+      return {
+        region_id: String(item.region_id ?? item.id ?? "").trim(),
+        region_name: String(item.region_name ?? item.name ?? "").trim(),
+        two_pass: params?.twoPass === true,
+      };
+    })
+    .filter((item) => item.region_id);
+}
+
+function missionCommandFromRecord(record: Record<string, unknown> | null): MissionCommandContext | null {
+  if (!record) return null;
+  const regions = normalizeMissionCommandRegions(record.regions);
+  if (!regions.length) return null;
+  return {
+    ordered: Boolean(record.ordered === 1 || record.ordered === true),
+    regions,
+  };
+}
+
+function missionCommandFromSchedule(cleanSchedule2: unknown): MissionCommandContext | null {
+  if (!Array.isArray(cleanSchedule2)) return null;
+  for (const item of cleanSchedule2) {
+    const entry = asRecord(item);
+    if (!entry || entry.enabled === false || typeof entry.cmdStr !== "string") continue;
+    const parsed = parseCmdStr(entry.cmdStr);
+    const command = missionCommandFromRecord(parsed);
+    if (command) return command;
+  }
+  return null;
+}
+
+function resolveActiveMissionCommand(
+  mission: Record<string, unknown>,
+  lastCommand: Record<string, unknown>,
+  cleanSchedule2: unknown,
+): MissionCommandContext | null {
+  const cycle = String(mission.cycle ?? "");
+  const phase = String(mission.phase ?? "");
+  if (cycle === "none" && !["run", "resume", "spot", "pause"].includes(phase)) {
+    return null;
+  }
+
+  const fromLast = missionCommandFromRecord(lastCommand);
+  if (fromLast) return fromLast;
+
+  if (String(mission.initiator ?? "") === "schedule" || String(lastCommand.command ?? "") === "start") {
+    return missionCommandFromSchedule(cleanSchedule2);
+  }
+
+  return null;
+}
+
+export function buildCloudRegionIndex(pmaps: unknown): Map<string, CloudRegionInfo> {
+  const index = new Map<string, CloudRegionInfo>();
+  if (!Array.isArray(pmaps)) return index;
+
+  for (const item of pmaps) {
+    const entry = asRecord(item);
+    if (!entry) continue;
+    const details = asRecord(entry.active_pmapv_details);
+    const regions = Array.isArray(details?.regions) ? details.regions : [];
+    for (const regionValue of regions) {
+      const region = asRecord(regionValue);
+      if (!region) continue;
+      const regionId = String(region.id ?? region.region_id ?? "").trim();
+      if (!regionId || index.has(regionId)) continue;
+
+      const estimates = Array.isArray(region.time_estimates) ? region.time_estimates : [];
+      let estimateSeconds: number | null = null;
+      for (const estimateValue of estimates) {
+        const estimate = asRecord(estimateValue);
+        const params = asRecord(estimate?.params);
+        if (estimate?.unit !== "seconds" || typeof estimate.estimate !== "number" || !params) continue;
+        if (params.twoPass === false) {
+          estimateSeconds = estimate.estimate;
+          break;
+        }
+      }
+
+      index.set(regionId, {
+        name: String(region.name ?? region.region_name ?? "").trim() || `Room ${regionId}`,
+        estimate_seconds: estimateSeconds,
+      });
+    }
+  }
+
+  return index;
+}
+
+function applyPhaseJobSuffix(base: string, phase: string | null | undefined): string {
+  const phaseKey = (phase ?? "").trim();
+  if (phaseKey === "pause") return `${base} — paused`;
+  if (phaseKey === "stop") return `${base} — stopped`;
+  if (phaseKey === "stuck") return `${base} — stuck`;
+  if (["hmPostMsn", "hmMidMsn", "hmUsrDock", "dock"].includes(phaseKey)) {
+    return `${base} — heading home`;
+  }
+  if (phaseKey === "evac") return `${base} — emptying bin`;
+  if (phaseKey === "recharge") return `${base} — recharging`;
+  return base;
+}
+
+export function formatMissionJobLabel(
+  phase: string | null | undefined,
+  cycle: string | null | undefined,
+  command: MissionCommandContext | null,
+  regionIndex: Map<string, CloudRegionInfo>,
+): string {
+  if (!command?.regions.length) {
+    return formatJobLabel(phase, cycle);
+  }
+
+  const names = command.regions.map((region) => {
+    if (region.region_name) return region.region_name;
+    return regionIndex.get(region.region_id)?.name ?? `Room ${region.region_id}`;
+  });
+
+  let base: string;
+  if (names.length === 1) {
+    base = `Vacuuming: ${names[0]}`;
+  } else if (command.ordered) {
+    base = `Vacuuming: ${names[0]}`;
+  } else {
+    base = `Vacuuming: ${names.join(", ")}`;
+  }
+
+  return applyPhaseJobSuffix(base, phase);
+}
+
+function formatDurationLabel(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return "<1 min left";
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} min left`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m left` : `${hours}h left`;
+}
+
+export function formatMissionTimeRemaining(
+  mission: Record<string, unknown>,
+  command: MissionCommandContext | null,
+  regionIndex: Map<string, CloudRegionInfo>,
+): string | null {
+  const expireM = mission.expireM;
+  if (typeof expireM === "number" && expireM > 0) {
+    return formatDurationLabel(expireM * 60);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const expireTm = mission.expireTm;
+  if (typeof expireTm === "number" && expireTm > now) {
+    return formatDurationLabel(expireTm - now);
+  }
+
+  if (!command?.regions.length) return null;
+
+  const elapsed =
+    typeof mission.mssnStrtTm === "number" && mission.mssnStrtTm > 0
+      ? Math.max(0, now - mission.mssnStrtTm)
+      : null;
+  if (elapsed === null) return null;
+
+  const estimates = command.regions.map((region) => {
+    const fromIndex = regionIndex.get(region.region_id)?.estimate_seconds;
+    return fromIndex ?? null;
+  });
+  if (estimates.every((value) => value === null)) return null;
+
+  let remaining = 0;
+  if (command.ordered && command.regions.length > 1) {
+    let consumed = elapsed;
+    let foundCurrent = false;
+    for (let index = 0; index < command.regions.length; index += 1) {
+      const estimate = estimates[index] ?? 0;
+      if (!foundCurrent) {
+        if (consumed >= estimate) {
+          consumed -= estimate;
+          continue;
+        }
+        remaining += estimate - consumed;
+        foundCurrent = true;
+        continue;
+      }
+      remaining += estimate;
+    }
+  } else {
+    remaining = estimates.reduce<number>((sum, value) => sum + (value ?? 0), 0) - elapsed;
+  }
+
+  if (remaining <= 0) return null;
+  return formatDurationLabel(remaining);
 }
 
 export type RobotStatus = {
@@ -169,6 +413,7 @@ export type RobotStatus = {
   phase_label: string | null;
   cycle_label: string | null;
   status_label: string | null;
+  time_remaining_label: string | null;
   bin_full: boolean | null;
   bin_present: boolean | null;
   docked: boolean | null;
@@ -180,6 +425,38 @@ export type RobotStatus = {
   favorites: RoombaFavorite[];
   favorites_error: string | null;
   last_sync: string;
+};
+
+export type MaintenanceItemStatus = "ok" | "due_soon" | "replace";
+
+export type MaintenanceItem = {
+  id: string;
+  name: string;
+  detail: string;
+  hours_used: number;
+  hours_recommended: number;
+  percent_used: number;
+  status: MaintenanceItemStatus;
+  status_label: string;
+};
+
+export type RobotMaintenance = {
+  connected: boolean;
+  configured: boolean;
+  error: string | null;
+  last_sync: string;
+  runtime_hours: number | null;
+  runtime_label: string | null;
+  area_sqft: number | null;
+  missions_total: number | null;
+  missions_completed: number | null;
+  missions_canceled: number | null;
+  stuck_events: number | null;
+  charge_cycles: number | null;
+  bin_full: boolean | null;
+  bin_present: boolean | null;
+  battery_percent: number | null;
+  items: MaintenanceItem[];
 };
 
 export type RoombaDeviceDiagnostics = {
@@ -594,12 +871,156 @@ export async function discoverRobots(robotIpHint = ""): Promise<DiscoveryRobot[]
   }
 }
 
+const DASHBOARD_EXTRA_FIELDS = ["pmaps", "softwareVer", "sku", "lastCommand", "cleanSchedule2"] as const;
+
 async function readRobotState(robot: DoritaLocal): Promise<Record<string, unknown>> {
   return withTimeout(
     robot.getRobotState(["batPct", "cleanMissionStatus", "bin"]),
     ROBOT_READ_TIMEOUT_MS,
     "Robot status",
   );
+}
+
+async function readDashboardExtras(robot: DoritaLocal): Promise<Record<string, unknown> | null> {
+  return readOptionalRobotValue("Robot maps and mission", ROBOT_DASHBOARD_TIMEOUT_MS, () =>
+    robot.getRobotState([...DASHBOARD_EXTRA_FIELDS]),
+  );
+}
+
+const MAINTENANCE_STATE_FIELDS = [
+  "bbrun",
+  "bbmssn",
+  "bbchg",
+  "batInfo",
+  "runtimeStats",
+  "bin",
+  "batPct",
+] as const;
+
+const MAINTENANCE_INTERVALS: Array<{ id: string; name: string; detail: string; hours: number }> = [
+  { id: "filter", name: "Filter", detail: "Replace the high-efficiency filter", hours: 166 },
+  { id: "edge_brush", name: "Edge-sweeping brush", detail: "Clean or replace the side brush", hours: 166 },
+  { id: "rollers", name: "Multi-surface brushes", detail: "Clean the rubber brush rollers", hours: 416 },
+];
+
+function readNumberField(record: Record<string, unknown> | null, key: string): number | null {
+  if (!record) return null;
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatRuntimeHours(hours: number): string {
+  const wholeHours = Math.floor(hours);
+  const minutes = Math.round((hours - wholeHours) * 60);
+  if (wholeHours <= 0) return `${minutes} min`;
+  if (minutes <= 0) return `${wholeHours} hr`;
+  return `${wholeHours} hr ${minutes} min`;
+}
+
+function maintenanceStatus(percentUsed: number): { status: MaintenanceItemStatus; status_label: string } {
+  if (percentUsed >= 100) return { status: "replace", status_label: "Replace now" };
+  if (percentUsed >= 80) return { status: "due_soon", status_label: "Due soon" };
+  return { status: "ok", status_label: "OK" };
+}
+
+function buildMaintenanceItems(runtimeHours: number): MaintenanceItem[] {
+  return MAINTENANCE_INTERVALS.map((item) => {
+    const percentUsed = Math.min(100, Math.round((runtimeHours / item.hours) * 100));
+    const { status, status_label } = maintenanceStatus(percentUsed);
+    return {
+      id: item.id,
+      name: item.name,
+      detail: item.detail,
+      hours_used: Math.round(runtimeHours),
+      hours_recommended: item.hours,
+      percent_used: percentUsed,
+      status,
+      status_label,
+    };
+  });
+}
+
+async function readMaintenanceState(robot: DoritaLocal): Promise<Record<string, unknown>> {
+  return withTimeout(
+    robot.getRobotState([...MAINTENANCE_STATE_FIELDS]),
+    ROBOT_MAINTENANCE_TIMEOUT_MS,
+    "Robot maintenance",
+  );
+}
+
+export async function getRobotMaintenance(settings: RobotSettings): Promise<RobotMaintenance> {
+  const base: RobotMaintenance = {
+    connected: false,
+    configured: isConfigured(settings),
+    error: null,
+    last_sync: new Date().toISOString(),
+    runtime_hours: null,
+    runtime_label: null,
+    area_sqft: null,
+    missions_total: null,
+    missions_completed: null,
+    missions_canceled: null,
+    stuck_events: null,
+    charge_cycles: null,
+    bin_full: null,
+    bin_present: null,
+    battery_percent: null,
+    items: [],
+  };
+
+  if (!base.configured) {
+    base.error = "Robot is not configured yet";
+    return base;
+  }
+
+  try {
+    const state = await withRobot(settings, async (robot) => readMaintenanceState(robot));
+    const bbrun = asRecord(state.bbrun);
+    const bbmssn = asRecord(state.bbmssn);
+    const bbchg = asRecord(state.bbchg);
+    const batInfo = asRecord(state.batInfo);
+    const runtimeStats = asRecord(state.runtimeStats);
+    const bin = asRecord(state.bin);
+
+    const runHours = readNumberField(bbrun, "hr");
+    const runMinutes = readNumberField(bbrun, "min");
+    const runtimeHours =
+      runHours === null && runMinutes === null
+        ? null
+        : (runHours ?? 0) + (runMinutes ?? 0) / 60;
+
+    base.connected = true;
+    base.runtime_hours = runtimeHours;
+    base.runtime_label = runtimeHours === null ? null : formatRuntimeHours(runtimeHours);
+    base.area_sqft =
+      readNumberField(runtimeStats, "sqft") ??
+      readNumberField(bbrun, "sqft");
+    base.missions_total = readNumberField(bbmssn, "nMssn");
+    base.missions_completed = readNumberField(bbmssn, "nMssnOk");
+    base.missions_canceled = readNumberField(bbmssn, "nMssnC");
+    base.stuck_events = readNumberField(bbrun, "nStuck");
+    base.charge_cycles = readNumberField(bbchg, "nChgOk") ?? readNumberField(batInfo, "cCount");
+    base.bin_full = typeof bin?.full === "boolean" ? bin.full : null;
+    base.bin_present = typeof bin?.present === "boolean" ? bin.present : null;
+    base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
+    base.items = runtimeHours === null ? [] : buildMaintenanceItems(runtimeHours);
+    if (base.bin_full) {
+      base.items.unshift({
+        id: "bin",
+        name: "Dust bin",
+        detail: "Empty the bin and wipe the bin sensors",
+        hours_used: 0,
+        hours_recommended: 0,
+        percent_used: 100,
+        status: "replace",
+        status_label: "Empty now",
+      });
+    }
+    return base;
+  } catch (error) {
+    base.error = error instanceof Error ? error.message : String(error);
+    return base;
+  }
 }
 
 const COMMAND_SETTLE_MS = 2_500;
@@ -740,9 +1161,7 @@ function favoriteIdentifier(favorite: Record<string, unknown>, index: number): s
   return String(index);
 }
 
-function normalizeFavoriteRegions(
-  regions: unknown,
-): Array<{ region_id: string; region_name: string; region_type: string; type: string }> {
+function normalizeFavoriteRegions(regions: unknown): FavoriteRegion[] {
   if (!Array.isArray(regions)) return [];
   return regions
     .map((region) => asRecord(region))
@@ -756,12 +1175,33 @@ function normalizeFavoriteRegions(
     .filter((region) => region.region_id);
 }
 
-function summarizeRegions(
-  regions: Array<{ region_id: string; region_name: string; region_type: string; type: string }>,
-): string {
+function summarizeRegions(regions: FavoriteRegion[]): string {
   if (!regions.length) return "";
   const labels = regions.map((region) => region.region_name || region.region_id);
   return labels.join(", ");
+}
+
+function collectFavoriteLists(entry: Record<string, unknown>): unknown[] {
+  const lists: unknown[] = [];
+  const activeDetails = asRecord(entry.active_pmapv_details);
+  const activePmapv = activeDetails ? asRecord(activeDetails.active_pmapv) : null;
+  const sources = [
+    entry,
+    activeDetails,
+    activePmapv,
+    asRecord(entry.active_pmapv),
+    asRecord(entry.pmapv),
+    asRecord(entry.user_pmapv),
+  ].filter((source): source is Record<string, unknown> => source !== null);
+
+  for (const source of sources) {
+    for (const key of ["smart_clean_favs", "smartCleanFavs", "favorites", "favs", "saved_favorites"]) {
+      const list = source[key];
+      if (Array.isArray(list)) lists.push(list);
+    }
+  }
+
+  return lists;
 }
 
 function extractFavoritesFromPmapEntry(
@@ -774,7 +1214,7 @@ function extractFavoritesFromPmapEntry(
   const defaultPmapVersion = String(
     entry.user_pmapv_id ?? entry.active_pmapv_id ?? activePmapv?.user_pmapv_id ?? "",
   ).trim();
-  const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
+  const favoriteLists = collectFavoriteLists(entry);
 
   for (const list of favoriteLists) {
     if (!Array.isArray(list)) continue;
@@ -806,6 +1246,32 @@ function extractFavoritesFromPmapEntry(
   return [];
 }
 
+function deepFindFavoriteLists(value: unknown, depth = 0): unknown[] {
+  if (depth > 6 || value == null) return [];
+  const lists: unknown[] = [];
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      lists.push(...deepFindFavoriteLists(item, depth + 1));
+    }
+    return lists;
+  }
+
+  const record = asRecord(value);
+  if (!record) return lists;
+
+  for (const key of ["smart_clean_favs", "smartCleanFavs", "favorites", "favs", "saved_favorites"]) {
+    const list = record[key];
+    if (Array.isArray(list) && list.length) lists.push(list);
+  }
+
+  for (const child of Object.values(record)) {
+    lists.push(...deepFindFavoriteLists(child, depth + 1));
+  }
+
+  return lists;
+}
+
 export function parseFavoritesFromPmaps(pmaps: unknown): RoombaFavorite[] {
   const favorites: RoombaFavorite[] = [];
   const seen = new Set<string>();
@@ -825,13 +1291,23 @@ export function parseFavoritesFromPmaps(pmaps: unknown): RoombaFavorite[] {
       if (!entry) continue;
       addFavorites(extractFavoritesFromPmapEntry(entry));
     }
+    if (!favorites.length) {
+      for (const list of deepFindFavoriteLists(pmaps)) {
+        if (!Array.isArray(list)) continue;
+        addFavorites(
+          extractFavoritesFromPmapEntry({
+            smart_clean_favs: list,
+          }),
+        );
+      }
+    }
     return favorites;
   }
 
   const root = asRecord(pmaps);
   if (!root) return favorites;
 
-  if (root.smart_clean_favs || root.smartCleanFavs || root.favorites || root.favs) {
+  if (collectFavoriteLists(root).length) {
     addFavorites(extractFavoritesFromPmapEntry(root));
     return favorites;
   }
@@ -842,13 +1318,74 @@ export function parseFavoritesFromPmaps(pmaps: unknown): RoombaFavorite[] {
     addFavorites(extractFavoritesFromPmapEntry(entry, pmapId));
   }
 
+  if (!favorites.length) {
+    for (const list of deepFindFavoriteLists(root)) {
+      if (!Array.isArray(list)) continue;
+      addFavorites(
+        extractFavoritesFromPmapEntry({
+          smart_clean_favs: list,
+        }),
+      );
+    }
+  }
+
   return favorites;
 }
 
-function buildFavoriteCommand(
-  favorite: RoombaFavorite,
-  regions: Array<{ region_id: string; region_name: string; region_type: string; type: string }>,
-): Record<string, unknown> {
+export function parseRoomsFromCloudPmaps(pmaps: unknown): RoombaFavorite[] {
+  if (!Array.isArray(pmaps)) return [];
+
+  const rooms: RoombaFavorite[] = [];
+  for (const item of pmaps) {
+    const entry = asRecord(item);
+    if (!entry) continue;
+
+    const pmapId = String(entry.pmap_id ?? "").trim();
+    const userPmapvId = String(entry.user_pmapv_id ?? entry.active_pmapv_id ?? "").trim();
+    const details = asRecord(entry.active_pmapv_details);
+    const regions = Array.isArray(details?.regions) ? details.regions : [];
+    if (!pmapId || !userPmapvId || !regions.length) continue;
+
+    for (const regionValue of regions) {
+      const region = asRecord(regionValue);
+      if (!region) continue;
+      const regionId = String(region.id ?? region.region_id ?? "").trim();
+      const regionName = String(region.name ?? region.region_name ?? "").trim() || `Room ${regionId}`;
+      const regionType = String(region.region_type ?? "room").trim();
+      if (!regionId) continue;
+
+      const commandRegions: FavoriteRegion[] = [
+        {
+          region_id: regionId,
+          region_name: regionName,
+          region_type: regionType,
+          type: "rid",
+        },
+      ];
+
+      rooms.push({
+        id: `room:${pmapId}:${regionId}`,
+        name: regionName,
+        pmap_id: pmapId,
+        user_pmapv_id: userPmapvId,
+        ordered: false,
+        region_count: 1,
+        regions_summary: regionName,
+        runnable: true,
+        source: "cloud",
+        command_regions: commandRegions,
+      });
+    }
+  }
+
+  return rooms;
+}
+
+function hasCloudAccount(settings: RobotSettings): boolean {
+  return Boolean(settings.irobot_username.trim() && settings.irobot_password.trim());
+}
+
+function buildFavoriteCommand(favorite: RoombaFavorite, regions: FavoriteRegion[]): Record<string, unknown> {
   return {
     ordered: favorite.ordered ? 1 : 0,
     pmap_id: favorite.pmap_id,
@@ -865,46 +1402,62 @@ function buildFavoriteCommand(
 async function readFavoriteCommand(
   robot: DoritaLocal,
   favoriteId: string,
+  settings?: RobotSettings,
 ): Promise<Record<string, unknown>> {
-  const snapshot = await withTimeout(
-    robot.getRobotState(["pmaps"]),
-    ROBOT_PMAPS_TIMEOUT_MS,
-    "Robot favorites",
-  );
-  const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
-  const favorite = favorites.find((entry) => entry.id === favoriteId);
-  if (!favorite?.runnable || !favorite.pmap_id) {
-    throw new Error("Favorite not found on the robot");
+  let favorite: RoombaFavorite | undefined;
+  let regions: FavoriteRegion[] = [];
+
+  if (favoriteId.startsWith("room:") && settings && hasCloudAccount(settings)) {
+    const cloudRooms = await fetchCloudCleanables(settings);
+    favorite = cloudRooms.find((entry) => entry.id === favoriteId);
+    regions = favorite?.command_regions ?? [];
   }
 
-  const pmapState = asRecord(snapshot.pmaps);
-  let regions: Array<{ region_id: string; region_name: string; region_type: string; type: string }> =
-    [];
+  if (!favorite) {
+    const snapshot = await withTimeout(
+      robot.getRobotState(["pmaps"]),
+      ROBOT_PMAPS_TIMEOUT_MS,
+      "Robot favorites",
+    );
+    const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
+    favorite = favorites.find((entry) => entry.id === favoriteId);
+    if (!favorite?.runnable || !favorite.pmap_id) {
+      throw new Error("Favorite not found on the robot");
+    }
 
-  const pmapLists = Array.isArray(snapshot.pmaps)
-    ? snapshot.pmaps.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null)
-    : pmapState
-      ? [pmapState]
-      : [];
+    const pmapState = asRecord(snapshot.pmaps);
+    const pmapLists = Array.isArray(snapshot.pmaps)
+      ? snapshot.pmaps.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null)
+      : pmapState
+        ? [pmapState]
+        : [];
 
-  for (const entry of pmapLists) {
-    if (String(entry.pmap_id ?? "") !== favorite.pmap_id) continue;
-    const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
-    for (const list of favoriteLists) {
-      if (!Array.isArray(list)) continue;
-      for (const [index, item] of list.entries()) {
-        const record = asRecord(item);
-        if (!record || favoriteIdentifier(record, index) !== favorite.id) continue;
-        regions = normalizeFavoriteRegions(record.regions);
-        break;
+    for (const entry of pmapLists) {
+      if (String(entry.pmap_id ?? "") !== favorite.pmap_id) continue;
+      for (const list of collectFavoriteLists(entry)) {
+        if (!Array.isArray(list)) continue;
+        for (const [index, item] of list.entries()) {
+          const record = asRecord(item);
+          if (!record || favoriteIdentifier(record, index) !== favorite.id) continue;
+          regions = normalizeFavoriteRegions(record.regions);
+          break;
+        }
+        if (regions.length) break;
       }
       if (regions.length) break;
     }
-    if (regions.length) break;
+  }
+
+  if (!favorite?.runnable) {
+    throw new Error("Favorite not found on the robot");
   }
 
   if (!regions.length) {
     throw new Error("Favorite has no rooms configured");
+  }
+
+  if (!favorite.pmap_id) {
+    throw new Error("Favorite is missing map information");
   }
 
   return buildFavoriteCommand(favorite, regions);
@@ -990,6 +1543,7 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     phase_label: null,
     cycle_label: null,
     status_label: null,
+    time_remaining_label: null,
     bin_full: null,
     bin_present: null,
     docked: null,
@@ -1008,39 +1562,88 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     return base;
   }
 
+  const blid = settings.blid.trim();
+  const cloudTask = hasCloudAccount(settings) ? fetchCloudPmapsResult(settings) : null;
+
   try {
-    const snapshot = await withRobot(settings, async (robot) => {
-      const state = await readRobotState(robot);
-      const pmapState = await readOptionalRobotValue("Robot favorites", ROBOT_PMAPS_TIMEOUT_MS, () =>
-        robot.getRobotState(["pmaps"]),
-      );
-      return { state, pmapState };
-    });
+    const [snapshot, cloudResult] = await Promise.all([
+      withRobot(settings, async (robot) => {
+        const state = await readRobotState(robot);
+        const extras = await readDashboardExtras(robot);
+        return { state, extras };
+      }),
+      cloudTask ?? Promise.resolve({ ok: true, pmaps: [], error: null } satisfies CloudPmapsResult),
+    ]);
 
     const state = snapshot.state;
+    const extras = snapshot.extras ?? {};
     const mission = (state.cleanMissionStatus ?? {}) as Record<string, unknown>;
     const bin = (state.bin ?? {}) as Record<string, unknown>;
-    const lastCommand = (state.lastCommand ?? {}) as Record<string, unknown>;
+    const lastCommand = (extras.lastCommand ?? {}) as Record<string, unknown>;
     base.connected = true;
     base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
     base.phase = typeof mission.phase === "string" ? mission.phase : null;
     base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
     base.phase_label = formatPhaseLabel(base.phase);
-    base.cycle_label = formatJobLabel(base.phase, base.cycle);
-    base.status_label = formatMissionStatus(base.phase, base.cycle);
+    const missionCommand = resolveActiveMissionCommand(
+      mission,
+      lastCommand,
+      extras.cleanSchedule2,
+    );
+    const regionIndex = buildCloudRegionIndex(cloudResult.pmaps);
     base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
     base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
     base.docked = base.phase === "charge" || base.phase === "dock";
     base.sqft = typeof mission.sqft === "number" ? mission.sqft : null;
     base.mission_minutes = typeof mission.mssnM === "number" ? mission.mssnM : null;
     base.last_command = typeof lastCommand.command === "string" ? lastCommand.command : null;
-    base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;
-    base.sku = typeof state.sku === "string" ? state.sku : null;
-    if (snapshot.pmapState && typeof snapshot.pmapState.pmaps !== "undefined") {
-      base.favorites = parseFavoritesFromPmaps(snapshot.pmapState.pmaps);
-    } else {
-      base.favorites_error = "Favorites were not returned by the robot on this connection";
+    base.software_version =
+      typeof extras.softwareVer === "string"
+        ? extras.softwareVer
+        : typeof state.softwareVer === "string"
+          ? state.softwareVer
+          : null;
+    base.sku =
+      typeof extras.sku === "string" ? extras.sku : typeof state.sku === "string" ? state.sku : null;
+    if (snapshot.extras && typeof extras.pmaps !== "undefined") {
+      base.favorites = parseFavoritesFromPmaps(extras.pmaps);
     }
+
+    if (!base.favorites.length) {
+      const cloudRooms = parseRoomsFromCloudPmaps(cloudResult.pmaps);
+      if (cloudRooms.length) {
+        base.favorites = cloudRooms;
+        base.favorites_error = null;
+      }
+    }
+
+    if (base.favorites.length) {
+      cacheFavorites(blid, base.favorites);
+    } else {
+      const cachedFavorites = getCachedFavorites(blid);
+      if (cachedFavorites.length) {
+        base.favorites = cachedFavorites;
+        base.favorites_error = cloudResult.error
+          ? `Could not refresh rooms from iRobot cloud (${cloudResult.error}) — showing last loaded list.`
+          : "Showing last loaded rooms — iRobot cloud did not return an updated list.";
+      }
+    }
+
+    base.cycle_label = formatMissionJobLabel(base.phase, base.cycle, missionCommand, regionIndex);
+    base.time_remaining_label = formatMissionTimeRemaining(mission, missionCommand, regionIndex);
+    base.status_label = formatMissionStatus(base.phase, base.cycle, base.cycle_label);
+
+    if (!base.favorites.length) {
+      if (cloudResult.error) {
+        base.favorites_error = `Could not load rooms from iRobot cloud: ${cloudResult.error}`;
+      } else if (hasCloudAccount(settings)) {
+        base.favorites_error =
+          "No saved favorites found. Smart Map rooms are loaded from iRobot cloud when your account is configured.";
+      } else {
+        base.favorites_error = "Add your iRobot account in Settings to load Smart Map rooms from iRobot cloud.";
+      }
+    }
+
     return base;
   } catch (error) {
     base.error = error instanceof Error ? error.message : String(error);
@@ -1055,7 +1658,7 @@ export async function runRobotFavorite(settings: RobotSettings, favoriteId: stri
   }
 
   await withRobot(settings, async (robot) => {
-    const command = await readFavoriteCommand(robot, trimmedId);
+    const command = await readFavoriteCommand(robot, trimmedId, settings);
     await robot.cleanRoom(command);
   });
   return { ok: true };
@@ -1086,10 +1689,6 @@ export async function runRobotAction(
     const snapshot = await readMissionSnapshot(robot);
     return { ok: true, ...formatMissionState(snapshot.mission) };
   });
-}
-
-export async function getRobotSchedule(settings: RobotSettings): Promise<unknown> {
-  return withRobot(settings, async (robot) => robot.getWeek());
 }
 
 export async function getRobotPreferences(settings: RobotSettings): Promise<unknown> {
@@ -1152,11 +1751,70 @@ async function probeHttpGet(
   }
 }
 
+type AwsCredentials = {
+  AccessKeyId: string;
+  SecretKey: string;
+  SessionToken: string;
+};
+
 type IrobotEndpoints = {
   apiKey: string;
   gigyaBase: string;
   httpBase: string;
+  httpBaseAuth: string;
+  awsRegion: string;
+  iotHost: string;
 };
+
+function signAwsRequest(key: string | Buffer, message: string): Buffer {
+  return createHmac("sha256", key).update(message).digest();
+}
+
+function getAwsSignatureKey(secretKey: string, dateStamp: string, region: string, service: string): Buffer {
+  const kDate = signAwsRequest(Buffer.from(`AWS4${secretKey}`), dateStamp);
+  const kRegion = signAwsRequest(kDate, region);
+  const kService = signAwsRequest(kRegion, service);
+  return signAwsRequest(kService, "aws4_request");
+}
+
+async function awsSignedGet(
+  host: string,
+  uri: string,
+  query: string,
+  credentials: AwsCredentials,
+  region: string,
+): Promise<Response> {
+  const method = "GET";
+  const amzDate = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const dateStamp = amzDate.slice(0, 8);
+  const canonicalHeaders =
+    `host:${host}\n` + `x-amz-date:${amzDate}\n` + `x-amz-security-token:${credentials.SessionToken}\n`;
+  const signedHeaders = "host;x-amz-date;x-amz-security-token";
+  const payloadHash = createHash("sha256").update("").digest("hex");
+  const canonicalRequest = [method, uri, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const algorithm = "AWS4-HMAC-SHA256";
+  const credentialScope = `${dateStamp}/${region}/execute-api/aws4_request`;
+  const stringToSign = [
+    algorithm,
+    amzDate,
+    credentialScope,
+    createHash("sha256").update(canonicalRequest).digest("hex"),
+  ].join("\n");
+  const signingKey = getAwsSignatureKey(credentials.SecretKey, dateStamp, region, "execute-api");
+  const signature = createHmac("sha256", signingKey).update(stringToSign).digest("hex");
+  const authorization = `${algorithm} Credential=${credentials.AccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const url = `https://${host}${uri}${query ? `?${query}` : ""}`;
+
+  return fetch(url, {
+    signal: AbortSignal.timeout(CLOUD_API_TIMEOUT_MS),
+    headers: {
+      Authorization: authorization,
+      "x-amz-date": amzDate,
+      "x-amz-security-token": credentials.SessionToken,
+      Connection: "close",
+    },
+  });
+}
 
 async function discoverIrobotEndpoints(): Promise<IrobotEndpoints> {
   const response = await fetch(IROBOT_DISCOVERY_URL, {
@@ -1175,9 +1833,13 @@ async function discoverIrobotEndpoints(): Promise<IrobotEndpoints> {
   const gigyaBase =
     process.env.GIGYA_BASE ?? (datacenter ? `https://accounts.${datacenter}` : "https://accounts.us1.gigya.com");
 
+  const deploymentKeys = Object.keys(deployments).sort().reverse();
+  const primaryDeployment =
+    deploymentKeys.map((key) => deployments[key]).find((deployment) => deployment && typeof deployment === "object") ??
+    null;
+
   let httpBase = process.env.IROBOT_HTTP_BASE ?? "";
   if (!httpBase) {
-    const deploymentKeys = Object.keys(deployments).sort().reverse();
     for (const key of deploymentKeys) {
       const candidate = deployments[key]?.httpBase;
       if (typeof candidate === "string" && candidate.trim()) {
@@ -1190,14 +1852,23 @@ async function discoverIrobotEndpoints(): Promise<IrobotEndpoints> {
     httpBase = typeof body.httpBase === "string" ? body.httpBase : "https://unauth2.prod.iot.irobotapi.com";
   }
 
+  const httpBaseAuth =
+    process.env.IROBOT_HTTP_BASE_AUTH ??
+    (typeof primaryDeployment?.httpBaseAuth === "string" ? primaryDeployment.httpBaseAuth : httpBase);
+  const awsRegion =
+    process.env.IROBOT_AWS_REGION ??
+    (typeof primaryDeployment?.awsRegion === "string" ? primaryDeployment.awsRegion : "us-east-1");
+  const iotHost = new URL(httpBaseAuth).host;
+
   if (!apiKey) {
     throw new Error("No Gigya API key in iRobot discovery response");
   }
 
-  return { apiKey, gigyaBase, httpBase };
+  return { apiKey, gigyaBase, httpBase, httpBaseAuth, awsRegion, iotHost };
 }
 
 type CloudLoginBody = {
+  credentials?: AwsCredentials;
   robots?: Record<
     string,
     {
@@ -1212,7 +1883,11 @@ type CloudLoginBody = {
 async function loginIrobotCloud(
   username: string,
   password: string,
-): Promise<{ endpoints: IrobotEndpoints; robots: Record<string, NonNullable<CloudLoginBody["robots"]>[string]> }> {
+): Promise<{
+  endpoints: IrobotEndpoints;
+  credentials: AwsCredentials;
+  robots: Record<string, NonNullable<CloudLoginBody["robots"]>[string]>;
+}> {
   const endpoints = await discoverIrobotEndpoints();
   const gigyaForm = new URLSearchParams({
     apiKey: endpoints.apiKey,
@@ -1259,11 +1934,59 @@ async function loginIrobotCloud(
     }),
   });
   const irobotBody = (await irobotResponse.json()) as CloudLoginBody;
-  if (!irobotResponse.ok || !irobotBody.robots) {
+  const credentials = irobotBody.credentials;
+  if (!irobotResponse.ok || !irobotBody.robots || !credentials?.AccessKeyId || !credentials.SecretKey || !credentials.SessionToken) {
     throw new Error("iRobot cloud login failed — no robots returned");
   }
 
-  return { endpoints, robots: irobotBody.robots };
+  return { endpoints, credentials, robots: irobotBody.robots };
+}
+
+async function fetchCloudPmaps(settings: RobotSettings): Promise<unknown[]> {
+  const result = await fetchCloudPmapsResult(settings);
+  if (!result.ok) {
+    throw new Error(result.error);
+  }
+  return result.pmaps;
+}
+
+async function fetchCloudPmapsResult(settings: RobotSettings): Promise<CloudPmapsResult> {
+  const blid = settings.blid.trim();
+  if (!blid || !hasCloudAccount(settings)) {
+    return { ok: true, pmaps: [], error: null };
+  }
+
+  try {
+    const login = await loginIrobotCloud(settings.irobot_username, settings.irobot_password);
+    const response = await awsSignedGet(
+      login.endpoints.iotHost,
+      `/v1/${blid}/pmaps`,
+      "activeDetails=2",
+      login.credentials,
+      login.endpoints.awsRegion,
+    );
+    if (!response.ok) {
+      return {
+        ok: false,
+        pmaps: [],
+        error: `iRobot cloud pmap request failed (HTTP ${response.status})`,
+      };
+    }
+
+    const body = (await response.json()) as unknown;
+    return { ok: true, pmaps: Array.isArray(body) ? body : [], error: null };
+  } catch (error) {
+    return {
+      ok: false,
+      pmaps: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function fetchCloudCleanables(settings: RobotSettings): Promise<RoombaFavorite[]> {
+  const pmaps = await fetchCloudPmaps(settings);
+  return parseRoomsFromCloudPmaps(pmaps);
 }
 
 function mapCloudRobots(

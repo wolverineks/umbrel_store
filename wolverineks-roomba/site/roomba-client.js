@@ -6,26 +6,30 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.formatPhaseLabel = formatPhaseLabel;
 exports.formatJobLabel = formatJobLabel;
 exports.formatCycleLabel = formatCycleLabel;
-exports.formatScheduleCycleLabel = formatScheduleCycleLabel;
 exports.formatMissionStatus = formatMissionStatus;
+exports.buildCloudRegionIndex = buildCloudRegionIndex;
+exports.formatMissionJobLabel = formatMissionJobLabel;
+exports.formatMissionTimeRemaining = formatMissionTimeRemaining;
 exports.getLastError = getLastError;
 exports.isMutexBusy = isMutexBusy;
 exports.isDiscoveryBusy = isDiscoveryBusy;
 exports.withRobot = withRobot;
 exports.discoverRobots = discoverRobots;
+exports.getRobotMaintenance = getRobotMaintenance;
 exports.parseFavoritesFromPmaps = parseFavoritesFromPmaps;
+exports.parseRoomsFromCloudPmaps = parseRoomsFromCloudPmaps;
 exports.fetchCredentialsFromCloud = fetchCredentialsFromCloud;
 exports.testConnection = testConnection;
 exports.getRobotStatus = getRobotStatus;
 exports.runRobotFavorite = runRobotFavorite;
 exports.runRobotAction = runRobotAction;
-exports.getRobotSchedule = getRobotSchedule;
 exports.getRobotPreferences = getRobotPreferences;
 exports.checkMqttReachable = checkMqttReachable;
 exports.buildRoombaDiagnostics = buildRoombaDiagnostics;
 exports.buildIrobotDiagnostics = buildIrobotDiagnostics;
 exports.getDorita980Version = getDorita980Version;
 const node_child_process_1 = require("node:child_process");
+const node_crypto_1 = require("node:crypto");
 const node_dgram_1 = require("node:dgram");
 const node_net_1 = require("node:net");
 const node_util_1 = require("node:util");
@@ -34,13 +38,25 @@ const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
 const CONNECT_TIMEOUT_MS = 15_000;
 const ROBOT_READ_TIMEOUT_MS = 10_000;
 const ROBOT_PMAPS_TIMEOUT_MS = 15_000;
-const ROBOT_OPERATION_TIMEOUT_MS = 35_000;
+const ROBOT_DASHBOARD_TIMEOUT_MS = 10_000;
+const ROBOT_MAINTENANCE_TIMEOUT_MS = 12_000;
+const CLOUD_API_TIMEOUT_MS = 12_000;
+const ROBOT_OPERATION_TIMEOUT_MS = 45_000;
 const ROBOT_DISCONNECT_TIMEOUT_MS = 4_000;
 const MQTT_PORT = 8883;
 const DISCOVERY_PORT = 5678;
 const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
 const DISCOVERY_TIMEOUT_MS = 4_000;
 const SUBNET_SCAN_TIMEOUT_MS = 10_000;
+const favoritesCache = new Map();
+function cacheFavorites(blid, favorites) {
+    if (favorites.length) {
+        favoritesCache.set(blid, favorites);
+    }
+}
+function getCachedFavorites(blid) {
+    return favoritesCache.get(blid) ?? [];
+}
 const PHASE_LABELS = {
     "": "Idle",
     charge: "Charging on dock",
@@ -87,11 +103,6 @@ const JOB_WHEN_IDLE = {
     cancelled: "Cancelled",
     chargingerror: "Dock issue",
 };
-const SCHEDULE_CYCLE_LABELS = {
-    none: "Off",
-    start: "Scheduled clean",
-    clean: "Scheduled clean",
-};
 function formatPhaseLabel(phase) {
     const key = (phase ?? "").trim();
     if (!key)
@@ -124,17 +135,210 @@ function formatJobLabel(phase, cycle) {
 function formatCycleLabel(cycle) {
     return formatJobLabel(null, cycle);
 }
-function formatScheduleCycleLabel(cycle) {
-    const key = (cycle ?? "").trim() || "none";
-    return SCHEDULE_CYCLE_LABELS[key] ?? formatJobLabel(null, key === "none" ? "none" : key);
-}
-function formatMissionStatus(phase, cycle) {
-    const jobLabel = formatJobLabel(phase, cycle);
+function formatMissionStatus(phase, cycle, jobLabel) {
+    const resolvedJobLabel = jobLabel ?? formatJobLabel(phase, cycle);
     const phaseLabel = formatPhaseLabel(phase);
     const cycleKey = (cycle ?? "").trim() || "none";
     if (cycleKey === "none")
-        return `${jobLabel} — ${phaseLabel}`;
-    return `${jobLabel} — ${phaseLabel}`;
+        return `${resolvedJobLabel} — ${phaseLabel}`;
+    return `${resolvedJobLabel} — ${phaseLabel}`;
+}
+function parseCmdStr(cmdStr) {
+    try {
+        return JSON.parse(cmdStr.replace(/'/g, '"'));
+    }
+    catch {
+        return null;
+    }
+}
+function normalizeMissionCommandRegions(regions) {
+    if (!Array.isArray(regions))
+        return [];
+    return regions
+        .map((item) => asRecord(item))
+        .filter((item) => item !== null)
+        .map((item) => {
+        const params = asRecord(item.params);
+        return {
+            region_id: String(item.region_id ?? item.id ?? "").trim(),
+            region_name: String(item.region_name ?? item.name ?? "").trim(),
+            two_pass: params?.twoPass === true,
+        };
+    })
+        .filter((item) => item.region_id);
+}
+function missionCommandFromRecord(record) {
+    if (!record)
+        return null;
+    const regions = normalizeMissionCommandRegions(record.regions);
+    if (!regions.length)
+        return null;
+    return {
+        ordered: Boolean(record.ordered === 1 || record.ordered === true),
+        regions,
+    };
+}
+function missionCommandFromSchedule(cleanSchedule2) {
+    if (!Array.isArray(cleanSchedule2))
+        return null;
+    for (const item of cleanSchedule2) {
+        const entry = asRecord(item);
+        if (!entry || entry.enabled === false || typeof entry.cmdStr !== "string")
+            continue;
+        const parsed = parseCmdStr(entry.cmdStr);
+        const command = missionCommandFromRecord(parsed);
+        if (command)
+            return command;
+    }
+    return null;
+}
+function resolveActiveMissionCommand(mission, lastCommand, cleanSchedule2) {
+    const cycle = String(mission.cycle ?? "");
+    const phase = String(mission.phase ?? "");
+    if (cycle === "none" && !["run", "resume", "spot", "pause"].includes(phase)) {
+        return null;
+    }
+    const fromLast = missionCommandFromRecord(lastCommand);
+    if (fromLast)
+        return fromLast;
+    if (String(mission.initiator ?? "") === "schedule" || String(lastCommand.command ?? "") === "start") {
+        return missionCommandFromSchedule(cleanSchedule2);
+    }
+    return null;
+}
+function buildCloudRegionIndex(pmaps) {
+    const index = new Map();
+    if (!Array.isArray(pmaps))
+        return index;
+    for (const item of pmaps) {
+        const entry = asRecord(item);
+        if (!entry)
+            continue;
+        const details = asRecord(entry.active_pmapv_details);
+        const regions = Array.isArray(details?.regions) ? details.regions : [];
+        for (const regionValue of regions) {
+            const region = asRecord(regionValue);
+            if (!region)
+                continue;
+            const regionId = String(region.id ?? region.region_id ?? "").trim();
+            if (!regionId || index.has(regionId))
+                continue;
+            const estimates = Array.isArray(region.time_estimates) ? region.time_estimates : [];
+            let estimateSeconds = null;
+            for (const estimateValue of estimates) {
+                const estimate = asRecord(estimateValue);
+                const params = asRecord(estimate?.params);
+                if (estimate?.unit !== "seconds" || typeof estimate.estimate !== "number" || !params)
+                    continue;
+                if (params.twoPass === false) {
+                    estimateSeconds = estimate.estimate;
+                    break;
+                }
+            }
+            index.set(regionId, {
+                name: String(region.name ?? region.region_name ?? "").trim() || `Room ${regionId}`,
+                estimate_seconds: estimateSeconds,
+            });
+        }
+    }
+    return index;
+}
+function applyPhaseJobSuffix(base, phase) {
+    const phaseKey = (phase ?? "").trim();
+    if (phaseKey === "pause")
+        return `${base} — paused`;
+    if (phaseKey === "stop")
+        return `${base} — stopped`;
+    if (phaseKey === "stuck")
+        return `${base} — stuck`;
+    if (["hmPostMsn", "hmMidMsn", "hmUsrDock", "dock"].includes(phaseKey)) {
+        return `${base} — heading home`;
+    }
+    if (phaseKey === "evac")
+        return `${base} — emptying bin`;
+    if (phaseKey === "recharge")
+        return `${base} — recharging`;
+    return base;
+}
+function formatMissionJobLabel(phase, cycle, command, regionIndex) {
+    if (!command?.regions.length) {
+        return formatJobLabel(phase, cycle);
+    }
+    const names = command.regions.map((region) => {
+        if (region.region_name)
+            return region.region_name;
+        return regionIndex.get(region.region_id)?.name ?? `Room ${region.region_id}`;
+    });
+    let base;
+    if (names.length === 1) {
+        base = `Vacuuming: ${names[0]}`;
+    }
+    else if (command.ordered) {
+        base = `Vacuuming: ${names[0]}`;
+    }
+    else {
+        base = `Vacuuming: ${names.join(", ")}`;
+    }
+    return applyPhaseJobSuffix(base, phase);
+}
+function formatDurationLabel(totalSeconds) {
+    const seconds = Math.max(0, Math.round(totalSeconds));
+    if (seconds < 60)
+        return "<1 min left";
+    const minutes = Math.ceil(seconds / 60);
+    if (minutes < 60)
+        return `${minutes} min left`;
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    return remainder ? `${hours}h ${remainder}m left` : `${hours}h left`;
+}
+function formatMissionTimeRemaining(mission, command, regionIndex) {
+    const expireM = mission.expireM;
+    if (typeof expireM === "number" && expireM > 0) {
+        return formatDurationLabel(expireM * 60);
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const expireTm = mission.expireTm;
+    if (typeof expireTm === "number" && expireTm > now) {
+        return formatDurationLabel(expireTm - now);
+    }
+    if (!command?.regions.length)
+        return null;
+    const elapsed = typeof mission.mssnStrtTm === "number" && mission.mssnStrtTm > 0
+        ? Math.max(0, now - mission.mssnStrtTm)
+        : null;
+    if (elapsed === null)
+        return null;
+    const estimates = command.regions.map((region) => {
+        const fromIndex = regionIndex.get(region.region_id)?.estimate_seconds;
+        return fromIndex ?? null;
+    });
+    if (estimates.every((value) => value === null))
+        return null;
+    let remaining = 0;
+    if (command.ordered && command.regions.length > 1) {
+        let consumed = elapsed;
+        let foundCurrent = false;
+        for (let index = 0; index < command.regions.length; index += 1) {
+            const estimate = estimates[index] ?? 0;
+            if (!foundCurrent) {
+                if (consumed >= estimate) {
+                    consumed -= estimate;
+                    continue;
+                }
+                remaining += estimate - consumed;
+                foundCurrent = true;
+                continue;
+            }
+            remaining += estimate;
+        }
+    }
+    else {
+        remaining = estimates.reduce((sum, value) => sum + (value ?? 0), 0) - elapsed;
+    }
+    if (remaining <= 0)
+        return null;
+    return formatDurationLabel(remaining);
 }
 const IROBOT_DISCOVERY_URL = process.env.IROBOT_DISCOVERY_URL ??
     `https://disc-prod.iot.irobotapi.com/v1/discover/endpoints?country_code=${process.env.IROBOT_COUNTRY_CODE ?? "US"}`;
@@ -432,8 +636,137 @@ async function discoverRobots(robotIpHint = "") {
         releaseDiscoveryMutex();
     }
 }
+const DASHBOARD_EXTRA_FIELDS = ["pmaps", "softwareVer", "sku", "lastCommand", "cleanSchedule2"];
 async function readRobotState(robot) {
     return withTimeout(robot.getRobotState(["batPct", "cleanMissionStatus", "bin"]), ROBOT_READ_TIMEOUT_MS, "Robot status");
+}
+async function readDashboardExtras(robot) {
+    return readOptionalRobotValue("Robot maps and mission", ROBOT_DASHBOARD_TIMEOUT_MS, () => robot.getRobotState([...DASHBOARD_EXTRA_FIELDS]));
+}
+const MAINTENANCE_STATE_FIELDS = [
+    "bbrun",
+    "bbmssn",
+    "bbchg",
+    "batInfo",
+    "runtimeStats",
+    "bin",
+    "batPct",
+];
+const MAINTENANCE_INTERVALS = [
+    { id: "filter", name: "Filter", detail: "Replace the high-efficiency filter", hours: 166 },
+    { id: "edge_brush", name: "Edge-sweeping brush", detail: "Clean or replace the side brush", hours: 166 },
+    { id: "rollers", name: "Multi-surface brushes", detail: "Clean the rubber brush rollers", hours: 416 },
+];
+function readNumberField(record, key) {
+    if (!record)
+        return null;
+    const value = record[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function formatRuntimeHours(hours) {
+    const wholeHours = Math.floor(hours);
+    const minutes = Math.round((hours - wholeHours) * 60);
+    if (wholeHours <= 0)
+        return `${minutes} min`;
+    if (minutes <= 0)
+        return `${wholeHours} hr`;
+    return `${wholeHours} hr ${minutes} min`;
+}
+function maintenanceStatus(percentUsed) {
+    if (percentUsed >= 100)
+        return { status: "replace", status_label: "Replace now" };
+    if (percentUsed >= 80)
+        return { status: "due_soon", status_label: "Due soon" };
+    return { status: "ok", status_label: "OK" };
+}
+function buildMaintenanceItems(runtimeHours) {
+    return MAINTENANCE_INTERVALS.map((item) => {
+        const percentUsed = Math.min(100, Math.round((runtimeHours / item.hours) * 100));
+        const { status, status_label } = maintenanceStatus(percentUsed);
+        return {
+            id: item.id,
+            name: item.name,
+            detail: item.detail,
+            hours_used: Math.round(runtimeHours),
+            hours_recommended: item.hours,
+            percent_used: percentUsed,
+            status,
+            status_label,
+        };
+    });
+}
+async function readMaintenanceState(robot) {
+    return withTimeout(robot.getRobotState([...MAINTENANCE_STATE_FIELDS]), ROBOT_MAINTENANCE_TIMEOUT_MS, "Robot maintenance");
+}
+async function getRobotMaintenance(settings) {
+    const base = {
+        connected: false,
+        configured: isConfigured(settings),
+        error: null,
+        last_sync: new Date().toISOString(),
+        runtime_hours: null,
+        runtime_label: null,
+        area_sqft: null,
+        missions_total: null,
+        missions_completed: null,
+        missions_canceled: null,
+        stuck_events: null,
+        charge_cycles: null,
+        bin_full: null,
+        bin_present: null,
+        battery_percent: null,
+        items: [],
+    };
+    if (!base.configured) {
+        base.error = "Robot is not configured yet";
+        return base;
+    }
+    try {
+        const state = await withRobot(settings, async (robot) => readMaintenanceState(robot));
+        const bbrun = asRecord(state.bbrun);
+        const bbmssn = asRecord(state.bbmssn);
+        const bbchg = asRecord(state.bbchg);
+        const batInfo = asRecord(state.batInfo);
+        const runtimeStats = asRecord(state.runtimeStats);
+        const bin = asRecord(state.bin);
+        const runHours = readNumberField(bbrun, "hr");
+        const runMinutes = readNumberField(bbrun, "min");
+        const runtimeHours = runHours === null && runMinutes === null
+            ? null
+            : (runHours ?? 0) + (runMinutes ?? 0) / 60;
+        base.connected = true;
+        base.runtime_hours = runtimeHours;
+        base.runtime_label = runtimeHours === null ? null : formatRuntimeHours(runtimeHours);
+        base.area_sqft =
+            readNumberField(runtimeStats, "sqft") ??
+                readNumberField(bbrun, "sqft");
+        base.missions_total = readNumberField(bbmssn, "nMssn");
+        base.missions_completed = readNumberField(bbmssn, "nMssnOk");
+        base.missions_canceled = readNumberField(bbmssn, "nMssnC");
+        base.stuck_events = readNumberField(bbrun, "nStuck");
+        base.charge_cycles = readNumberField(bbchg, "nChgOk") ?? readNumberField(batInfo, "cCount");
+        base.bin_full = typeof bin?.full === "boolean" ? bin.full : null;
+        base.bin_present = typeof bin?.present === "boolean" ? bin.present : null;
+        base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
+        base.items = runtimeHours === null ? [] : buildMaintenanceItems(runtimeHours);
+        if (base.bin_full) {
+            base.items.unshift({
+                id: "bin",
+                name: "Dust bin",
+                detail: "Empty the bin and wipe the bin sensors",
+                hours_used: 0,
+                hours_recommended: 0,
+                percent_used: 100,
+                status: "replace",
+                status_label: "Empty now",
+            });
+        }
+        return base;
+    }
+    catch (error) {
+        base.error = error instanceof Error ? error.message : String(error);
+        return base;
+    }
 }
 const COMMAND_SETTLE_MS = 2_500;
 async function readMissionSnapshot(robot) {
@@ -563,12 +896,33 @@ function summarizeRegions(regions) {
     const labels = regions.map((region) => region.region_name || region.region_id);
     return labels.join(", ");
 }
+function collectFavoriteLists(entry) {
+    const lists = [];
+    const activeDetails = asRecord(entry.active_pmapv_details);
+    const activePmapv = activeDetails ? asRecord(activeDetails.active_pmapv) : null;
+    const sources = [
+        entry,
+        activeDetails,
+        activePmapv,
+        asRecord(entry.active_pmapv),
+        asRecord(entry.pmapv),
+        asRecord(entry.user_pmapv),
+    ].filter((source) => source !== null);
+    for (const source of sources) {
+        for (const key of ["smart_clean_favs", "smartCleanFavs", "favorites", "favs", "saved_favorites"]) {
+            const list = source[key];
+            if (Array.isArray(list))
+                lists.push(list);
+        }
+    }
+    return lists;
+}
 function extractFavoritesFromPmapEntry(entry, fallbackPmapId = "") {
     const pmapId = String(entry.pmap_id ?? fallbackPmapId ?? "").trim();
     const activeDetails = asRecord(entry.active_pmapv_details);
     const activePmapv = activeDetails ? asRecord(activeDetails.active_pmapv) : null;
     const defaultPmapVersion = String(entry.user_pmapv_id ?? entry.active_pmapv_id ?? activePmapv?.user_pmapv_id ?? "").trim();
-    const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
+    const favoriteLists = collectFavoriteLists(entry);
     for (const list of favoriteLists) {
         if (!Array.isArray(list))
             continue;
@@ -596,6 +950,29 @@ function extractFavoritesFromPmapEntry(entry, fallbackPmapId = "") {
     }
     return [];
 }
+function deepFindFavoriteLists(value, depth = 0) {
+    if (depth > 6 || value == null)
+        return [];
+    const lists = [];
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            lists.push(...deepFindFavoriteLists(item, depth + 1));
+        }
+        return lists;
+    }
+    const record = asRecord(value);
+    if (!record)
+        return lists;
+    for (const key of ["smart_clean_favs", "smartCleanFavs", "favorites", "favs", "saved_favorites"]) {
+        const list = record[key];
+        if (Array.isArray(list) && list.length)
+            lists.push(list);
+    }
+    for (const child of Object.values(record)) {
+        lists.push(...deepFindFavoriteLists(child, depth + 1));
+    }
+    return lists;
+}
 function parseFavoritesFromPmaps(pmaps) {
     const favorites = [];
     const seen = new Set();
@@ -615,12 +992,21 @@ function parseFavoritesFromPmaps(pmaps) {
                 continue;
             addFavorites(extractFavoritesFromPmapEntry(entry));
         }
+        if (!favorites.length) {
+            for (const list of deepFindFavoriteLists(pmaps)) {
+                if (!Array.isArray(list))
+                    continue;
+                addFavorites(extractFavoritesFromPmapEntry({
+                    smart_clean_favs: list,
+                }));
+            }
+        }
         return favorites;
     }
     const root = asRecord(pmaps);
     if (!root)
         return favorites;
-    if (root.smart_clean_favs || root.smartCleanFavs || root.favorites || root.favs) {
+    if (collectFavoriteLists(root).length) {
         addFavorites(extractFavoritesFromPmapEntry(root));
         return favorites;
     }
@@ -630,7 +1016,66 @@ function parseFavoritesFromPmaps(pmaps) {
             continue;
         addFavorites(extractFavoritesFromPmapEntry(entry, pmapId));
     }
+    if (!favorites.length) {
+        for (const list of deepFindFavoriteLists(root)) {
+            if (!Array.isArray(list))
+                continue;
+            addFavorites(extractFavoritesFromPmapEntry({
+                smart_clean_favs: list,
+            }));
+        }
+    }
     return favorites;
+}
+function parseRoomsFromCloudPmaps(pmaps) {
+    if (!Array.isArray(pmaps))
+        return [];
+    const rooms = [];
+    for (const item of pmaps) {
+        const entry = asRecord(item);
+        if (!entry)
+            continue;
+        const pmapId = String(entry.pmap_id ?? "").trim();
+        const userPmapvId = String(entry.user_pmapv_id ?? entry.active_pmapv_id ?? "").trim();
+        const details = asRecord(entry.active_pmapv_details);
+        const regions = Array.isArray(details?.regions) ? details.regions : [];
+        if (!pmapId || !userPmapvId || !regions.length)
+            continue;
+        for (const regionValue of regions) {
+            const region = asRecord(regionValue);
+            if (!region)
+                continue;
+            const regionId = String(region.id ?? region.region_id ?? "").trim();
+            const regionName = String(region.name ?? region.region_name ?? "").trim() || `Room ${regionId}`;
+            const regionType = String(region.region_type ?? "room").trim();
+            if (!regionId)
+                continue;
+            const commandRegions = [
+                {
+                    region_id: regionId,
+                    region_name: regionName,
+                    region_type: regionType,
+                    type: "rid",
+                },
+            ];
+            rooms.push({
+                id: `room:${pmapId}:${regionId}`,
+                name: regionName,
+                pmap_id: pmapId,
+                user_pmapv_id: userPmapvId,
+                ordered: false,
+                region_count: 1,
+                regions_summary: regionName,
+                runnable: true,
+                source: "cloud",
+                command_regions: commandRegions,
+            });
+        }
+    }
+    return rooms;
+}
+function hasCloudAccount(settings) {
+    return Boolean(settings.irobot_username.trim() && settings.irobot_password.trim());
 }
 function buildFavoriteCommand(favorite, regions) {
     return {
@@ -645,42 +1090,55 @@ function buildFavoriteCommand(favorite, regions) {
         })),
     };
 }
-async function readFavoriteCommand(robot, favoriteId) {
-    const snapshot = await withTimeout(robot.getRobotState(["pmaps"]), ROBOT_PMAPS_TIMEOUT_MS, "Robot favorites");
-    const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
-    const favorite = favorites.find((entry) => entry.id === favoriteId);
-    if (!favorite?.runnable || !favorite.pmap_id) {
-        throw new Error("Favorite not found on the robot");
-    }
-    const pmapState = asRecord(snapshot.pmaps);
+async function readFavoriteCommand(robot, favoriteId, settings) {
+    let favorite;
     let regions = [];
-    const pmapLists = Array.isArray(snapshot.pmaps)
-        ? snapshot.pmaps.map((item) => asRecord(item)).filter((item) => item !== null)
-        : pmapState
-            ? [pmapState]
-            : [];
-    for (const entry of pmapLists) {
-        if (String(entry.pmap_id ?? "") !== favorite.pmap_id)
-            continue;
-        const favoriteLists = [entry.smart_clean_favs, entry.smartCleanFavs, entry.favorites, entry.favs];
-        for (const list of favoriteLists) {
-            if (!Array.isArray(list))
+    if (favoriteId.startsWith("room:") && settings && hasCloudAccount(settings)) {
+        const cloudRooms = await fetchCloudCleanables(settings);
+        favorite = cloudRooms.find((entry) => entry.id === favoriteId);
+        regions = favorite?.command_regions ?? [];
+    }
+    if (!favorite) {
+        const snapshot = await withTimeout(robot.getRobotState(["pmaps"]), ROBOT_PMAPS_TIMEOUT_MS, "Robot favorites");
+        const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
+        favorite = favorites.find((entry) => entry.id === favoriteId);
+        if (!favorite?.runnable || !favorite.pmap_id) {
+            throw new Error("Favorite not found on the robot");
+        }
+        const pmapState = asRecord(snapshot.pmaps);
+        const pmapLists = Array.isArray(snapshot.pmaps)
+            ? snapshot.pmaps.map((item) => asRecord(item)).filter((item) => item !== null)
+            : pmapState
+                ? [pmapState]
+                : [];
+        for (const entry of pmapLists) {
+            if (String(entry.pmap_id ?? "") !== favorite.pmap_id)
                 continue;
-            for (const [index, item] of list.entries()) {
-                const record = asRecord(item);
-                if (!record || favoriteIdentifier(record, index) !== favorite.id)
+            for (const list of collectFavoriteLists(entry)) {
+                if (!Array.isArray(list))
                     continue;
-                regions = normalizeFavoriteRegions(record.regions);
-                break;
+                for (const [index, item] of list.entries()) {
+                    const record = asRecord(item);
+                    if (!record || favoriteIdentifier(record, index) !== favorite.id)
+                        continue;
+                    regions = normalizeFavoriteRegions(record.regions);
+                    break;
+                }
+                if (regions.length)
+                    break;
             }
             if (regions.length)
                 break;
         }
-        if (regions.length)
-            break;
+    }
+    if (!favorite?.runnable) {
+        throw new Error("Favorite not found on the robot");
     }
     if (!regions.length) {
         throw new Error("Favorite has no rooms configured");
+    }
+    if (!favorite.pmap_id) {
+        throw new Error("Favorite is missing map information");
     }
     return buildFavoriteCommand(favorite, regions);
 }
@@ -750,6 +1208,7 @@ async function getRobotStatus(settings) {
         phase_label: null,
         cycle_label: null,
         status_label: null,
+        time_remaining_label: null,
         bin_full: null,
         bin_present: null,
         docked: null,
@@ -766,36 +1225,79 @@ async function getRobotStatus(settings) {
         base.error = "Robot is not configured yet";
         return base;
     }
+    const blid = settings.blid.trim();
+    const cloudTask = hasCloudAccount(settings) ? fetchCloudPmapsResult(settings) : null;
     try {
-        const snapshot = await withRobot(settings, async (robot) => {
-            const state = await readRobotState(robot);
-            const pmapState = await readOptionalRobotValue("Robot favorites", ROBOT_PMAPS_TIMEOUT_MS, () => robot.getRobotState(["pmaps"]));
-            return { state, pmapState };
-        });
+        const [snapshot, cloudResult] = await Promise.all([
+            withRobot(settings, async (robot) => {
+                const state = await readRobotState(robot);
+                const extras = await readDashboardExtras(robot);
+                return { state, extras };
+            }),
+            cloudTask ?? Promise.resolve({ ok: true, pmaps: [], error: null }),
+        ]);
         const state = snapshot.state;
+        const extras = snapshot.extras ?? {};
         const mission = (state.cleanMissionStatus ?? {});
         const bin = (state.bin ?? {});
-        const lastCommand = (state.lastCommand ?? {});
+        const lastCommand = (extras.lastCommand ?? {});
         base.connected = true;
         base.battery_percent = typeof state.batPct === "number" ? state.batPct : null;
         base.phase = typeof mission.phase === "string" ? mission.phase : null;
         base.cycle = typeof mission.cycle === "string" ? mission.cycle : null;
         base.phase_label = formatPhaseLabel(base.phase);
-        base.cycle_label = formatJobLabel(base.phase, base.cycle);
-        base.status_label = formatMissionStatus(base.phase, base.cycle);
+        const missionCommand = resolveActiveMissionCommand(mission, lastCommand, extras.cleanSchedule2);
+        const regionIndex = buildCloudRegionIndex(cloudResult.pmaps);
         base.bin_full = typeof bin.full === "boolean" ? bin.full : null;
         base.bin_present = typeof bin.present === "boolean" ? bin.present : null;
         base.docked = base.phase === "charge" || base.phase === "dock";
         base.sqft = typeof mission.sqft === "number" ? mission.sqft : null;
         base.mission_minutes = typeof mission.mssnM === "number" ? mission.mssnM : null;
         base.last_command = typeof lastCommand.command === "string" ? lastCommand.command : null;
-        base.software_version = typeof state.softwareVer === "string" ? state.softwareVer : null;
-        base.sku = typeof state.sku === "string" ? state.sku : null;
-        if (snapshot.pmapState && typeof snapshot.pmapState.pmaps !== "undefined") {
-            base.favorites = parseFavoritesFromPmaps(snapshot.pmapState.pmaps);
+        base.software_version =
+            typeof extras.softwareVer === "string"
+                ? extras.softwareVer
+                : typeof state.softwareVer === "string"
+                    ? state.softwareVer
+                    : null;
+        base.sku =
+            typeof extras.sku === "string" ? extras.sku : typeof state.sku === "string" ? state.sku : null;
+        if (snapshot.extras && typeof extras.pmaps !== "undefined") {
+            base.favorites = parseFavoritesFromPmaps(extras.pmaps);
+        }
+        if (!base.favorites.length) {
+            const cloudRooms = parseRoomsFromCloudPmaps(cloudResult.pmaps);
+            if (cloudRooms.length) {
+                base.favorites = cloudRooms;
+                base.favorites_error = null;
+            }
+        }
+        if (base.favorites.length) {
+            cacheFavorites(blid, base.favorites);
         }
         else {
-            base.favorites_error = "Favorites were not returned by the robot on this connection";
+            const cachedFavorites = getCachedFavorites(blid);
+            if (cachedFavorites.length) {
+                base.favorites = cachedFavorites;
+                base.favorites_error = cloudResult.error
+                    ? `Could not refresh rooms from iRobot cloud (${cloudResult.error}) — showing last loaded list.`
+                    : "Showing last loaded rooms — iRobot cloud did not return an updated list.";
+            }
+        }
+        base.cycle_label = formatMissionJobLabel(base.phase, base.cycle, missionCommand, regionIndex);
+        base.time_remaining_label = formatMissionTimeRemaining(mission, missionCommand, regionIndex);
+        base.status_label = formatMissionStatus(base.phase, base.cycle, base.cycle_label);
+        if (!base.favorites.length) {
+            if (cloudResult.error) {
+                base.favorites_error = `Could not load rooms from iRobot cloud: ${cloudResult.error}`;
+            }
+            else if (hasCloudAccount(settings)) {
+                base.favorites_error =
+                    "No saved favorites found. Smart Map rooms are loaded from iRobot cloud when your account is configured.";
+            }
+            else {
+                base.favorites_error = "Add your iRobot account in Settings to load Smart Map rooms from iRobot cloud.";
+            }
         }
         return base;
     }
@@ -810,7 +1312,7 @@ async function runRobotFavorite(settings, favoriteId) {
         throw new Error("favorite_id is required");
     }
     await withRobot(settings, async (robot) => {
-        const command = await readFavoriteCommand(robot, trimmedId);
+        const command = await readFavoriteCommand(robot, trimmedId, settings);
         await robot.cleanRoom(command);
     });
     return { ok: true };
@@ -836,9 +1338,6 @@ async function runRobotAction(settings, action) {
         const snapshot = await readMissionSnapshot(robot);
         return { ok: true, ...formatMissionState(snapshot.mission) };
     });
-}
-async function getRobotSchedule(settings) {
-    return withRobot(settings, async (robot) => robot.getWeek());
 }
 async function getRobotPreferences(settings) {
     return withRobot(settings, async (robot) => robot.getPreferences());
@@ -895,6 +1394,45 @@ async function probeHttpGet(url, timeoutMs = HTTP_PROBE_TIMEOUT_MS) {
         };
     }
 }
+function signAwsRequest(key, message) {
+    return (0, node_crypto_1.createHmac)("sha256", key).update(message).digest();
+}
+function getAwsSignatureKey(secretKey, dateStamp, region, service) {
+    const kDate = signAwsRequest(Buffer.from(`AWS4${secretKey}`), dateStamp);
+    const kRegion = signAwsRequest(kDate, region);
+    const kService = signAwsRequest(kRegion, service);
+    return signAwsRequest(kService, "aws4_request");
+}
+async function awsSignedGet(host, uri, query, credentials, region) {
+    const method = "GET";
+    const amzDate = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+    const dateStamp = amzDate.slice(0, 8);
+    const canonicalHeaders = `host:${host}\n` + `x-amz-date:${amzDate}\n` + `x-amz-security-token:${credentials.SessionToken}\n`;
+    const signedHeaders = "host;x-amz-date;x-amz-security-token";
+    const payloadHash = (0, node_crypto_1.createHash)("sha256").update("").digest("hex");
+    const canonicalRequest = [method, uri, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+    const algorithm = "AWS4-HMAC-SHA256";
+    const credentialScope = `${dateStamp}/${region}/execute-api/aws4_request`;
+    const stringToSign = [
+        algorithm,
+        amzDate,
+        credentialScope,
+        (0, node_crypto_1.createHash)("sha256").update(canonicalRequest).digest("hex"),
+    ].join("\n");
+    const signingKey = getAwsSignatureKey(credentials.SecretKey, dateStamp, region, "execute-api");
+    const signature = (0, node_crypto_1.createHmac)("sha256", signingKey).update(stringToSign).digest("hex");
+    const authorization = `${algorithm} Credential=${credentials.AccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    const url = `https://${host}${uri}${query ? `?${query}` : ""}`;
+    return fetch(url, {
+        signal: AbortSignal.timeout(CLOUD_API_TIMEOUT_MS),
+        headers: {
+            Authorization: authorization,
+            "x-amz-date": amzDate,
+            "x-amz-security-token": credentials.SessionToken,
+            Connection: "close",
+        },
+    });
+}
 async function discoverIrobotEndpoints() {
     const response = await fetch(IROBOT_DISCOVERY_URL, {
         signal: AbortSignal.timeout(HTTP_PROBE_TIMEOUT_MS),
@@ -909,9 +1447,11 @@ async function discoverIrobotEndpoints() {
     const apiKey = String(process.env.GIGYA_API_KEY ?? gigya.api_key ?? "");
     const datacenter = String(gigya.datacenter_domain ?? "");
     const gigyaBase = process.env.GIGYA_BASE ?? (datacenter ? `https://accounts.${datacenter}` : "https://accounts.us1.gigya.com");
+    const deploymentKeys = Object.keys(deployments).sort().reverse();
+    const primaryDeployment = deploymentKeys.map((key) => deployments[key]).find((deployment) => deployment && typeof deployment === "object") ??
+        null;
     let httpBase = process.env.IROBOT_HTTP_BASE ?? "";
     if (!httpBase) {
-        const deploymentKeys = Object.keys(deployments).sort().reverse();
         for (const key of deploymentKeys) {
             const candidate = deployments[key]?.httpBase;
             if (typeof candidate === "string" && candidate.trim()) {
@@ -923,10 +1463,15 @@ async function discoverIrobotEndpoints() {
     if (!httpBase) {
         httpBase = typeof body.httpBase === "string" ? body.httpBase : "https://unauth2.prod.iot.irobotapi.com";
     }
+    const httpBaseAuth = process.env.IROBOT_HTTP_BASE_AUTH ??
+        (typeof primaryDeployment?.httpBaseAuth === "string" ? primaryDeployment.httpBaseAuth : httpBase);
+    const awsRegion = process.env.IROBOT_AWS_REGION ??
+        (typeof primaryDeployment?.awsRegion === "string" ? primaryDeployment.awsRegion : "us-east-1");
+    const iotHost = new URL(httpBaseAuth).host;
     if (!apiKey) {
         throw new Error("No Gigya API key in iRobot discovery response");
     }
-    return { apiKey, gigyaBase, httpBase };
+    return { apiKey, gigyaBase, httpBase, httpBaseAuth, awsRegion, iotHost };
 }
 async function loginIrobotCloud(username, password) {
     const endpoints = await discoverIrobotEndpoints();
@@ -972,10 +1517,48 @@ async function loginIrobotCloud(username, password) {
         }),
     });
     const irobotBody = (await irobotResponse.json());
-    if (!irobotResponse.ok || !irobotBody.robots) {
+    const credentials = irobotBody.credentials;
+    if (!irobotResponse.ok || !irobotBody.robots || !credentials?.AccessKeyId || !credentials.SecretKey || !credentials.SessionToken) {
         throw new Error("iRobot cloud login failed — no robots returned");
     }
-    return { endpoints, robots: irobotBody.robots };
+    return { endpoints, credentials, robots: irobotBody.robots };
+}
+async function fetchCloudPmaps(settings) {
+    const result = await fetchCloudPmapsResult(settings);
+    if (!result.ok) {
+        throw new Error(result.error);
+    }
+    return result.pmaps;
+}
+async function fetchCloudPmapsResult(settings) {
+    const blid = settings.blid.trim();
+    if (!blid || !hasCloudAccount(settings)) {
+        return { ok: true, pmaps: [], error: null };
+    }
+    try {
+        const login = await loginIrobotCloud(settings.irobot_username, settings.irobot_password);
+        const response = await awsSignedGet(login.endpoints.iotHost, `/v1/${blid}/pmaps`, "activeDetails=2", login.credentials, login.endpoints.awsRegion);
+        if (!response.ok) {
+            return {
+                ok: false,
+                pmaps: [],
+                error: `iRobot cloud pmap request failed (HTTP ${response.status})`,
+            };
+        }
+        const body = (await response.json());
+        return { ok: true, pmaps: Array.isArray(body) ? body : [], error: null };
+    }
+    catch (error) {
+        return {
+            ok: false,
+            pmaps: [],
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+async function fetchCloudCleanables(settings) {
+    const pmaps = await fetchCloudPmaps(settings);
+    return parseRoomsFromCloudPmaps(pmaps);
 }
 function mapCloudRobots(robots, savedBlid, savedPassword) {
     return Object.entries(robots).map(([blid, robot]) => ({

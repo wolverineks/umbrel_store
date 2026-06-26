@@ -9,8 +9,8 @@ import {
   fetchCredentialsFromCloud,
   getDorita980Version,
   getLastError,
+  getRobotMaintenance,
   getRobotPreferences,
-  getRobotSchedule,
   getRobotStatus,
   isDiscoveryBusy,
   isMutexBusy,
@@ -21,7 +21,7 @@ import {
   type RobotSettings,
 } from "./roomba-client";
 
-const APP_VERSION = "1.2.3";
+const APP_VERSION = "1.2.9";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -52,8 +52,6 @@ const DEFAULT_SETTINGS: RobotSettings = {
   irobot_username: "",
   irobot_password: "",
 };
-
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 async function ensureDataDir(): Promise<void> {
   await mkdir(DATA_ROOT, { recursive: true });
@@ -326,6 +324,10 @@ function pageStyles(): string {
       background: #cbd5e1;
       box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
     }
+    button:disabled, .button:disabled {
+      opacity: 0.65;
+      cursor: wait;
+    }
     button.secondary:active:not(:disabled), .button.secondary:active {
       background: #94a3b8;
       color: #0f172a;
@@ -414,6 +416,25 @@ function pageStyles(): string {
     .favorite-card .muted {
       margin: 0;
       font-size: 13px;
+    }
+    .maintenance-badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .maintenance-badge.ok {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .maintenance-badge.due_soon {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .maintenance-badge.replace {
+      background: #fee2e2;
+      color: #991b1b;
     }
     .diagnostics-grid {
       display: grid;
@@ -559,7 +580,7 @@ function layout(page: string, title: string, body: string): string {
   const nav = [
     ["dashboard", "Dashboard", "/"],
     ["setup", "Setup", "/setup"],
-    ["schedule", "Schedule", "/schedule"],
+    ["maintenance", "Maintenance", "/maintenance"],
     ["settings", "Settings", "/settings"],
     ["diagnostics", "Diagnostics", "/diagnostics"],
   ]
@@ -674,7 +695,7 @@ function dashboardPage(): string {
     </div>
     <div class="panel">
       <h2>Favorites</h2>
-      <p class="muted">Saved routines from your robot map. Create or edit favorites in the official iRobot app.</p>
+      <p class="muted">Saved favorites and Smart Map rooms. Favorites are created in the iRobot app; rooms load from iRobot cloud when local MQTT does not include them.</p>
       <div id="favorites-list" class="favorite-list muted">Loading favorites…</div>
     </div>
     <script>
@@ -724,28 +745,82 @@ function dashboardPage(): string {
           });
         });
       }
-      async function loadStatus() {
-        document.getElementById("meta").textContent = "Loading status…";
-        document.getElementById("favorites-list").textContent = "Loading favorites…";
-        const response = await fetch("/api/status", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Failed to load status");
+      let statusLoaded = false;
+      let lastGoodStatus = null;
+      function setStatusRefreshing(refreshing) {
+        const refreshButton = document.getElementById("refresh");
+        refreshButton.disabled = refreshing;
+        refreshButton.textContent = refreshing ? "Refreshing…" : "Refresh status";
+      }
+      function formatStatusMeta(data, stale) {
+        const name = data.robot_name || "Roomba";
+        const firmware = data.software_version || "unknown firmware";
+        const synced = "synced " + new Date(data.last_sync).toLocaleString();
+        return stale ? name + " · " + firmware + " · " + synced + " (showing last good data)" : name + " · " + firmware + " · " + synced;
+      }
+      function mergeStatusResponse(data) {
+        if (!lastGoodStatus || !statusLoaded) return data;
+        if (data.connected) {
+          const merged = { ...data };
+          if (!merged.favorites?.length && lastGoodStatus.favorites?.length) {
+            merged.favorites = lastGoodStatus.favorites;
+          }
+          return merged;
+        }
+        return lastGoodStatus;
+      }
+      function renderStatus(data, options) {
+        const stale = Boolean(options && options.stale);
         document.getElementById("battery").textContent =
           data.battery_percent == null ? "—" : data.battery_percent + "%";
         document.getElementById("phase").textContent = data.phase_label || data.phase || "—";
-        document.getElementById("cycle").textContent = data.cycle_label || data.cycle || "—";
+        let jobLabel = data.cycle_label || data.cycle || "—";
+        if (data.time_remaining_label) jobLabel += " · " + data.time_remaining_label;
+        document.getElementById("cycle").textContent = jobLabel;
         const bin =
           data.bin_full == null ? "—" : data.bin_full ? "Full" : data.bin_present === false ? "Missing" : "OK";
         document.getElementById("bin").textContent = bin;
         renderFavorites(data);
-        if (data.connected) {
+        if (!stale && data.connected) {
           showError("");
-          document.getElementById("meta").textContent =
-            (data.robot_name || "Roomba") + " · " + (data.software_version || "unknown firmware") + " · synced " + new Date(data.last_sync).toLocaleString();
+          document.getElementById("meta").textContent = formatStatusMeta(data, false);
+        } else if (stale) {
+          document.getElementById("meta").textContent = formatStatusMeta(data, true);
         } else {
           const message = data.error || "Robot not connected";
           document.getElementById("meta").textContent = message;
           showError(message);
+        }
+        statusLoaded = true;
+      }
+      async function loadStatus() {
+        const isInitial = !statusLoaded;
+        if (isInitial) {
+          document.getElementById("meta").textContent = "Loading status…";
+          document.getElementById("favorites-list").textContent = "Loading favorites…";
+        }
+        setStatusRefreshing(true);
+        try {
+          const response = await fetch("/api/status", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Failed to load status");
+          if (data.connected) {
+            const merged = mergeStatusResponse(data);
+            if (!data.favorites?.length && merged.favorites?.length && data.favorites_error) {
+              showError(data.favorites_error);
+            }
+            lastGoodStatus = merged;
+            renderStatus(merged);
+            return;
+          }
+          if (lastGoodStatus && statusLoaded) {
+            showError(data.error || "Robot not connected");
+            renderStatus(lastGoodStatus, { stale: true });
+            return;
+          }
+          renderStatus(data);
+        } finally {
+          setStatusRefreshing(false);
         }
       }
       function actionSuccessMessage(action, data) {
@@ -1000,50 +1075,107 @@ function setupPage(): string {
   );
 }
 
-function schedulePage(): string {
+function maintenancePage(): string {
   return layout(
-    "schedule",
-    "Schedule",
+    "maintenance",
+    "Maintenance",
     `
     <div class="panel">
-      <p class="muted">Read-only view from the robot. Edit schedules in the official iRobot app if you want them synced through iRobot cloud.</p>
-      <button type="button" id="refresh-schedule">Refresh schedule</button>
-      <div id="schedule-table"></div>
+      <p class="muted">Runtime and wear estimates from the robot. Reset part counters in the iRobot app after replacing filters or brushes.</p>
+      <button type="button" id="refresh-maintenance">Refresh maintenance</button>
+      <div class="grid" id="maintenance-stats" style="margin-top:16px">
+        <div class="stat"><div class="label">Cleaning runtime</div><div class="value" id="runtime">—</div></div>
+        <div class="stat"><div class="label">Area cleaned</div><div class="value" id="area">—</div></div>
+        <div class="stat"><div class="label">Missions</div><div class="value" id="missions">—</div></div>
+        <div class="stat"><div class="label">Charge cycles</div><div class="value" id="charges">—</div></div>
+      </div>
+      <p class="muted" id="maintenance-meta">Loading maintenance…</p>
+      <div id="maintenance-table"></div>
       <div class="error" id="error"></div>
     </div>
     <script>
-      const days = ${JSON.stringify(DAY_NAMES)};
       const errorEl = document.getElementById("error");
       function showError(message) {
         errorEl.style.display = message ? "block" : "none";
         errorEl.textContent = message || "";
       }
-      async function loadSchedule() {
-        const response = await fetch("/api/schedule");
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Failed to load schedule");
-        const week = data.schedule || {};
-        const cycles = Array.isArray(week.cycle) ? week.cycle : [];
-        const hours = Array.isArray(week.h) ? week.h : [];
-        const minutes = Array.isArray(week.m) ? week.m : [];
-        let rows = "";
-        const scheduleJobLabels = { none: "Off", start: "Scheduled clean", clean: "Scheduled clean" };
-        function scheduleJobLabel(cycle) {
-          return scheduleJobLabels[cycle] || (cycle === "none" ? "Off" : cycle);
-        }
-        for (let i = 0; i < 7; i += 1) {
-          const cycle = cycles[i] || "none";
-          const time =
-            cycle === "none" ? "—" : String(hours[i] ?? 0).padStart(2, "0") + ":" + String(minutes[i] ?? 0).padStart(2, "0");
-          rows += "<tr><td>" + days[i] + "</td><td>" + scheduleJobLabel(cycle) + "</td><td>" + time + "</td></tr>";
-        }
-        document.getElementById("schedule-table").innerHTML =
-          "<table><thead><tr><th>Day</th><th>Job</th><th>Time</th></tr></thead><tbody>" + rows + "</tbody></table>";
+      function formatNumber(value, suffix) {
+        if (value == null) return "—";
+        return String(value) + suffix;
       }
-      document.getElementById("refresh-schedule").addEventListener("click", () => {
-        loadSchedule().catch((error) => showError(error.message));
+      function renderMaintenanceTable(items) {
+        const rows = (items || []).map((item) =>
+          "<tr><td><strong>" + item.name + "</strong><br><span class=\\"muted\\">" + item.detail + "</span></td>" +
+          "<td>" + item.hours_used + " / " + item.hours_recommended + " hr</td>" +
+          "<td>" + item.percent_used + "%</td>" +
+          '<td><span class="maintenance-badge ' + item.status + '">' + item.status_label + "</span></td></tr>"
+        ).join("");
+        document.getElementById("maintenance-table").innerHTML =
+          "<table><thead><tr><th>Part</th><th>Hours</th><th>Wear</th><th>Status</th></tr></thead><tbody>" +
+          (rows || "<tr><td colspan=\\"4\\" class=\\"muted\\">No maintenance data yet.</td></tr>") +
+          "</tbody></table>";
+      }
+      let maintenanceLoaded = false;
+      let lastGoodMaintenance = null;
+      function setMaintenanceRefreshing(refreshing) {
+        const refreshButton = document.getElementById("refresh-maintenance");
+        refreshButton.disabled = refreshing;
+        refreshButton.textContent = refreshing ? "Refreshing…" : "Refresh maintenance";
+      }
+      function formatMaintenanceMeta(data, stale) {
+        const bin =
+          data.bin_full == null ? "Unknown" : data.bin_full ? "Full" : data.bin_present === false ? "Missing" : "OK";
+        const battery = data.battery_percent == null ? "—" : data.battery_percent + "%";
+        const stuck = data.stuck_events == null ? "—" : String(data.stuck_events);
+        const synced = "synced " + new Date(data.last_sync).toLocaleString();
+        const suffix = stale ? " (showing last good data)" : "";
+        return "Bin " + bin + " · Battery " + battery + " · Stuck events " + stuck + " · " + synced + suffix;
+      }
+      function renderMaintenance(data, options) {
+        const stale = Boolean(options && options.stale);
+        document.getElementById("runtime").textContent = data.runtime_label || "—";
+        document.getElementById("area").textContent =
+          data.area_sqft == null ? "—" : data.area_sqft.toLocaleString() + " sq ft";
+        const missions =
+          data.missions_completed == null && data.missions_total == null
+            ? "—"
+            : (data.missions_completed ?? 0) + " / " + (data.missions_total ?? "—") + " done";
+        document.getElementById("missions").textContent = missions;
+        document.getElementById("charges").textContent = formatNumber(data.charge_cycles, "");
+        document.getElementById("maintenance-meta").textContent = formatMaintenanceMeta(data, stale);
+        renderMaintenanceTable(data.items);
+        maintenanceLoaded = true;
+      }
+      async function loadMaintenance() {
+        const isInitial = !maintenanceLoaded;
+        if (isInitial) {
+          document.getElementById("maintenance-meta").textContent = "Loading maintenance…";
+        }
+        setMaintenanceRefreshing(true);
+        try {
+          const response = await fetch("/api/maintenance", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Failed to load maintenance");
+          if (data.connected) {
+            lastGoodMaintenance = data;
+            showError("");
+            renderMaintenance(data);
+            return;
+          }
+          if (lastGoodMaintenance && maintenanceLoaded) {
+            showError(data.error || "Robot not connected");
+            renderMaintenance(lastGoodMaintenance, { stale: true });
+            return;
+          }
+          throw new Error(data.error || "Robot not connected");
+        } finally {
+          setMaintenanceRefreshing(false);
+        }
+      }
+      document.getElementById("refresh-maintenance").addEventListener("click", () => {
+        loadMaintenance().catch((error) => showError(error.message));
       });
-      loadSchedule().catch((error) => showError(error.message));
+      loadMaintenance().catch((error) => showError(error.message));
     </script>
     `,
   );
@@ -1361,11 +1493,36 @@ function diagnosticsPage(): string {
         return '<div class="diagnostics-grid">' + renderApp(data.app) + renderRoomba(data.roomba) + renderIrobot(data.irobot) + "</div>" +
           '<p class="muted" style="margin-top:12px;font-size:13px">Generated ' + escapeHtml(new Date(data.generated_at).toLocaleString()) + "</p>";
       }
+      let diagnosticsLoaded = false;
+      let lastDiagnosticsHtml = "";
+      function setDiagnosticsRefreshing(refreshing) {
+        const refreshButton = document.getElementById("refresh-diagnostics");
+        refreshButton.disabled = refreshing;
+        refreshButton.textContent = refreshing ? "Refreshing…" : "Refresh diagnostics";
+      }
       async function loadDiagnostics() {
-        const response = await fetch("/api/diagnostics", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Failed to load diagnostics");
-        document.getElementById("diagnostics-content").innerHTML = renderDiagnostics(data);
+        const isInitial = !diagnosticsLoaded;
+        if (isInitial) {
+          document.getElementById("diagnostics-content").innerHTML = '<p class="muted">Loading diagnostics…</p>';
+        }
+        setDiagnosticsRefreshing(true);
+        try {
+          const response = await fetch("/api/diagnostics", { signal: AbortSignal.timeout(${API_TIMEOUT_MS}) });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Failed to load diagnostics");
+          lastDiagnosticsHtml = renderDiagnostics(data);
+          document.getElementById("diagnostics-content").innerHTML = lastDiagnosticsHtml;
+          diagnosticsLoaded = true;
+          showError("");
+        } catch (error) {
+          if (diagnosticsLoaded && lastDiagnosticsHtml) {
+            showError(error.message);
+            return;
+          }
+          throw error;
+        } finally {
+          setDiagnosticsRefreshing(false);
+        }
       }
       document.getElementById("refresh-diagnostics").addEventListener("click", () => {
         loadDiagnostics().catch((error) => showError(error.message));
@@ -1420,8 +1577,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     sendText(res, 200, "text/html; charset=utf-8", setupPage());
     return;
   }
-  if (method === "GET" && pathname === "/schedule") {
-    sendText(res, 200, "text/html; charset=utf-8", schedulePage());
+  if (method === "GET" && pathname === "/maintenance") {
+    sendText(res, 200, "text/html; charset=utf-8", maintenancePage());
     return;
   }
   if (method === "GET" && pathname === "/settings") {
@@ -1440,13 +1597,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  if (method === "GET" && pathname === "/api/schedule") {
-    try {
-      const schedule = await getRobotSchedule(settings);
-      sendJson(res, 200, { schedule });
-    } catch (error) {
-      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
-    }
+  if (method === "GET" && pathname === "/api/maintenance") {
+    sendJson(res, 200, await getRobotMaintenance(settings));
     return;
   }
 
