@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.31";
+const APP_VERSION = "1.0.32";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -28,6 +28,7 @@ const IMAGE_CONTENT_TYPES: Record<string, (typeof IMAGE_EXTENSIONS)[number]> = {
 };
 const INDEX_PATH = path.join(DATA_ROOT, "index.json");
 const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
+const SETTINGS_BACKUP_PATH = path.join(DATA_ROOT, "settings.json.bak");
 const CATEGORIES_PATH = path.join(DATA_ROOT, "categories.json");
 const CATEGORY_ITEMS_PATH = path.join(DATA_ROOT, "category-items.json");
 const TRASH_DIR = path.join(DATA_ROOT, ".trash");
@@ -334,6 +335,15 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   return JSON.parse(raw) as T;
 }
 
+async function readJsonFileSafe<T>(filePath: string, fallback: T): Promise<T> {
+  try {
+    return await readJsonFile(filePath, fallback);
+  } catch (error) {
+    console.error(`Could not read ${filePath}:`, error);
+    return fallback;
+  }
+}
+
 async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
   const tmp = `${filePath}.${randomUUID()}.tmp`;
   await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -343,6 +353,74 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
 function normalizeExtensionModel(value: unknown): string {
   const model = typeof value === "string" ? value.trim() : "";
   return (EXTENSION_MODELS as readonly string[]).includes(model) ? model : DEFAULT_EXTENSION_MODEL;
+}
+
+let cachedSettings: Settings | null = null;
+let settingsInitPromise: Promise<Settings> | null = null;
+
+function normalizeSettingsRecord(value: unknown): Settings | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<Settings>;
+  const ingestToken = typeof record.ingest_token === "string" ? record.ingest_token.trim() : "";
+  if (!ingestToken) return null;
+  return {
+    ingest_token: ingestToken,
+    extension_api_key:
+      typeof record.extension_api_key === "string"
+        ? record.extension_api_key
+        : record.extension_api_key ?? null,
+    extension_model: normalizeExtensionModel(record.extension_model),
+  };
+}
+
+function settingsFromEnv(): Partial<Settings> {
+  const next: Partial<Settings> = {};
+  const ingestToken = (process.env.RECIPES_INGEST_TOKEN ?? "").trim();
+  const extensionApiKey = (process.env.RECIPES_EXTENSION_API_KEY ?? "").trim();
+  const extensionModel = (process.env.RECIPES_EXTENSION_MODEL ?? "").trim();
+  if (ingestToken) next.ingest_token = ingestToken;
+  if (extensionApiKey) next.extension_api_key = extensionApiKey;
+  if (extensionModel) next.extension_model = normalizeExtensionModel(extensionModel);
+  return next;
+}
+
+async function hasExistingLibraryData(): Promise<boolean> {
+  const index = await readJsonFileSafe<RecipeIndexEntry[]>(INDEX_PATH, []);
+  if (index.length > 0) return true;
+  if (!existsSync(RECIPES_DIR)) return false;
+  const files = await readdir(RECIPES_DIR);
+  return files.some((file) => file.endsWith(".json"));
+}
+
+async function readSettingsFromDisk(): Promise<Settings | null> {
+  const candidates = [SETTINGS_PATH, SETTINGS_BACKUP_PATH];
+  for (const filePath of candidates) {
+    const parsed = normalizeSettingsRecord(await readJsonFileSafe(filePath, null));
+    if (parsed) {
+      if (filePath === SETTINGS_BACKUP_PATH) {
+        console.warn("Recovered Recipes settings from backup file.");
+        await persistSettings(parsed);
+      }
+      return parsed;
+    }
+  }
+  return null;
+}
+
+async function persistSettings(
+  settings: Settings,
+  options: { skipBackup?: boolean } = {},
+): Promise<Settings> {
+  const normalized = normalizeSettingsRecord(settings);
+  if (!normalized) {
+    throw new Error("Refusing to persist invalid settings.");
+  }
+  await writeJsonAtomic(SETTINGS_PATH, normalized);
+  if (!options.skipBackup) {
+    await writeJsonAtomic(SETTINGS_BACKUP_PATH, normalized);
+  }
+  cachedSettings = normalized;
+  return normalized;
 }
 
 function extensionApiKeyPreview(apiKey: string | null | undefined): string | null {
@@ -365,22 +443,76 @@ function extensionSettingsPayload(settings: Settings): {
   };
 }
 
-async function loadSettings(): Promise<Settings> {
-  const existing = await readJsonFile<Settings | null>(SETTINGS_PATH, null);
-  if (existing?.ingest_token) {
-    return {
-      ingest_token: existing.ingest_token,
-      extension_api_key: existing.extension_api_key ?? null,
-      extension_model: normalizeExtensionModel(existing.extension_model),
-    };
-  }
-  const settings: Settings = {
-    ingest_token: randomBytes(32).toString("hex"),
-    extension_api_key: null,
-    extension_model: DEFAULT_EXTENSION_MODEL,
+function mergeSettingsWithEnv(settings: Settings, env: Partial<Settings>): Settings {
+  return {
+    ingest_token: env.ingest_token?.trim() || settings.ingest_token,
+    extension_api_key:
+      env.extension_api_key !== undefined && env.extension_api_key !== ""
+        ? env.extension_api_key
+        : settings.extension_api_key ?? null,
+    extension_model: env.extension_model || settings.extension_model,
   };
-  await writeJsonAtomic(SETTINGS_PATH, settings);
-  return settings;
+}
+
+function settingsChanged(before: Settings, after: Settings): boolean {
+  return (
+    before.ingest_token !== after.ingest_token ||
+    before.extension_api_key !== after.extension_api_key ||
+    before.extension_model !== after.extension_model
+  );
+}
+
+async function initializeSettings(): Promise<Settings> {
+  const env = settingsFromEnv();
+  let settings = await readSettingsFromDisk();
+
+  if (settings) {
+    const merged = mergeSettingsWithEnv(settings, env);
+    const normalized = normalizeSettingsRecord(merged);
+    if (!normalized) {
+      throw new Error("Invalid Recipes settings on disk.");
+    }
+    if (settingsChanged(settings, normalized)) {
+      return persistSettings(normalized);
+    }
+    if (!existsSync(SETTINGS_BACKUP_PATH)) {
+      await writeJsonAtomic(SETTINGS_BACKUP_PATH, normalized);
+    }
+    cachedSettings = normalized;
+    return normalized;
+  }
+
+  const ingestToken = env.ingest_token?.trim();
+  if (ingestToken) {
+    return persistSettings({
+      ingest_token: ingestToken,
+      extension_api_key: env.extension_api_key ?? null,
+      extension_model: env.extension_model ?? DEFAULT_EXTENSION_MODEL,
+    });
+  }
+
+  if (await hasExistingLibraryData()) {
+    console.error(
+      "Recipes library data exists but settings.json is missing. " +
+        "Generated a new ingest token; update extension Settings on each device.",
+    );
+  } else {
+    console.log("Creating initial Recipes ingest token.");
+  }
+
+  return persistSettings({
+    ingest_token: randomBytes(32).toString("hex"),
+    extension_api_key: env.extension_api_key ?? null,
+    extension_model: env.extension_model ?? DEFAULT_EXTENSION_MODEL,
+  });
+}
+
+async function loadSettings(): Promise<Settings> {
+  if (cachedSettings) return cachedSettings;
+  if (!settingsInitPromise) {
+    settingsInitPromise = initializeSettings();
+  }
+  return settingsInitPromise;
 }
 
 async function saveExtensionSettings(input: {
@@ -402,8 +534,7 @@ async function saveExtensionSettings(input: {
     next.extension_model = normalizeExtensionModel(input.model);
   }
 
-  await writeJsonAtomic(SETTINGS_PATH, next);
-  return next;
+  return persistSettings(next);
 }
 
 async function loadIndex(): Promise<RecipeIndexEntry[]> {
@@ -2319,6 +2450,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     </div>
     <div class="setup-field">
       <label>Ingest token (same for all devices)</label>
+      <p class="setup-field-status">
+        Persists across app updates in <code>/data/settings.json</code>. Only click Regenerate token if
+        the token was compromised — otherwise update each extension with the new token.
+      </p>
       <div class="token">
         <code id="token-value">Loading…</code>
         <button id="copy-token-btn" class="secondary" type="button">Copy token</button>
@@ -4300,8 +4435,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       ...current,
       ingest_token: randomBytes(32).toString("hex"),
     };
-    await writeJsonAtomic(SETTINGS_PATH, next);
-    sendJson(res, 200, { ingest_token: next.ingest_token });
+    const saved = await persistSettings(next);
+    sendJson(res, 200, { ingest_token: saved.ingest_token });
     return;
   }
 

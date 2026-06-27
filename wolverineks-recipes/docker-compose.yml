@@ -21,6 +21,9 @@ services:
       - ${APP_DATA_DIR}/data:/data
     environment:
       RECIPES_DATA_DIR: /data
+      RECIPES_INGEST_TOKEN: ${RECIPES_INGEST_TOKEN:-}
+      RECIPES_EXTENSION_API_KEY: ${RECIPES_EXTENSION_API_KEY:-}
+      RECIPES_EXTENSION_MODEL: ${RECIPES_EXTENSION_MODEL:-}
       NODE_ENV: production
     restart: on-failure
     init: true
