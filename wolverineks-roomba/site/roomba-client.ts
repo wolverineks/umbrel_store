@@ -95,6 +95,10 @@ async function readCleanablesDiskCache(pathname: string): Promise<CleanablesDisk
   }
 }
 
+export async function warmupCleanablesCache(): Promise<void> {
+  await ensureCleanablesDiskCacheLoaded();
+}
+
 async function ensureCleanablesDiskCacheLoaded(): Promise<void> {
   if (cleanablesDiskCacheLoaded) return;
   cleanablesDiskCacheLoaded = true;
@@ -1607,7 +1611,9 @@ function hasCloudAccount(settings: RobotSettings): boolean {
   return Boolean(settings.irobot_username.trim() && settings.irobot_password.trim());
 }
 
-function buildFavoriteCommand(favorite: RoombaFavorite, regions: FavoriteRegion[]): Record<string, unknown> {
+type FavoriteCommandSource = Pick<RoombaFavorite, "ordered" | "pmap_id" | "user_pmapv_id">;
+
+function buildFavoriteCommand(favorite: FavoriteCommandSource, regions: FavoriteRegion[]): Record<string, unknown> {
   return {
     ordered: favorite.ordered ? 1 : 0,
     pmap_id: favorite.pmap_id,
@@ -1621,20 +1627,32 @@ function buildFavoriteCommand(favorite: RoombaFavorite, regions: FavoriteRegion[
   };
 }
 
-async function readFavoriteCommand(
-  robot: DoritaLocal,
-  favoriteId: string,
-  settings?: RobotSettings,
-): Promise<Record<string, unknown>> {
-  let favorite: RoombaFavorite | undefined;
-  let regions: FavoriteRegion[] = [];
+async function fetchCloudCleanablesSafe(settings: RobotSettings): Promise<RoombaFavorite[]> {
+  if (!hasCloudAccount(settings)) return [];
+  try {
+    const result = await fetchCloudPmapsResult(settings);
+    if (!result.ok || !result.pmaps.length) return [];
+    const spaces = parseRoomsFromCloudPmaps(result.pmaps);
+    if (spaces.length) {
+      await persistSpacesCache(settings.blid.trim(), spaces);
+    }
+    return spaces;
+  } catch {
+    return [];
+  }
+}
 
-  if (favoriteId.startsWith("custom:") && settings) {
-    const blid = settings.blid.trim();
-    const cachedSpaces = getCachedSpaces(blid);
-    let customFavorite = getCustomFavoriteById(favoriteId, cachedSpaces);
-    if (!customFavorite?.command_regions?.length && hasCloudAccount(settings)) {
-      const cloudSpaces = await fetchCloudCleanables(settings);
+async function resolveFavoriteCommand(
+  settings: RobotSettings,
+  favoriteId: string,
+): Promise<Record<string, unknown> | null> {
+  await ensureCleanablesDiskCacheLoaded();
+  const blid = settings.blid.trim();
+
+  if (favoriteId.startsWith("custom:")) {
+    let customFavorite = getCustomFavoriteById(favoriteId, getCachedSpaces(blid));
+    if (!customFavorite?.command_regions?.length) {
+      const cloudSpaces = await fetchCloudCleanablesSafe(settings);
       customFavorite = getCustomFavoriteById(favoriteId, cloudSpaces);
     }
     if (!customFavorite?.command_regions?.length) {
@@ -1643,54 +1661,63 @@ async function readFavoriteCommand(
     return buildFavoriteCommand(customFavorite, customFavorite.command_regions);
   }
 
-  if ((favoriteId.startsWith("room:") || favoriteId.startsWith("zone:")) && settings) {
-    const cachedSpace = getCachedSpaces(settings.blid.trim()).find((entry) => entry.id === favoriteId);
+  if (favoriteId.startsWith("room:") || favoriteId.startsWith("zone:")) {
+    const cachedSpace = getCachedSpaces(blid).find((entry) => entry.id === favoriteId);
     if (cachedSpace?.command_regions?.length) {
       return buildFavoriteCommand(cachedSpace, cachedSpace.command_regions);
     }
-    if (hasCloudAccount(settings)) {
-      const cloudSpaces = await fetchCloudCleanables(settings);
-      favorite = cloudSpaces.find((entry) => entry.id === favoriteId);
-      regions = favorite?.command_regions ?? [];
+    const cloudSpaces = await fetchCloudCleanablesSafe(settings);
+    const space = cloudSpaces.find((entry) => entry.id === favoriteId);
+    if (space?.command_regions?.length) {
+      return buildFavoriteCommand(space, space.command_regions);
     }
+    throw new Error("Space not found — refresh spaces first");
   }
 
-  if (!favorite) {
-    const snapshot = await withTimeout(
-      robot.getRobotState(["pmaps"]),
-      ROBOT_PMAPS_TIMEOUT_MS,
-      "Robot favorites",
-    );
-    const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
-    favorite = favorites.find((entry) => entry.id === favoriteId);
-    if (!favorite?.runnable || !favorite.pmap_id) {
-      throw new Error("Favorite not found on the robot");
-    }
+  return null;
+}
 
-    const pmapState = asRecord(snapshot.pmaps);
-    const pmapLists = Array.isArray(snapshot.pmaps)
-      ? snapshot.pmaps.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null)
-      : pmapState
-        ? [pmapState]
-        : [];
+async function readFavoriteCommandFromRobot(
+  robot: DoritaLocal,
+  favoriteId: string,
+): Promise<Record<string, unknown>> {
+  let favorite: RoombaFavorite | undefined;
+  let regions: FavoriteRegion[] = [];
 
-    for (const entry of pmapLists) {
-      if (String(entry.pmap_id ?? "") !== favorite.pmap_id) continue;
-      for (const list of collectFavoriteLists(entry)) {
-        if (!Array.isArray(list)) continue;
-        for (const [index, item] of list.entries()) {
-          const record = asRecord(item);
-          if (!record || favoriteIdentifier(record, index) !== favorite.id) continue;
-          regions = normalizeFavoriteRegions(record.regions);
-          break;
-        }
-        if (regions.length) break;
+  const snapshot = await withTimeout(
+    robot.getRobotState(["pmaps"]),
+    ROBOT_PMAPS_TIMEOUT_MS,
+    "Robot favorites",
+  );
+  const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
+  favorite = favorites.find((entry) => entry.id === favoriteId);
+  if (!favorite?.runnable || !favorite.pmap_id) {
+    throw new Error("Favorite not found on the robot");
+  }
+
+  const pmapState = asRecord(snapshot.pmaps);
+  const pmapLists = Array.isArray(snapshot.pmaps)
+    ? snapshot.pmaps.map((item) => asRecord(item)).filter((item): item is Record<string, unknown> => item !== null)
+    : pmapState
+      ? [pmapState]
+      : [];
+
+  for (const entry of pmapLists) {
+    if (String(entry.pmap_id ?? "") !== favorite.pmap_id) continue;
+    for (const list of collectFavoriteLists(entry)) {
+      if (!Array.isArray(list)) continue;
+      for (const [index, item] of list.entries()) {
+        const record = asRecord(item);
+        if (!record || favoriteIdentifier(record, index) !== favorite.id) continue;
+        regions = normalizeFavoriteRegions(record.regions);
+        break;
       }
       if (regions.length) break;
     }
+    if (regions.length) break;
   }
 
-  if (!favorite?.runnable) {
+  if (!favorite.runnable) {
     throw new Error("Favorite not found on the robot");
   }
 
@@ -1703,6 +1730,24 @@ async function readFavoriteCommand(
   }
 
   return buildFavoriteCommand(favorite, regions);
+}
+
+async function sendRoomClean(
+  robot: DoritaLocal,
+  command: Record<string, unknown>,
+  actionLabel: string,
+): Promise<void> {
+  const before = await readMissionSnapshot(robot);
+  if (missionIsActive(before.mission)) {
+    throw new Error("Robot is already cleaning. Pause or stop the current job first.");
+  }
+
+  await robot.cleanRoom(command);
+  await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+  const after = await waitForMissionChange(robot, before.mission, 8_000);
+  if (!missionIsActive(after)) {
+    throw new Error(buildMissionFailureMessage(after, before.bin, before.batPct, actionLabel));
+  }
 }
 
 async function readOptionalRobotValue<T>(
@@ -1931,9 +1976,11 @@ export async function runRobotFavorite(settings: RobotSettings, favoriteId: stri
     throw new Error("favorite_id is required");
   }
 
+  const resolvedCommand = await resolveFavoriteCommand(settings, trimmedId);
+
   await withRobot(settings, async (robot) => {
-    const command = await readFavoriteCommand(robot, trimmedId, settings);
-    await robot.cleanRoom(command);
+    const command = resolvedCommand ?? (await readFavoriteCommandFromRobot(robot, trimmedId));
+    await sendRoomClean(robot, command, "Favorite");
   });
   return { ok: true };
 }

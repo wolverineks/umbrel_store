@@ -8,7 +8,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const roomba_client_1 = require("./roomba-client");
-const APP_VERSION = "1.2.25";
+const APP_VERSION = "1.2.27";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -1500,6 +1500,7 @@ function dashboardPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ favorite_id: favoriteId }),
+          signal: AbortSignal.timeout(${API_TIMEOUT_MS}),
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Favorite failed");
@@ -2661,6 +2662,7 @@ async function handleRequest(req, res) {
 }
 async function main() {
     await ensureDataDir();
+    await (0, roomba_client_1.warmupCleanablesCache)();
     const server = (0, node_http_1.createServer)((req, res) => {
         void handleRequest(req, res).catch((error) => {
             sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });

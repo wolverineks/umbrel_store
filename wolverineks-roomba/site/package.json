@@ -1,7 +1,7 @@
 {
   "name": "wolverineks-roomba",
   "private": true,
-  "version": "1.2.26",
+  "version": "1.2.27",
   "scripts": {
     "postinstall": "node patch-dorita980.js",
     "build": "tsc && cp dist/server.js server.js && cp dist/roomba-client.js roomba-client.js && cp dist/custom-favorites.js custom-favorites.js",

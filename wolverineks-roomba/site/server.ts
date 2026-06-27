@@ -23,13 +23,14 @@ import {
   runRobotAction,
   runRobotFavorite,
   testConnection,
+  warmupCleanablesCache,
   type ConnectionMode,
   type ExploreResult,
   type RobotSettings,
   type RoombaExploreOperation,
 } from "./roomba-client";
 
-const APP_VERSION = "1.2.25";
+const APP_VERSION = "1.2.27";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
@@ -1589,6 +1590,7 @@ function dashboardPage(): string {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ favorite_id: favoriteId }),
+          signal: AbortSignal.timeout(${API_TIMEOUT_MS}),
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Favorite failed");
@@ -2795,6 +2797,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
 async function main(): Promise<void> {
   await ensureDataDir();
+  await warmupCleanablesCache();
   const server = createServer((req, res) => {
     void handleRequest(req, res).catch((error) => {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });

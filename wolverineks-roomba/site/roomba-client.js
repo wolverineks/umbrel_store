@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.warmupCleanablesCache = warmupCleanablesCache;
 exports.formatPhaseLabel = formatPhaseLabel;
 exports.formatJobLabel = formatJobLabel;
 exports.formatCycleLabel = formatCycleLabel;
@@ -113,6 +114,9 @@ async function readCleanablesDiskCache(pathname) {
     catch {
         return {};
     }
+}
+async function warmupCleanablesCache() {
+    await ensureCleanablesDiskCacheLoaded();
 }
 async function ensureCleanablesDiskCacheLoaded() {
     if (cleanablesDiskCacheLoaded)
@@ -1288,15 +1292,30 @@ function buildFavoriteCommand(favorite, regions) {
         })),
     };
 }
-async function readFavoriteCommand(robot, favoriteId, settings) {
-    let favorite;
-    let regions = [];
-    if (favoriteId.startsWith("custom:") && settings) {
-        const blid = settings.blid.trim();
-        const cachedSpaces = getCachedSpaces(blid);
-        let customFavorite = (0, custom_favorites_js_1.getCustomFavoriteById)(favoriteId, cachedSpaces);
-        if (!customFavorite?.command_regions?.length && hasCloudAccount(settings)) {
-            const cloudSpaces = await fetchCloudCleanables(settings);
+async function fetchCloudCleanablesSafe(settings) {
+    if (!hasCloudAccount(settings))
+        return [];
+    try {
+        const result = await fetchCloudPmapsResult(settings);
+        if (!result.ok || !result.pmaps.length)
+            return [];
+        const spaces = parseRoomsFromCloudPmaps(result.pmaps);
+        if (spaces.length) {
+            await persistSpacesCache(settings.blid.trim(), spaces);
+        }
+        return spaces;
+    }
+    catch {
+        return [];
+    }
+}
+async function resolveFavoriteCommand(settings, favoriteId) {
+    await ensureCleanablesDiskCacheLoaded();
+    const blid = settings.blid.trim();
+    if (favoriteId.startsWith("custom:")) {
+        let customFavorite = (0, custom_favorites_js_1.getCustomFavoriteById)(favoriteId, getCachedSpaces(blid));
+        if (!customFavorite?.command_regions?.length) {
+            const cloudSpaces = await fetchCloudCleanablesSafe(settings);
             customFavorite = (0, custom_favorites_js_1.getCustomFavoriteById)(favoriteId, cloudSpaces);
         }
         if (!customFavorite?.command_regions?.length) {
@@ -1304,51 +1323,55 @@ async function readFavoriteCommand(robot, favoriteId, settings) {
         }
         return buildFavoriteCommand(customFavorite, customFavorite.command_regions);
     }
-    if ((favoriteId.startsWith("room:") || favoriteId.startsWith("zone:")) && settings) {
-        const cachedSpace = getCachedSpaces(settings.blid.trim()).find((entry) => entry.id === favoriteId);
+    if (favoriteId.startsWith("room:") || favoriteId.startsWith("zone:")) {
+        const cachedSpace = getCachedSpaces(blid).find((entry) => entry.id === favoriteId);
         if (cachedSpace?.command_regions?.length) {
             return buildFavoriteCommand(cachedSpace, cachedSpace.command_regions);
         }
-        if (hasCloudAccount(settings)) {
-            const cloudSpaces = await fetchCloudCleanables(settings);
-            favorite = cloudSpaces.find((entry) => entry.id === favoriteId);
-            regions = favorite?.command_regions ?? [];
+        const cloudSpaces = await fetchCloudCleanablesSafe(settings);
+        const space = cloudSpaces.find((entry) => entry.id === favoriteId);
+        if (space?.command_regions?.length) {
+            return buildFavoriteCommand(space, space.command_regions);
         }
+        throw new Error("Space not found — refresh spaces first");
     }
-    if (!favorite) {
-        const snapshot = await withTimeout(robot.getRobotState(["pmaps"]), ROBOT_PMAPS_TIMEOUT_MS, "Robot favorites");
-        const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
-        favorite = favorites.find((entry) => entry.id === favoriteId);
-        if (!favorite?.runnable || !favorite.pmap_id) {
-            throw new Error("Favorite not found on the robot");
-        }
-        const pmapState = asRecord(snapshot.pmaps);
-        const pmapLists = Array.isArray(snapshot.pmaps)
-            ? snapshot.pmaps.map((item) => asRecord(item)).filter((item) => item !== null)
-            : pmapState
-                ? [pmapState]
-                : [];
-        for (const entry of pmapLists) {
-            if (String(entry.pmap_id ?? "") !== favorite.pmap_id)
+    return null;
+}
+async function readFavoriteCommandFromRobot(robot, favoriteId) {
+    let favorite;
+    let regions = [];
+    const snapshot = await withTimeout(robot.getRobotState(["pmaps"]), ROBOT_PMAPS_TIMEOUT_MS, "Robot favorites");
+    const favorites = parseFavoritesFromPmaps(snapshot.pmaps);
+    favorite = favorites.find((entry) => entry.id === favoriteId);
+    if (!favorite?.runnable || !favorite.pmap_id) {
+        throw new Error("Favorite not found on the robot");
+    }
+    const pmapState = asRecord(snapshot.pmaps);
+    const pmapLists = Array.isArray(snapshot.pmaps)
+        ? snapshot.pmaps.map((item) => asRecord(item)).filter((item) => item !== null)
+        : pmapState
+            ? [pmapState]
+            : [];
+    for (const entry of pmapLists) {
+        if (String(entry.pmap_id ?? "") !== favorite.pmap_id)
+            continue;
+        for (const list of collectFavoriteLists(entry)) {
+            if (!Array.isArray(list))
                 continue;
-            for (const list of collectFavoriteLists(entry)) {
-                if (!Array.isArray(list))
+            for (const [index, item] of list.entries()) {
+                const record = asRecord(item);
+                if (!record || favoriteIdentifier(record, index) !== favorite.id)
                     continue;
-                for (const [index, item] of list.entries()) {
-                    const record = asRecord(item);
-                    if (!record || favoriteIdentifier(record, index) !== favorite.id)
-                        continue;
-                    regions = normalizeFavoriteRegions(record.regions);
-                    break;
-                }
-                if (regions.length)
-                    break;
+                regions = normalizeFavoriteRegions(record.regions);
+                break;
             }
             if (regions.length)
                 break;
         }
+        if (regions.length)
+            break;
     }
-    if (!favorite?.runnable) {
+    if (!favorite.runnable) {
         throw new Error("Favorite not found on the robot");
     }
     if (!regions.length) {
@@ -1358,6 +1381,18 @@ async function readFavoriteCommand(robot, favoriteId, settings) {
         throw new Error("Favorite is missing map information");
     }
     return buildFavoriteCommand(favorite, regions);
+}
+async function sendRoomClean(robot, command, actionLabel) {
+    const before = await readMissionSnapshot(robot);
+    if (missionIsActive(before.mission)) {
+        throw new Error("Robot is already cleaning. Pause or stop the current job first.");
+    }
+    await robot.cleanRoom(command);
+    await new Promise((resolve) => setTimeout(resolve, COMMAND_SETTLE_MS));
+    const after = await waitForMissionChange(robot, before.mission, 8_000);
+    if (!missionIsActive(after)) {
+        throw new Error(buildMissionFailureMessage(after, before.bin, before.batPct, actionLabel));
+    }
 }
 async function readOptionalRobotValue(label, timeoutMs, read) {
     try {
@@ -1559,9 +1594,10 @@ async function runRobotFavorite(settings, favoriteId) {
     if (!trimmedId) {
         throw new Error("favorite_id is required");
     }
+    const resolvedCommand = await resolveFavoriteCommand(settings, trimmedId);
     await withRobot(settings, async (robot) => {
-        const command = await readFavoriteCommand(robot, trimmedId, settings);
-        await robot.cleanRoom(command);
+        const command = resolvedCommand ?? (await readFavoriteCommandFromRobot(robot, trimmedId));
+        await sendRoomClean(robot, command, "Favorite");
     });
     return { ok: true };
 }
