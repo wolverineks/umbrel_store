@@ -5,10 +5,12 @@
   "scripts": {
     "build": "tsc && cp dist/server.js server.js",
     "start": "node server.js",
-    "dev": "tsc --watch"
+    "dev": "RECIPES_DATA_DIR=../data PORT=4020 tsx watch server.ts",
+    "dev:local": "RECIPES_DATA_DIR=./.local-data PORT=4020 tsx watch server.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
+    "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }
 }

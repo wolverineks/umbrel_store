@@ -4,7 +4,7 @@ name: Recipes
 tagline: Save and browse recipes from the web
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-recipes/icon.svg
 category: files
-version: "1.0.28"
+version: "1.0.31"
 port: 4020
 description: >-
   A self-hosted recipe library for your Umbrel. Save recipes from the Recipe
@@ -15,7 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Storich-style UI with sidebar, dark mode, search, sample recipes, images, and print.
+  Store the shared xAI API key and Grok model in Add new device so extension
+  installs can fetch credentials from Umbrel.
 dependencies: []
 path: ""
 defaultUsername: ""

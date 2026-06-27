@@ -8,7 +8,9 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.28";
+const APP_VERSION = "1.0.31";
+const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
+const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
@@ -36,12 +38,24 @@ const TRASH_DIR = node_path_1.default.join(DATA_ROOT, ".trash");
 const TRASH_RECIPES_DIR = node_path_1.default.join(TRASH_DIR, "recipes");
 const TRASH_IMAGES_DIR = node_path_1.default.join(TRASH_DIR, "images");
 const TRASH_INDEX_PATH = node_path_1.default.join(TRASH_DIR, "index.json");
+const BLOCKLIST_DIR = node_path_1.default.join(DATA_ROOT, ".blocklist");
+const BLOCKLIST_RECIPES_DIR = node_path_1.default.join(BLOCKLIST_DIR, "recipes");
+const BLOCKLIST_IMAGES_DIR = node_path_1.default.join(BLOCKLIST_DIR, "images");
+const BLOCKLIST_INDEX_PATH = node_path_1.default.join(BLOCKLIST_DIR, "index.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 const SEED_IMAGES_DIR = node_path_1.default.join(__dirname, "seed-images");
 class NotFoundError extends Error {
     constructor(message) {
         super(message);
         this.name = "NotFoundError";
+    }
+}
+class BlockedRecipeError extends Error {
+    sourceUrl;
+    constructor(sourceUrl) {
+        super(`Recipe URL is blocked: ${sourceUrl}`);
+        this.name = "BlockedRecipeError";
+        this.sourceUrl = sourceUrl;
     }
 }
 async function ensureDataDirs() {
@@ -245,13 +259,59 @@ async function writeJsonAtomic(filePath, value) {
     await (0, promises_1.writeFile)(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     await (0, promises_1.rename)(tmp, filePath);
 }
+function normalizeExtensionModel(value) {
+    const model = typeof value === "string" ? value.trim() : "";
+    return EXTENSION_MODELS.includes(model) ? model : DEFAULT_EXTENSION_MODEL;
+}
+function extensionApiKeyPreview(apiKey) {
+    const trimmed = (apiKey ?? "").trim();
+    if (!trimmed)
+        return null;
+    if (trimmed.length <= 8)
+        return "••••••••";
+    return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
+}
+function extensionSettingsPayload(settings) {
+    const apiKey = (settings.extension_api_key ?? "").trim();
+    return {
+        api_key_configured: Boolean(apiKey),
+        api_key_preview: extensionApiKeyPreview(apiKey),
+        model: normalizeExtensionModel(settings.extension_model),
+    };
+}
 async function loadSettings() {
     const existing = await readJsonFile(SETTINGS_PATH, null);
-    if (existing?.ingest_token)
-        return existing;
-    const settings = { ingest_token: (0, node_crypto_1.randomBytes)(32).toString("hex") };
+    if (existing?.ingest_token) {
+        return {
+            ingest_token: existing.ingest_token,
+            extension_api_key: existing.extension_api_key ?? null,
+            extension_model: normalizeExtensionModel(existing.extension_model),
+        };
+    }
+    const settings = {
+        ingest_token: (0, node_crypto_1.randomBytes)(32).toString("hex"),
+        extension_api_key: null,
+        extension_model: DEFAULT_EXTENSION_MODEL,
+    };
     await writeJsonAtomic(SETTINGS_PATH, settings);
     return settings;
+}
+async function saveExtensionSettings(input) {
+    const settings = await loadSettings();
+    const next = { ...settings };
+    if (input.clear_api_key) {
+        next.extension_api_key = null;
+    }
+    else if (typeof input.api_key === "string") {
+        const trimmed = input.api_key.trim();
+        if (trimmed)
+            next.extension_api_key = trimmed;
+    }
+    if (typeof input.model === "string") {
+        next.extension_model = normalizeExtensionModel(input.model);
+    }
+    await writeJsonAtomic(SETTINGS_PATH, next);
+    return next;
 }
 async function loadIndex() {
     return readJsonFile(INDEX_PATH, []);
@@ -300,6 +360,9 @@ async function upsertRecipe(payload) {
         ? payload.image_url.trim()
         : "";
     const normalized = normalizeIngestPayload(payload);
+    if (await isSourceUrlBlocked(normalized.source_url)) {
+        throw new BlockedRecipeError(normalized.source_url);
+    }
     const now = new Date().toISOString();
     const index = await loadIndex();
     const existing = index.find((entry) => entry.source_url === normalized.source_url);
@@ -476,6 +539,167 @@ async function emptyTrash() {
     }
     await saveTrashIndex([]);
     return trashIndex.length;
+}
+async function ensureBlocklistDirs() {
+    await (0, promises_1.mkdir)(BLOCKLIST_RECIPES_DIR, { recursive: true });
+    await (0, promises_1.mkdir)(BLOCKLIST_IMAGES_DIR, { recursive: true });
+}
+function blocklistRecipePath(id) {
+    return node_path_1.default.join(BLOCKLIST_RECIPES_DIR, `${id}.json`);
+}
+function findBlocklistImagePath(id) {
+    for (const ext of IMAGE_EXTENSIONS) {
+        const filePath = node_path_1.default.join(BLOCKLIST_IMAGES_DIR, `${id}${ext}`);
+        if ((0, node_fs_1.existsSync)(filePath))
+            return filePath;
+    }
+    return null;
+}
+function recipeHasBlocklistImage(id) {
+    return findBlocklistImagePath(id) !== null;
+}
+async function deleteBlocklistImage(id) {
+    await Promise.all(IMAGE_EXTENSIONS.map(async (ext) => {
+        await (0, promises_1.rm)(node_path_1.default.join(BLOCKLIST_IMAGES_DIR, `${id}${ext}`), { force: true });
+    }));
+}
+async function loadBlocklistIndex() {
+    const entries = await readJsonFile(BLOCKLIST_INDEX_PATH, []);
+    return [...entries].sort((a, b) => new Date(b.blocked_at).getTime() - new Date(a.blocked_at).getTime());
+}
+async function saveBlocklistIndex(entries) {
+    await ensureBlocklistDirs();
+    await writeJsonAtomic(BLOCKLIST_INDEX_PATH, entries);
+}
+async function loadBlocklistRecipe(id) {
+    const file = blocklistRecipePath(id);
+    if (!(0, node_fs_1.existsSync)(file))
+        return null;
+    return readJsonFile(file, null);
+}
+async function enrichBlocklistRecipe(recipe, entry) {
+    return {
+        ...recipe,
+        has_image: recipeHasBlocklistImage(recipe.id),
+        category_ids: entry.category_ids,
+        blocked_at: entry.blocked_at,
+        in_blocklist: true,
+    };
+}
+function normalizeSourceUrl(sourceUrl) {
+    return sourceUrl.trim();
+}
+async function findBlocklistEntryByUrl(sourceUrl) {
+    const normalized = normalizeSourceUrl(sourceUrl);
+    if (!normalized)
+        return null;
+    const blocklist = await loadBlocklistIndex();
+    return blocklist.find((entry) => entry.source_url === normalized) ?? null;
+}
+async function isSourceUrlBlocked(sourceUrl) {
+    return (await findBlocklistEntryByUrl(sourceUrl)) !== null;
+}
+function blockedRecipeResponse(entry, sourceUrl) {
+    const title = entry?.title?.trim();
+    return {
+        blocked: true,
+        error: title
+            ? `“${title}” is on your blocklist. Unblock it in the Recipes app to save or print it again.`
+            : "This recipe is on your blocklist. Unblock it in the Recipes app to save or print it again.",
+        title: title || null,
+        source_url: normalizeSourceUrl(sourceUrl),
+    };
+}
+async function moveRecipeToBlocklist(id) {
+    const recipe = await loadRecipe(id);
+    if (!recipe)
+        return false;
+    await ensureBlocklistDirs();
+    const categoryItems = await loadCategoryItems();
+    const category_ids = categoryIdsForRecipe(categoryItems, id);
+    await (0, promises_1.rename)(recipePath(id), blocklistRecipePath(id));
+    const imagePath = findRecipeImagePath(id);
+    if (imagePath) {
+        const ext = node_path_1.default.extname(imagePath);
+        await (0, promises_1.rename)(imagePath, node_path_1.default.join(BLOCKLIST_IMAGES_DIR, `${id}${ext}`));
+    }
+    const index = await loadIndex();
+    await saveIndex(index.filter((entry) => entry.id !== id));
+    await removeRecipeCategoryItems(id);
+    const blocklistEntry = {
+        id: recipe.id,
+        title: recipe.title,
+        source_url: recipe.source_url,
+        created_at: recipe.created_at,
+        updated_at: recipe.updated_at,
+        blocked_at: new Date().toISOString(),
+        category_ids,
+    };
+    const blocklistIndex = await loadBlocklistIndex();
+    await saveBlocklistIndex([
+        blocklistEntry,
+        ...blocklistIndex.filter((entry) => entry.id !== id && entry.source_url !== recipe.source_url),
+    ]);
+    return true;
+}
+async function restoreRecipeFromBlocklist(id) {
+    const blocklistIndex = await loadBlocklistIndex();
+    const entry = blocklistIndex.find((item) => item.id === id);
+    if (!entry)
+        throw new NotFoundError("recipe not found in blocklist");
+    const recipe = await loadBlocklistRecipe(id);
+    if (!recipe)
+        throw new NotFoundError("recipe not found in blocklist");
+    if (await loadRecipe(id))
+        throw new Error("recipe already exists in library");
+    const index = await loadIndex();
+    if (index.some((item) => item.source_url === recipe.source_url)) {
+        throw new Error("a recipe with this source URL already exists in the library");
+    }
+    await (0, promises_1.rename)(blocklistRecipePath(id), recipePath(id));
+    const blocklistImagePath = findBlocklistImagePath(id);
+    if (blocklistImagePath) {
+        const ext = node_path_1.default.extname(blocklistImagePath);
+        await (0, promises_1.rename)(blocklistImagePath, imageFilePath(id, ext));
+    }
+    await saveIndex([
+        ...index,
+        {
+            id: recipe.id,
+            title: recipe.title,
+            source_url: recipe.source_url,
+            created_at: recipe.created_at,
+            updated_at: recipe.updated_at,
+        },
+    ]);
+    for (const categoryId of entry.category_ids) {
+        try {
+            await assignCategoryRecipe(id, categoryId);
+        }
+        catch {
+            // category may have been deleted since the recipe was blocked
+        }
+    }
+    await saveBlocklistIndex(blocklistIndex.filter((item) => item.id !== id));
+    return recipe;
+}
+async function permanentlyDeleteBlocklistRecipe(id) {
+    const blocklistIndex = await loadBlocklistIndex();
+    if (!blocklistIndex.some((entry) => entry.id === id))
+        return false;
+    await (0, promises_1.rm)(blocklistRecipePath(id), { force: true });
+    await deleteBlocklistImage(id);
+    await saveBlocklistIndex(blocklistIndex.filter((entry) => entry.id !== id));
+    return true;
+}
+async function emptyBlocklist() {
+    const blocklistIndex = await loadBlocklistIndex();
+    for (const entry of blocklistIndex) {
+        await (0, promises_1.rm)(blocklistRecipePath(entry.id), { force: true });
+        await deleteBlocklistImage(entry.id);
+    }
+    await saveBlocklistIndex([]);
+    return blocklistIndex.length;
 }
 const DEFAULT_RECIPES = [
     {
@@ -889,6 +1113,9 @@ const RECIPES_PAGE_STYLES = `
   --danger-text: #991b1b;
   --danger-bg: #fef2f2;
   --danger-border: #fecaca;
+  --blocklist: #92400e;
+  --blocklist-bg: #fffbeb;
+  --blocklist-border: #fde68a;
 }
 html[data-theme="dark"] {
   color-scheme: dark;
@@ -906,6 +1133,9 @@ html[data-theme="dark"] {
   --danger-text: #fecaca;
   --danger-bg: #450a0a;
   --danger-border: #7f1d1d;
+  --blocklist: #fbbf24;
+  --blocklist-bg: #422006;
+  --blocklist-border: #78350f;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -1079,6 +1309,42 @@ body.view-trash .topbar.toolbar-trash {
   flex-shrink: 0;
   font-size: 0.95rem;
   line-height: 1;
+}
+.sidebar-blocklist {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0.7rem 0.75rem;
+  border-radius: 0.65rem;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  margin-bottom: 0.35rem;
+}
+.sidebar-blocklist:hover,
+.sidebar-blocklist.active {
+  background: var(--blocklist-bg);
+  color: var(--blocklist);
+}
+.sidebar-blocklist.drop-target {
+  color: var(--blocklist);
+  background: var(--blocklist-bg);
+  box-shadow: 0 0 0 2px var(--blocklist-border);
+}
+.sidebar-blocklist-icon {
+  flex-shrink: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.topbar.toolbar-blocklist {
+  display: none;
+}
+body.view-blocklist .topbar.toolbar-blocklist {
+  display: flex;
 }
 main {
   display: flex;
@@ -1692,6 +1958,23 @@ code {
   color: var(--muted);
   margin-bottom: 0.4rem;
 }
+.setup-input {
+  width: 100%;
+  max-width: 32rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--bg);
+  font: inherit;
+  font-size: 0.92rem;
+}
+.setup-field-status {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.setup-field-status.ok { color: #047857; }
+.setup-field-status.error { color: #b91c1c; }
 .setup-actions {
   display: flex;
   gap: 0.5rem;
@@ -1786,6 +2069,10 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </div>
     <div class="sidebar-footer">
+      <button id="nav-blocklist" class="sidebar-blocklist" type="button" title="View blocklist — drag bad recipes here">
+        <span class="sidebar-blocklist-icon" aria-hidden="true">⛔</span>
+        <span>Blocklist</span>
+      </button>
       <button id="nav-trash" class="sidebar-trash" type="button" title="View trash — drag recipes here to delete">
         <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
         <span>Trash</span>
@@ -1808,6 +2095,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Dark mode">☾</button>
     </div>
     <div class="content">
+      <div class="topbar toolbar-blocklist">
+        <div class="toolbar">
+          <button id="empty-blocklist" class="danger-btn" type="button">Clear blocklist</button>
+        </div>
+      </div>
       <div class="topbar toolbar-trash">
         <div class="toolbar">
           <button id="empty-trash" class="danger-btn" type="button">Empty trash</button>
@@ -1824,9 +2116,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       </li>
       <li>
         Get an <a href="https://console.x.ai/team/default/api-keys" target="_blank" rel="noreferrer">xAI API key</a>
-        and paste it in the extension Settings on <strong>this device</strong> (each browser needs its own key entry).
+        and save it below so every extension device can use it.
       </li>
-      <li>Copy the Umbrel URL and ingest token below into extension Settings on this device.</li>
+      <li>Copy the Umbrel URL and ingest token below into extension Settings on each device.</li>
       <li>Click Save in the extension, allow Chrome network access, then Test Umbrel connection.</li>
       <li>Open any recipe page and click <strong>Format, Save &amp; Print</strong>.</li>
     </ol>
@@ -1838,6 +2130,26 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </div>
     <div class="setup-field">
+      <label for="extension-api-key">Extension xAI API key (shared by all devices)</label>
+      <input
+        id="extension-api-key"
+        class="setup-input"
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="xai-…"
+      />
+      <p id="extension-api-key-status" class="setup-field-status">Loading extension settings…</p>
+    </div>
+    <div class="setup-field">
+      <label for="extension-model">Grok model</label>
+      <select id="extension-model" class="setup-input">
+        <option value="grok-4-1-fast">grok-4-1-fast (recommended)</option>
+        <option value="grok-4-fast">grok-4-fast</option>
+        <option value="grok-4">grok-4 (higher quality, slower)</option>
+      </select>
+    </div>
+    <div class="setup-field">
       <label>Ingest token (same for all devices)</label>
       <div class="token">
         <code id="token-value">Loading…</code>
@@ -1845,6 +2157,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </div>
     <div class="setup-actions">
+      <button id="save-extension-settings-btn" class="primary" type="button">Save extension settings</button>
       <button id="copy-setup-btn" class="secondary" type="button">Copy all for extension</button>
       <button id="regenerate-token-btn" class="danger-btn" type="button">Regenerate token</button>
       <button id="close-device-btn" class="secondary" type="button">Close</button>
@@ -1862,6 +2175,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         <div id="list" class="grid"></div>
       </div>
       <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
+      <div id="blocklist-empty" class="empty hidden">Blocklist is empty. Block recipes that did not work out — they will not be saved from the extension again.</div>
       <div id="trash-empty" class="empty hidden">Trash is empty.</div>
       <div id="no-results" class="empty hidden">No recipes match your search.</div>
     </div>
@@ -1881,12 +2195,14 @@ const HTML_PAGE = `<!DOCTYPE html>
   <script>
     const listEl = document.getElementById("list");
     const emptyEl = document.getElementById("empty");
+    const blocklistEmptyEl = document.getElementById("blocklist-empty");
     const trashEmptyEl = document.getElementById("trash-empty");
     const noResultsEl = document.getElementById("no-results");
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
     const recipeStatus = document.getElementById("recipe-status");
     const navLibrary = document.getElementById("nav-library");
+    const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
     const LIBRARY_SEARCH_PLACEHOLDER = "Search by name, ingredients, servings, prep time, cook time, or total time…";
@@ -2046,6 +2362,77 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     }
 
+    async function blockRecipeById(recipe, confirmBlock = true) {
+      if (!recipe?.id) return;
+      if (
+        confirmBlock &&
+        !confirm(
+          'Block "' +
+            recipe.title +
+            '"? It will leave your library and the extension will not save this URL again.',
+        )
+      ) {
+        return;
+      }
+      const response = await fetch("/api/recipes/" + encodeURIComponent(recipe.id) + "/block", {
+        method: "POST",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to block recipe.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    async function unblockRecipeById(recipe) {
+      if (!recipe?.id) return;
+      const response = await fetch("/api/blocklist/unblock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: recipe.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to unblock recipe.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    async function removeFromBlocklistById(recipe) {
+      if (!recipe?.id) return;
+      if (
+        !confirm(
+          'Remove "' + recipe.title + '" from the blocklist? This URL can be saved from the extension again.',
+        )
+      ) {
+        return;
+      }
+      const response = await fetch("/api/blocklist/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: recipe.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to remove recipe from blocklist.");
+        return;
+      }
+      await loadRecipes();
+    }
+
+    async function emptyBlocklistBin() {
+      if (!confirm("Clear blocklist? Blocked URLs can be saved from the extension again.")) return;
+      const response = await fetch("/api/blocklist/empty", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Failed to clear blocklist.");
+        return;
+      }
+      await loadRecipes();
+    }
+
     async function restoreRecipeById(recipe) {
       if (!recipe?.id) return;
       const response = await fetch("/api/trash/restore", {
@@ -2161,13 +2548,24 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function withCategorySubmenu(actions, recipe) {
       const categoryActions = categoryAssignmentActions(recipe);
-      const insertBefore = actions.findIndex((action) => action.id === "trash");
+      const insertBefore = actions.findIndex((action) => action.id === "block" || action.id === "trash");
       const insertAt = insertBefore === -1 ? actions.length : insertBefore;
       const submenu = { id: "categories-submenu", label: "Categories", submenu: categoryActions };
       return [...actions.slice(0, insertAt), submenu, ...actions.slice(insertAt)];
     }
 
     function recipeContextMenuActions(recipe) {
+      if (activeView === "blocklist") {
+        const actions = [
+          { id: "print", label: "Print" },
+          { id: "unblock", label: "Unblock and restore" },
+          { id: "remove-block", label: "Remove from blocklist", danger: true },
+        ];
+        if (recipe.source_url) {
+          actions.splice(1, 0, { id: "open-source", label: "Open source" });
+        }
+        return actions;
+      }
       if (activeView === "trash") {
         const actions = [
           { id: "print", label: "Print" },
@@ -2187,6 +2585,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         const categoryName = categories.find((category) => category.id === categoryId)?.name || "category";
         actions.push({ id: "unassign-current:" + categoryId, label: "Remove from " + categoryName });
       }
+      actions.push({ id: "block", label: "Block recipe", danger: true });
       actions.push({ id: "trash", label: "Move to trash", danger: true });
       return withCategorySubmenu(actions, recipe);
     }
@@ -2342,8 +2741,20 @@ const HTML_PAGE = `<!DOCTYPE html>
         await unassignCategory(recipe.id, action.slice("unassign-current:".length));
         return;
       }
+      if (action === "block") {
+        await blockRecipeById(recipe);
+        return;
+      }
       if (action === "trash") {
         await moveRecipeToTrashById(recipe);
+        return;
+      }
+      if (action === "unblock") {
+        await unblockRecipeById(recipe);
+        return;
+      }
+      if (action === "remove-block") {
+        await removeFromBlocklistById(recipe);
         return;
       }
       if (action === "restore") {
@@ -2353,6 +2764,40 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (action === "delete-forever") {
         await deleteForeverById(recipe);
       }
+    }
+
+    function bindBlocklistDropTarget(element) {
+      if (element.dataset.dropBound === "true") return;
+      element.dataset.dropBound = "true";
+
+      element.addEventListener("dragover", (event) => {
+        if (activeView !== "library" || !isInternalDrag(event)) return;
+        const recipe = dragRecipe;
+        if (!recipe?.id) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        element.classList.add("drop-target");
+      });
+
+      element.addEventListener("dragleave", (event) => {
+        if (!element.contains(event.relatedTarget)) {
+          element.classList.remove("drop-target");
+        }
+      });
+
+      element.addEventListener("drop", async (event) => {
+        if (activeView !== "library" || !isInternalDrag(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearDropTargets();
+        const recipe = readDragRecipe(event.dataTransfer) || dragRecipe;
+        if (!recipe?.id) return;
+        try {
+          await blockRecipeById(recipe, false);
+        } catch (error) {
+          alert(error.message || "Could not block recipe.");
+        }
+      });
     }
 
     function bindTrashDropTarget(element) {
@@ -2425,7 +2870,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function bindRecipeCardDrag(card, recipe) {
-      if (activeView === "trash") return;
+      if (activeView === "trash" || activeView === "blocklist") return;
       card.setAttribute("draggable", "true");
       card.addEventListener("dragstart", (event) => {
         dragRecipe = recipe;
@@ -2712,15 +3157,20 @@ const HTML_PAGE = `<!DOCTYPE html>
     function renderRecipeCard(recipe) {
       const card = document.createElement("article");
       card.className = "card";
-      const imageApiBase = activeView === "trash" ? "/api/trash/" : "/api/recipes/";
+      const imageApiBase =
+        activeView === "trash" ? "/api/trash/" : activeView === "blocklist" ? "/api/blocklist/" : "/api/recipes/";
       const imageUrl = recipe.has_image
         ? imageApiBase + encodeURIComponent(recipe.id) + "/image"
         : "";
       const inTrash = activeView === "trash";
-      const dateLabel = inTrash ? "Deleted" : "Saved";
+      const inBlocklist = activeView === "blocklist";
+      const inArchive = inTrash || inBlocklist;
+      const dateLabel = inTrash ? "Deleted" : inBlocklist ? "Blocked" : "Saved";
       const dateValue = inTrash
         ? formatDate(recipe.deleted_at)
-        : formatDate(recipe.updated_at || recipe.created_at);
+        : inBlocklist
+          ? formatDate(recipe.blocked_at)
+          : formatDate(recipe.updated_at || recipe.created_at);
       const imageMarkup = imageUrl
         ? '<img class="recipe-image grid-only" src="' + imageUrl + '" alt="" loading="lazy" />'
         : '<div class="recipe-image-placeholder grid-only" aria-hidden="true">🍽</div>';
@@ -2732,7 +3182,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       const recipeMeta = formatRecipeMeta(recipe);
       const categoryText = categoryLabelText(recipe);
       const totalText = recipe.total_time || "—";
-      const notesSection = inTrash
+      const notesSection = inArchive
         ? (recipe.notes
           ? '<section class="recipe-notes"><h3>Notes</h3><p class="recipe-notes-readonly">' + escapeHtml(recipe.notes) + '</p></section>'
           : "")
@@ -2759,13 +3209,17 @@ const HTML_PAGE = `<!DOCTYPE html>
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
           \${inTrash
             ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Restore</button>'
-            : ""}
+            : inBlocklist
+              ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Unblock</button>'
+              : ""}
         </div>
         <div class="cell-actions list-only">
           <button class="secondary print-btn" data-id="\${escapeHtml(recipe.id)}" type="button">Print</button>
           \${inTrash
             ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Restore</button>'
-            : ""}
+            : inBlocklist
+              ? '<button class="secondary restore-btn" data-id="' + escapeHtml(recipe.id) + '" type="button">Unblock</button>'
+              : ""}
         </div>
         <div class="detail">
           \${recipe.description ? '<p>' + escapeHtml(recipe.description) + '</p>' : ''}
@@ -2801,7 +3255,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       card.querySelectorAll(".restore-btn").forEach((button) => {
         button.addEventListener("click", async (event) => {
           event.stopPropagation();
-          await restoreRecipeById(recipe);
+          if (activeView === "blocklist") await unblockRecipeById(recipe);
+          else await restoreRecipeById(recipe);
         });
       });
       const notesInput = card.querySelector(".recipe-notes-input");
@@ -2896,13 +3351,23 @@ const HTML_PAGE = `<!DOCTYPE html>
       const filtered = recipesForView();
       listEl.replaceChildren();
       const inTrash = activeView === "trash";
-      emptyEl.classList.toggle("hidden", inTrash || allRecipes.length > 0);
+      const inBlocklist = activeView === "blocklist";
+      emptyEl.classList.toggle("hidden", inTrash || inBlocklist || allRecipes.length > 0);
+      blocklistEmptyEl.classList.toggle("hidden", !inBlocklist || allRecipes.length > 0);
       trashEmptyEl.classList.toggle("hidden", !inTrash || allRecipes.length > 0);
       noResultsEl.classList.toggle("hidden", filtered.length > 0 || allRecipes.length === 0);
       listEl.classList.toggle("hidden", filtered.length === 0);
 
       if (allRecipes.length === 0) {
         recipeStatus.textContent = "";
+      } else if (inBlocklist) {
+        const query = (searchInput.value || "").trim();
+        if (query) {
+          recipeStatus.textContent = filtered.length + " of " + allRecipes.length + " recipes blocked";
+        } else {
+          recipeStatus.textContent =
+            allRecipes.length + (allRecipes.length === 1 ? " recipe" : " recipes") + " blocked";
+        }
       } else if (inTrash) {
         const query = (searchInput.value || "").trim();
         if (query) {
@@ -2932,8 +3397,10 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     async function loadRecipes() {
       if (activeView === "library") await refreshCategories();
-      const listEndpoint = activeView === "trash" ? "/api/trash" : "/api/recipes";
-      const detailPrefix = activeView === "trash" ? "/api/trash/" : "/api/recipes/";
+      const listEndpoint =
+        activeView === "trash" ? "/api/trash" : activeView === "blocklist" ? "/api/blocklist" : "/api/recipes";
+      const detailPrefix =
+        activeView === "trash" ? "/api/trash/" : activeView === "blocklist" ? "/api/blocklist/" : "/api/recipes/";
       const response = await fetch(listEndpoint);
       const payload = await response.json();
       const summaries = payload.recipes || [];
@@ -2952,12 +3419,55 @@ const HTML_PAGE = `<!DOCTYPE html>
       return window.location.protocol + "//" + host + ":4020";
     }
 
+    function renderExtensionSettingsStatus(payload) {
+      const statusEl = document.getElementById("extension-api-key-status");
+      if (!statusEl) return;
+      if (payload?.api_key_configured) {
+        statusEl.textContent = "Saved on Umbrel (" + (payload.api_key_preview || "configured") + "). Leave blank to keep the current key.";
+        statusEl.className = "setup-field-status ok";
+        return;
+      }
+      statusEl.textContent = "No API key saved yet. Paste one above and click Save extension settings.";
+      statusEl.className = "setup-field-status";
+    }
+
     async function loadDeviceSetup() {
-      const response = await fetch("/api/settings/token");
-      const payload = await response.json();
-      ingestToken = payload.ingest_token || "";
+      const [tokenResponse, extensionResponse] = await Promise.all([
+        fetch("/api/settings/token"),
+        fetch("/api/settings/extension"),
+      ]);
+      const tokenPayload = await tokenResponse.json();
+      const extensionPayload = await extensionResponse.json();
+      ingestToken = tokenPayload.ingest_token || "";
       tokenValue.textContent = ingestToken;
       baseUrlEl.textContent = extensionUrl();
+      const modelSelect = document.getElementById("extension-model");
+      if (modelSelect) modelSelect.value = extensionPayload.model || "grok-4-1-fast";
+      renderExtensionSettingsStatus(extensionPayload);
+    }
+
+    async function saveExtensionSettings() {
+      const apiKeyInput = document.getElementById("extension-api-key");
+      const modelSelect = document.getElementById("extension-model");
+      const statusEl = document.getElementById("extension-api-key-status");
+      const response = await fetch("/api/settings/extension", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: apiKeyInput?.value || "",
+          model: modelSelect?.value || "grok-4-1-fast",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (statusEl) {
+          statusEl.textContent = payload.error || "Could not save extension settings.";
+          statusEl.className = "setup-field-status error";
+        }
+        return;
+      }
+      if (apiKeyInput) apiKeyInput.value = "";
+      renderExtensionSettingsStatus(payload);
     }
 
     function setupClipboardText() {
@@ -3013,10 +3523,14 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function setActiveNav(view) {
       navLibrary.classList.toggle("active", view === "library");
+      navBlocklist.classList.toggle("active", view === "blocklist");
       navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
+      document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
-      searchInput.placeholder = view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
+      searchInput.placeholder =
+        view === "blocklist" ? "Search in Blocklist" : view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
+      if (view !== "blocklist") blocklistEmptyEl.classList.add("hidden");
       if (view !== "trash") trashEmptyEl.classList.add("hidden");
     }
 
@@ -3028,6 +3542,16 @@ const HTML_PAGE = `<!DOCTYPE html>
       closeContextMenu();
       closeSidebar();
       renderCategoriesSidebar();
+      loadRecipes();
+    }
+
+    function showBlocklist() {
+      devicePanel.classList.add("hidden");
+      clearCategorySelection();
+      activeView = "blocklist";
+      setActiveNav("blocklist");
+      closeContextMenu();
+      closeSidebar();
       loadRecipes();
     }
 
@@ -3053,7 +3577,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function closeDevicePanel() {
       devicePanel.classList.add("hidden");
-      if (!activeCategoryIds.size && activeView !== "trash") setActiveNav("library");
+      if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") setActiveNav("library");
     }
 
     function openDevicePanel() {
@@ -3134,7 +3658,9 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
+    navBlocklist.addEventListener("click", showBlocklist);
     navTrash.addEventListener("click", showTrash);
+    document.getElementById("empty-blocklist").addEventListener("click", emptyBlocklistBin);
     document.getElementById("empty-trash").addEventListener("click", emptyTrashBin);
     document.getElementById("add-category").addEventListener("click", () => openCategoryDialog("create"));
     document.getElementById("category-cancel").addEventListener("click", closeCategoryDialog);
@@ -3157,6 +3683,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     loadLayoutAndSort();
     loadCategorySelection();
     bindListHeader();
+    bindBlocklistDropTarget(document.getElementById("nav-blocklist"));
     bindTrashDropTarget(document.getElementById("nav-trash"));
     applyLayoutView();
     document.getElementById("view-grid").addEventListener("click", () => setLayoutView("grid"));
@@ -3187,6 +3714,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       } catch (error) {
         alert(error.message || "Could not copy setup details.");
       }
+    });
+    document.getElementById("save-extension-settings-btn").addEventListener("click", () => {
+      saveExtensionSettings().catch((error) => alert(error.message || "Could not save extension settings."));
     });
     document.getElementById("regenerate-token-btn").addEventListener("click", async () => {
       if (!confirm("Regenerate token? You will need to update every device using the extension.")) return;
@@ -3248,8 +3778,38 @@ async function handleRequest(req, res) {
             sendJson(res, 200, { ok: true, id: recipe.id, recipe, updated: true });
         }
         catch (error) {
+            if (error instanceof BlockedRecipeError) {
+                const entry = await findBlocklistEntryByUrl(error.sourceUrl);
+                sendJson(res, 403, blockedRecipeResponse(entry, error.sourceUrl));
+                return;
+            }
             const message = error instanceof Error ? error.message : "Invalid recipe payload";
             sendJson(res, 400, { error: message });
+        }
+        return;
+    }
+    if (route === "/api/blocklist/check" && req.method === "POST") {
+        const token = getBearerToken(req);
+        if (!token || token !== settings.ingest_token) {
+            sendJson(res, 401, { error: "Invalid ingest token" });
+            return;
+        }
+        try {
+            const body = JSON.parse(await readBody(req));
+            const sourceUrl = normalizeSourceUrl(String(body.source_url ?? ""));
+            if (!sourceUrl) {
+                sendJson(res, 400, { error: "source_url is required" });
+                return;
+            }
+            const entry = await findBlocklistEntryByUrl(sourceUrl);
+            if (entry) {
+                sendJson(res, 200, blockedRecipeResponse(entry, sourceUrl));
+                return;
+            }
+            sendJson(res, 200, { blocked: false });
+        }
+        catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
         }
         return;
     }
@@ -3306,6 +3866,17 @@ async function handleRequest(req, res) {
         sendJson(res, 200, await enrichRecipe(recipe));
         return;
     }
+    const blockRecipeMatch = route.match(/^\/api\/recipes\/([^/]+)\/block$/);
+    if (blockRecipeMatch && req.method === "POST") {
+        const id = decodeURIComponent(blockRecipeMatch[1]);
+        const moved = await moveRecipeToBlocklist(id);
+        if (!moved) {
+            sendJson(res, 404, { error: "Recipe not found" });
+            return;
+        }
+        sendJson(res, 200, { ok: true });
+        return;
+    }
     if (route.startsWith("/api/recipes/") && req.method === "DELETE") {
         const id = decodeURIComponent(route.slice("/api/recipes/".length));
         const moved = await moveRecipeToTrash(id);
@@ -3314,6 +3885,92 @@ async function handleRequest(req, res) {
             return;
         }
         sendJson(res, 200, { ok: true });
+        return;
+    }
+    if (route === "/api/blocklist" && req.method === "GET") {
+        sendJson(res, 200, { recipes: await loadBlocklistIndex() });
+        return;
+    }
+    const blocklistImageMatch = route.match(/^\/api\/blocklist\/([^/]+)\/image$/);
+    if (blocklistImageMatch && req.method === "GET") {
+        const id = decodeURIComponent(blocklistImageMatch[1]);
+        const imagePath = findBlocklistImagePath(id);
+        if (!imagePath) {
+            sendJson(res, 404, { error: "Image not found" });
+            return;
+        }
+        const ext = node_path_1.default.extname(imagePath).toLowerCase();
+        const contentType = IMAGE_MIME_TYPES[ext] || "application/octet-stream";
+        const image = await (0, promises_1.readFile)(imagePath);
+        res.writeHead(200, {
+            "Content-Type": contentType,
+            "Content-Length": image.length,
+            "Cache-Control": "public, max-age=86400",
+        });
+        res.end(image);
+        return;
+    }
+    const blocklistRecipeMatch = route.match(/^\/api\/blocklist\/([^/]+)$/);
+    if (blocklistRecipeMatch && req.method === "GET") {
+        const id = decodeURIComponent(blocklistRecipeMatch[1]);
+        const blocklistIndex = await loadBlocklistIndex();
+        const entry = blocklistIndex.find((item) => item.id === id);
+        if (!entry) {
+            sendJson(res, 404, { error: "Recipe not found in blocklist" });
+            return;
+        }
+        const recipe = await loadBlocklistRecipe(id);
+        if (!recipe) {
+            sendJson(res, 404, { error: "Recipe not found in blocklist" });
+            return;
+        }
+        sendJson(res, 200, await enrichBlocklistRecipe(recipe, entry));
+        return;
+    }
+    if (route === "/api/blocklist/unblock" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const id = (body.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            const recipe = await restoreRecipeFromBlocklist(id);
+            sendJson(res, 200, { ok: true, recipe });
+        }
+        catch (error) {
+            if (error instanceof NotFoundError) {
+                sendJson(res, 404, { error: error.message });
+            }
+            else {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+            }
+        }
+        return;
+    }
+    if (route === "/api/blocklist/delete" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const id = (body.id ?? "").trim();
+            if (!id) {
+                sendJson(res, 400, { error: "id is required" });
+                return;
+            }
+            const deleted = await permanentlyDeleteBlocklistRecipe(id);
+            if (!deleted) {
+                sendJson(res, 404, { error: "Recipe not found in blocklist" });
+                return;
+            }
+            sendJson(res, 200, { ok: true });
+        }
+        catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+        }
+        return;
+    }
+    if (route === "/api/blocklist/empty" && req.method === "POST") {
+        const count = await emptyBlocklist();
+        sendJson(res, 200, { ok: true, count });
         return;
     }
     if (route === "/api/trash" && req.method === "GET") {
@@ -3406,10 +4063,54 @@ async function handleRequest(req, res) {
         sendJson(res, 200, { ingest_token: settings.ingest_token });
         return;
     }
+    if (route === "/api/settings/extension" && req.method === "GET") {
+        sendJson(res, 200, extensionSettingsPayload(settings));
+        return;
+    }
+    if (route === "/api/settings/extension" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const hasApiKeyField = typeof body.api_key === "string" && body.api_key.trim();
+            const hasModelField = typeof body.model === "string";
+            if (!hasApiKeyField && !hasModelField && !body.clear_api_key) {
+                sendJson(res, 400, { error: "Provide an API key, model, or clear_api_key." });
+                return;
+            }
+            const next = await saveExtensionSettings(body);
+            sendJson(res, 200, extensionSettingsPayload(next));
+        }
+        catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid request" });
+        }
+        return;
+    }
+    if (route === "/api/settings/extension-config" && req.method === "GET") {
+        const token = getBearerToken(req);
+        if (!token || token !== settings.ingest_token) {
+            sendJson(res, 401, { error: "Invalid ingest token" });
+            return;
+        }
+        const apiKey = (settings.extension_api_key ?? "").trim();
+        if (!apiKey) {
+            sendJson(res, 404, {
+                error: "Extension API key is not configured in the Recipes app.",
+            });
+            return;
+        }
+        sendJson(res, 200, {
+            api_key: apiKey,
+            model: normalizeExtensionModel(settings.extension_model),
+        });
+        return;
+    }
     if (route === "/api/settings/regenerate-token" && req.method === "POST") {
-        const next = { ingest_token: (0, node_crypto_1.randomBytes)(32).toString("hex") };
+        const current = await loadSettings();
+        const next = {
+            ...current,
+            ingest_token: (0, node_crypto_1.randomBytes)(32).toString("hex"),
+        };
         await writeJsonAtomic(SETTINGS_PATH, next);
-        sendJson(res, 200, next);
+        sendJson(res, 200, { ingest_token: next.ingest_token });
         return;
     }
     if (route === "/api/categories" && req.method === "GET") {
