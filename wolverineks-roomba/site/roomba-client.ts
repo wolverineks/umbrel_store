@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { createSocket } from "node:dgram";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
+import path from "node:path";
 import { promisify } from "node:util";
 import dorita980 from "dorita980";
+import { appendCustomFavorites, getCustomFavoriteById } from "./custom-favorites.js";
 
 const execFileAsync = promisify(execFile);
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -19,21 +22,152 @@ const DISCOVERY_PORT = 5678;
 const DISCOVERY_MESSAGE = Buffer.from("irobotmcs");
 const DISCOVERY_TIMEOUT_MS = 4_000;
 const SUBNET_SCAN_TIMEOUT_MS = 10_000;
+const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
+const SPACES_CACHE_PATH = path.join(DATA_ROOT, "spaces-cache.json");
+const FAVORITES_CACHE_PATH = path.join(DATA_ROOT, "favorites-cache.json");
+const CLOUD_FETCH_RETRIES = 3;
 
 type CloudPmapsResult =
   | { ok: true; pmaps: unknown[]; error: null }
   | { ok: false; pmaps: unknown[]; error: string };
 
-const favoritesCache = new Map<string, RoombaFavorite[]>();
+type CloudSavedFavoritesResult =
+  | { ok: true; favorites: RoombaFavorite[]; error: null }
+  | { ok: false; favorites: RoombaFavorite[]; error: string };
 
-function cacheFavorites(blid: string, favorites: RoombaFavorite[]): void {
-  if (favorites.length) {
-    favoritesCache.set(blid, favorites);
+type CleanablesDiskEntry = { items: RoombaFavorite[]; updated_at: string };
+type CleanablesDiskCache = Record<string, CleanablesDiskEntry>;
+
+const spacesCache = new Map<string, RoombaFavorite[]>();
+const favoritesCache = new Map<string, RoombaFavorite[]>();
+let cleanablesDiskCacheLoaded = false;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableCloudError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("fetch failed") ||
+    lower.includes("enotfound") ||
+    lower.includes("econnreset") ||
+    lower.includes("timeout") ||
+    lower.includes("etimedout") ||
+    lower.includes("socket hang up")
+  );
+}
+
+function mergeCleanables(existing: RoombaFavorite[], incoming: RoombaFavorite[]): RoombaFavorite[] {
+  const merged: RoombaFavorite[] = [];
+  const seen = new Set<string>();
+  for (const item of [...existing, ...incoming]) {
+    const key = `${item.id}:${item.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
   }
+  return merged;
+}
+
+function isSpaceItem(item: RoombaFavorite): boolean {
+  return item.source === "cloud" || item.id.startsWith("room:") || item.id.startsWith("zone:");
+}
+
+async function readCleanablesDiskCache(pathname: string): Promise<CleanablesDiskCache> {
+  try {
+    const raw = await readFile(pathname, "utf8");
+    const parsed = JSON.parse(raw) as CleanablesDiskCache & Record<string, { favorites?: RoombaFavorite[] }>;
+    const disk: CleanablesDiskCache = {};
+    for (const [blid, entry] of Object.entries(parsed)) {
+      const items = Array.isArray(entry?.items)
+        ? entry.items
+        : Array.isArray(entry?.favorites)
+          ? entry.favorites
+          : [];
+      if (items.length) {
+        disk[blid] = { items, updated_at: entry.updated_at ?? new Date(0).toISOString() };
+      }
+    }
+    return disk;
+  } catch {
+    return {};
+  }
+}
+
+async function ensureCleanablesDiskCacheLoaded(): Promise<void> {
+  if (cleanablesDiskCacheLoaded) return;
+  cleanablesDiskCacheLoaded = true;
+
+  const spacesDisk = await readCleanablesDiskCache(SPACES_CACHE_PATH);
+  for (const [blid, entry] of Object.entries(spacesDisk)) {
+    spacesCache.set(blid, entry.items);
+  }
+
+  const favoritesDisk = await readCleanablesDiskCache(FAVORITES_CACHE_PATH);
+  for (const [blid, entry] of Object.entries(favoritesDisk)) {
+    const spaces = entry.items.filter(isSpaceItem);
+    const saved = entry.items.filter((item) => !isSpaceItem(item));
+    if (!spacesCache.has(blid) && spaces.length) spacesCache.set(blid, spaces);
+    if (saved.length) favoritesCache.set(blid, saved);
+  }
+}
+
+async function persistCleanablesCache(
+  pathname: string,
+  memory: Map<string, RoombaFavorite[]>,
+  blid: string,
+  items: RoombaFavorite[],
+): Promise<void> {
+  if (!items.length) return;
+  memory.set(blid, items);
+  try {
+    await mkdir(DATA_ROOT, { recursive: true });
+    const disk = await readCleanablesDiskCache(pathname);
+    disk[blid] = { items, updated_at: new Date().toISOString() };
+    await writeFile(pathname, JSON.stringify(disk, null, 2));
+  } catch {
+    // Ignore cache write failures.
+  }
+}
+
+async function persistSpacesCache(blid: string, spaces: RoombaFavorite[]): Promise<void> {
+  await persistCleanablesCache(SPACES_CACHE_PATH, spacesCache, blid, spaces);
+}
+
+async function persistFavoritesCache(blid: string, favorites: RoombaFavorite[]): Promise<void> {
+  await persistCleanablesCache(FAVORITES_CACHE_PATH, favoritesCache, blid, favorites);
+}
+
+function getCachedSpaces(blid: string): RoombaFavorite[] {
+  return spacesCache.get(blid) ?? [];
 }
 
 function getCachedFavorites(blid: string): RoombaFavorite[] {
   return favoritesCache.get(blid) ?? [];
+}
+
+function applyCachedCleanables(base: RobotStatus, blid: string, reason: string): void {
+  const cachedSpaces = getCachedSpaces(blid);
+  if (cachedSpaces.length) {
+    base.spaces = cachedSpaces;
+    base.spaces_error = reason;
+  }
+  const cachedFavorites = getCachedFavorites(blid);
+  if (cachedFavorites.length) {
+    base.favorites = cachedFavorites;
+    base.favorites_error = reason;
+  }
+  if (base.spaces.length) {
+    base.favorites = appendCustomFavorites(base.favorites, base.spaces) as RoombaFavorite[];
+    if (base.favorites.length) {
+      base.favorites_error = reason;
+    }
+  }
+}
+
+function collectSavedFavorites(localPmaps: unknown, cloudPmaps: unknown[]): RoombaFavorite[] {
+  return mergeCleanables(parseFavoritesFromPmaps(localPmaps), parseFavoritesFromPmaps(cloudPmaps));
 }
 
 export type ConnectionMode = "on_demand" | "live";
@@ -66,6 +200,8 @@ type FavoriteRegion = {
   type: string;
 };
 
+export type SpaceKind = "room" | "zone";
+
 export type RoombaFavorite = {
   id: string;
   name: string;
@@ -76,6 +212,9 @@ export type RoombaFavorite = {
   regions_summary: string;
   runnable: boolean;
   source?: "local" | "cloud";
+  space_kind?: SpaceKind;
+  clean_estimate_seconds?: number | null;
+  clean_estimate_label?: string | null;
   command_regions?: FavoriteRegion[];
 };
 
@@ -178,8 +317,14 @@ export function formatMissionStatus(
 type MissionCommandRegion = {
   region_id: string;
   region_name: string;
+  region_type: string;
+  type: string;
   two_pass: boolean;
 };
+
+function cloudRegionKey(type: string, regionId: string): string {
+  return `${type.trim() || "rid"}:${regionId}`;
+}
 
 type MissionCommandContext = {
   ordered: boolean;
@@ -209,6 +354,8 @@ function normalizeMissionCommandRegions(regions: unknown): MissionCommandRegion[
       return {
         region_id: String(item.region_id ?? item.id ?? "").trim(),
         region_name: String(item.region_name ?? item.name ?? "").trim(),
+        region_type: String(item.region_type ?? "").trim(),
+        type: String(item.type ?? "rid").trim() || "rid",
         two_pass: params?.twoPass === true,
       };
     })
@@ -258,6 +405,35 @@ function resolveActiveMissionCommand(
   return null;
 }
 
+export function readCleanEstimateSeconds(timeEstimates: unknown): number | null {
+  if (!Array.isArray(timeEstimates)) return null;
+
+  let fallback: number | null = null;
+  for (const estimateValue of timeEstimates) {
+    const estimate = asRecord(estimateValue);
+    if (estimate?.unit !== "seconds" || typeof estimate.estimate !== "number") continue;
+    const params = asRecord(estimate.params);
+    if (params?.twoPass === false) {
+      return estimate.estimate;
+    }
+    if (fallback === null) {
+      fallback = estimate.estimate;
+    }
+  }
+
+  return fallback;
+}
+
+export function formatCleanEstimateLabel(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return "<1 min";
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `~${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `~${hours}h ${remainder}m` : `~${hours}h`;
+}
+
 export function buildCloudRegionIndex(pmaps: unknown): Map<string, CloudRegionInfo> {
   const index = new Map<string, CloudRegionInfo>();
   if (!Array.isArray(pmaps)) return index;
@@ -271,23 +447,26 @@ export function buildCloudRegionIndex(pmaps: unknown): Map<string, CloudRegionIn
       const region = asRecord(regionValue);
       if (!region) continue;
       const regionId = String(region.id ?? region.region_id ?? "").trim();
-      if (!regionId || index.has(regionId)) continue;
+      const key = cloudRegionKey("rid", regionId);
+      if (!regionId || index.has(key)) continue;
 
-      const estimates = Array.isArray(region.time_estimates) ? region.time_estimates : [];
-      let estimateSeconds: number | null = null;
-      for (const estimateValue of estimates) {
-        const estimate = asRecord(estimateValue);
-        const params = asRecord(estimate?.params);
-        if (estimate?.unit !== "seconds" || typeof estimate.estimate !== "number" || !params) continue;
-        if (params.twoPass === false) {
-          estimateSeconds = estimate.estimate;
-          break;
-        }
-      }
-
-      index.set(regionId, {
+      index.set(key, {
         name: String(region.name ?? region.region_name ?? "").trim() || `Room ${regionId}`,
-        estimate_seconds: estimateSeconds,
+        estimate_seconds: readCleanEstimateSeconds(region.time_estimates),
+      });
+    }
+
+    const zones = Array.isArray(details?.zones) ? details.zones : [];
+    for (const zoneValue of zones) {
+      const zone = asRecord(zoneValue);
+      if (!zone) continue;
+      const zoneId = String(zone.id ?? zone.region_id ?? "").trim();
+      const key = cloudRegionKey("zid", zoneId);
+      if (!zoneId || index.has(key)) continue;
+
+      index.set(key, {
+        name: String(zone.name ?? zone.zone_name ?? "").trim() || `Area ${zoneId}`,
+        estimate_seconds: readCleanEstimateSeconds(zone.time_estimates),
       });
     }
   }
@@ -320,7 +499,7 @@ export function formatMissionJobLabel(
 
   const names = command.regions.map((region) => {
     if (region.region_name) return region.region_name;
-    return regionIndex.get(region.region_id)?.name ?? `Room ${region.region_id}`;
+    return regionIndex.get(cloudRegionKey(region.type, region.region_id))?.name ?? `Room ${region.region_id}`;
   });
 
   let base: string;
@@ -370,7 +549,7 @@ export function formatMissionTimeRemaining(
   if (elapsed === null) return null;
 
   const estimates = command.regions.map((region) => {
-    const fromIndex = regionIndex.get(region.region_id)?.estimate_seconds;
+    const fromIndex = regionIndex.get(cloudRegionKey(region.type, region.region_id))?.estimate_seconds;
     return fromIndex ?? null;
   });
   if (estimates.every((value) => value === null)) return null;
@@ -414,6 +593,7 @@ export type RobotStatus = {
   cycle_label: string | null;
   status_label: string | null;
   time_remaining_label: string | null;
+  mission_active: boolean;
   bin_full: boolean | null;
   bin_present: boolean | null;
   docked: boolean | null;
@@ -422,6 +602,8 @@ export type RobotStatus = {
   last_command: string | null;
   software_version: string | null;
   sku: string | null;
+  spaces: RoombaFavorite[];
+  spaces_error: string | null;
   favorites: RoombaFavorite[];
   favorites_error: string | null;
   last_sync: string;
@@ -1281,7 +1463,7 @@ export function parseFavoritesFromPmaps(pmaps: unknown): RoombaFavorite[] {
       const key = `${favorite.id}:${favorite.name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      favorites.push(favorite);
+      favorites.push({ ...favorite, source: favorite.source ?? "local" });
     }
   };
 
@@ -1335,7 +1517,7 @@ export function parseFavoritesFromPmaps(pmaps: unknown): RoombaFavorite[] {
 export function parseRoomsFromCloudPmaps(pmaps: unknown): RoombaFavorite[] {
   if (!Array.isArray(pmaps)) return [];
 
-  const rooms: RoombaFavorite[] = [];
+  const spaces: RoombaFavorite[] = [];
   for (const item of pmaps) {
     const entry = asRecord(item);
     if (!entry) continue;
@@ -1343,9 +1525,9 @@ export function parseRoomsFromCloudPmaps(pmaps: unknown): RoombaFavorite[] {
     const pmapId = String(entry.pmap_id ?? "").trim();
     const userPmapvId = String(entry.user_pmapv_id ?? entry.active_pmapv_id ?? "").trim();
     const details = asRecord(entry.active_pmapv_details);
-    const regions = Array.isArray(details?.regions) ? details.regions : [];
-    if (!pmapId || !userPmapvId || !regions.length) continue;
+    if (!pmapId || !userPmapvId || !details) continue;
 
+    const regions = Array.isArray(details.regions) ? details.regions : [];
     for (const regionValue of regions) {
       const region = asRecord(regionValue);
       if (!region) continue;
@@ -1354,6 +1536,7 @@ export function parseRoomsFromCloudPmaps(pmaps: unknown): RoombaFavorite[] {
       const regionType = String(region.region_type ?? "room").trim();
       if (!regionId) continue;
 
+      const estimateSeconds = readCleanEstimateSeconds(region.time_estimates);
       const commandRegions: FavoriteRegion[] = [
         {
           region_id: regionId,
@@ -1363,7 +1546,7 @@ export function parseRoomsFromCloudPmaps(pmaps: unknown): RoombaFavorite[] {
         },
       ];
 
-      rooms.push({
+      spaces.push({
         id: `room:${pmapId}:${regionId}`,
         name: regionName,
         pmap_id: pmapId,
@@ -1373,12 +1556,51 @@ export function parseRoomsFromCloudPmaps(pmaps: unknown): RoombaFavorite[] {
         regions_summary: regionName,
         runnable: true,
         source: "cloud",
+        space_kind: "room",
+        clean_estimate_seconds: estimateSeconds,
+        clean_estimate_label: estimateSeconds === null ? null : formatCleanEstimateLabel(estimateSeconds),
+        command_regions: commandRegions,
+      });
+    }
+
+    const zones = Array.isArray(details.zones) ? details.zones : [];
+    for (const zoneValue of zones) {
+      const zone = asRecord(zoneValue);
+      if (!zone) continue;
+      const zoneId = String(zone.id ?? zone.region_id ?? "").trim();
+      const zoneName = String(zone.name ?? zone.zone_name ?? "").trim() || `Area ${zoneId}`;
+      const zoneType = String(zone.zone_type ?? "other").trim();
+      if (!zoneId) continue;
+
+      const estimateSeconds = readCleanEstimateSeconds(zone.time_estimates);
+      const commandRegions: FavoriteRegion[] = [
+        {
+          region_id: zoneId,
+          region_name: zoneName,
+          region_type: zoneType,
+          type: "zid",
+        },
+      ];
+
+      spaces.push({
+        id: `zone:${pmapId}:${zoneId}`,
+        name: zoneName,
+        pmap_id: pmapId,
+        user_pmapv_id: userPmapvId,
+        ordered: false,
+        region_count: 1,
+        regions_summary: zoneName,
+        runnable: true,
+        source: "cloud",
+        space_kind: "zone",
+        clean_estimate_seconds: estimateSeconds,
+        clean_estimate_label: estimateSeconds === null ? null : formatCleanEstimateLabel(estimateSeconds),
         command_regions: commandRegions,
       });
     }
   }
 
-  return rooms;
+  return spaces;
 }
 
 function hasCloudAccount(settings: RobotSettings): boolean {
@@ -1407,10 +1629,30 @@ async function readFavoriteCommand(
   let favorite: RoombaFavorite | undefined;
   let regions: FavoriteRegion[] = [];
 
-  if (favoriteId.startsWith("room:") && settings && hasCloudAccount(settings)) {
-    const cloudRooms = await fetchCloudCleanables(settings);
-    favorite = cloudRooms.find((entry) => entry.id === favoriteId);
-    regions = favorite?.command_regions ?? [];
+  if (favoriteId.startsWith("custom:") && settings) {
+    const blid = settings.blid.trim();
+    const cachedSpaces = getCachedSpaces(blid);
+    let customFavorite = getCustomFavoriteById(favoriteId, cachedSpaces);
+    if (!customFavorite?.command_regions?.length && hasCloudAccount(settings)) {
+      const cloudSpaces = await fetchCloudCleanables(settings);
+      customFavorite = getCustomFavoriteById(favoriteId, cloudSpaces);
+    }
+    if (!customFavorite?.command_regions?.length) {
+      throw new Error("Custom favorite is not available — refresh spaces first");
+    }
+    return buildFavoriteCommand(customFavorite, customFavorite.command_regions);
+  }
+
+  if ((favoriteId.startsWith("room:") || favoriteId.startsWith("zone:")) && settings) {
+    const cachedSpace = getCachedSpaces(settings.blid.trim()).find((entry) => entry.id === favoriteId);
+    if (cachedSpace?.command_regions?.length) {
+      return buildFavoriteCommand(cachedSpace, cachedSpace.command_regions);
+    }
+    if (hasCloudAccount(settings)) {
+      const cloudSpaces = await fetchCloudCleanables(settings);
+      favorite = cloudSpaces.find((entry) => entry.id === favoriteId);
+      regions = favorite?.command_regions ?? [];
+    }
   }
 
   if (!favorite) {
@@ -1544,6 +1786,7 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     cycle_label: null,
     status_label: null,
     time_remaining_label: null,
+    mission_active: false,
     bin_full: null,
     bin_present: null,
     docked: null,
@@ -1552,6 +1795,8 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
     last_command: null,
     software_version: null,
     sku: null,
+    spaces: [],
+    spaces_error: null,
     favorites: [],
     favorites_error: null,
     last_sync: new Date().toISOString(),
@@ -1563,16 +1808,20 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
   }
 
   const blid = settings.blid.trim();
+  await ensureCleanablesDiskCacheLoaded();
   const cloudTask = hasCloudAccount(settings) ? fetchCloudPmapsResult(settings) : null;
+  const cloudFavoritesTask = hasCloudAccount(settings) ? fetchCloudSavedFavoritesResult(settings) : null;
 
   try {
-    const [snapshot, cloudResult] = await Promise.all([
+    const [snapshot, cloudResult, cloudFavoritesResult] = await Promise.all([
       withRobot(settings, async (robot) => {
         const state = await readRobotState(robot);
         const extras = await readDashboardExtras(robot);
         return { state, extras };
       }),
       cloudTask ?? Promise.resolve({ ok: true, pmaps: [], error: null } satisfies CloudPmapsResult),
+      cloudFavoritesTask ??
+        Promise.resolve({ ok: true, favorites: [], error: null } satisfies CloudSavedFavoritesResult),
     ]);
 
     const state = snapshot.state;
@@ -1605,48 +1854,73 @@ export async function getRobotStatus(settings: RobotSettings): Promise<RobotStat
           : null;
     base.sku =
       typeof extras.sku === "string" ? extras.sku : typeof state.sku === "string" ? state.sku : null;
-    if (snapshot.extras && typeof extras.pmaps !== "undefined") {
-      base.favorites = parseFavoritesFromPmaps(extras.pmaps);
+    const localPmaps = snapshot.extras && typeof extras.pmaps !== "undefined" ? extras.pmaps : null;
+    base.favorites = collectSavedFavorites(localPmaps, cloudResult.pmaps);
+    if (cloudFavoritesResult.ok && cloudFavoritesResult.favorites.length) {
+      base.favorites = mergeCleanables(base.favorites, cloudFavoritesResult.favorites);
     }
 
-    if (!base.favorites.length) {
-      const cloudRooms = parseRoomsFromCloudPmaps(cloudResult.pmaps);
-      if (cloudRooms.length) {
-        base.favorites = cloudRooms;
-        base.favorites_error = null;
+    const cloudSpaces = parseRoomsFromCloudPmaps(cloudResult.pmaps);
+    if (cloudSpaces.length) {
+      base.spaces = cloudSpaces;
+      base.spaces_error = null;
+    }
+
+    if (base.spaces.length) {
+      await persistSpacesCache(blid, base.spaces);
+    } else {
+      const cachedSpaces = getCachedSpaces(blid);
+      if (cachedSpaces.length) {
+        base.spaces = cachedSpaces;
+        base.spaces_error = cloudResult.error
+          ? `Could not refresh spaces from iRobot cloud (${cloudResult.error}) — showing saved spaces.`
+          : "Showing saved spaces — iRobot cloud did not return an updated list.";
       }
     }
 
     if (base.favorites.length) {
-      cacheFavorites(blid, base.favorites);
+      await persistFavoritesCache(blid, base.favorites);
     } else {
       const cachedFavorites = getCachedFavorites(blid);
       if (cachedFavorites.length) {
         base.favorites = cachedFavorites;
-        base.favorites_error = cloudResult.error
-          ? `Could not refresh rooms from iRobot cloud (${cloudResult.error}) — showing last loaded list.`
-          : "Showing last loaded rooms — iRobot cloud did not return an updated list.";
+        base.favorites_error = cloudFavoritesResult.error
+          ? `Could not refresh favorites (${cloudFavoritesResult.error}) — showing saved favorites.`
+          : "Showing saved favorites — iRobot did not return an updated list.";
       }
     }
 
+    base.mission_active = missionIsActive(mission);
     base.cycle_label = formatMissionJobLabel(base.phase, base.cycle, missionCommand, regionIndex);
     base.time_remaining_label = formatMissionTimeRemaining(mission, missionCommand, regionIndex);
     base.status_label = formatMissionStatus(base.phase, base.cycle, base.cycle_label);
 
-    if (!base.favorites.length) {
+    if (!base.spaces.length) {
       if (cloudResult.error) {
-        base.favorites_error = `Could not load rooms from iRobot cloud: ${cloudResult.error}`;
-      } else if (hasCloudAccount(settings)) {
-        base.favorites_error =
-          "No saved favorites found. Smart Map rooms are loaded from iRobot cloud when your account is configured.";
+        base.spaces_error = `Could not load spaces from iRobot cloud: ${cloudResult.error}`;
+      } else if (!hasCloudAccount(settings)) {
+        base.spaces_error = "Add your iRobot account in Settings to load Smart Map spaces from iRobot cloud.";
       } else {
-        base.favorites_error = "Add your iRobot account in Settings to load Smart Map rooms from iRobot cloud.";
+        base.spaces_error = "No Smart Map spaces found for this robot.";
+      }
+    }
+
+    base.favorites = appendCustomFavorites(base.favorites, base.spaces) as RoombaFavorite[];
+
+    if (!base.favorites.length) {
+      if (cloudFavoritesResult.error) {
+        base.favorites_error =
+          "Saved favorites are not available from iRobot cloud on this account. Custom favorites appear when Smart Map spaces are loaded.";
+      } else {
+        base.favorites_error =
+          "No favorites found. Custom favorites appear when Smart Map spaces are loaded.";
       }
     }
 
     return base;
   } catch (error) {
     base.error = error instanceof Error ? error.message : String(error);
+    applyCachedCleanables(base, blid, `${base.error} — showing last saved list.`);
     return base;
   }
 }
@@ -1950,7 +2224,7 @@ async function fetchCloudPmaps(settings: RobotSettings): Promise<unknown[]> {
   return result.pmaps;
 }
 
-async function fetchCloudPmapsResult(settings: RobotSettings): Promise<CloudPmapsResult> {
+async function fetchCloudPmapsOnce(settings: RobotSettings): Promise<CloudPmapsResult> {
   const blid = settings.blid.trim();
   if (!blid || !hasCloudAccount(settings)) {
     return { ok: true, pmaps: [], error: null };
@@ -1982,6 +2256,67 @@ async function fetchCloudPmapsResult(settings: RobotSettings): Promise<CloudPmap
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function fetchCloudPmapsResult(settings: RobotSettings): Promise<CloudPmapsResult> {
+  let lastError = "iRobot cloud request failed";
+  for (let attempt = 0; attempt < CLOUD_FETCH_RETRIES; attempt++) {
+    const result = await fetchCloudPmapsOnce(settings);
+    if (result.ok) return result;
+    lastError = result.error;
+    if (!isRetryableCloudError(result.error) || attempt === CLOUD_FETCH_RETRIES - 1) {
+      break;
+    }
+    await sleep(750 * (attempt + 1));
+  }
+  return { ok: false, pmaps: [], error: lastError };
+}
+
+async function fetchCloudSavedFavoritesOnce(settings: RobotSettings): Promise<CloudSavedFavoritesResult> {
+  const blid = settings.blid.trim();
+  if (!blid || !hasCloudAccount(settings)) {
+    return { ok: true, favorites: [], error: null };
+  }
+
+  try {
+    const login = await loginIrobotCloud(settings.irobot_username, settings.irobot_password);
+    for (const uri of [`/v1/${blid}/smartcleanfavorites`, `/v1/${blid}/favorites`]) {
+      const response = await awsSignedGet(
+        login.endpoints.iotHost,
+        uri,
+        "",
+        login.credentials,
+        login.endpoints.awsRegion,
+      );
+      if (!response.ok) continue;
+      const body = (await response.json()) as unknown;
+      const favorites = parseFavoritesFromPmaps(body);
+      if (favorites.length) {
+        return { ok: true, favorites, error: null };
+      }
+    }
+    return { ok: true, favorites: [], error: null };
+  } catch (error) {
+    return {
+      ok: false,
+      favorites: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function fetchCloudSavedFavoritesResult(settings: RobotSettings): Promise<CloudSavedFavoritesResult> {
+  let lastError = "iRobot cloud favorites request failed";
+  for (let attempt = 0; attempt < CLOUD_FETCH_RETRIES; attempt++) {
+    const result = await fetchCloudSavedFavoritesOnce(settings);
+    if (result.ok) return result;
+    lastError = result.error;
+    if (!isRetryableCloudError(result.error) || attempt === CLOUD_FETCH_RETRIES - 1) {
+      break;
+    }
+    await sleep(750 * (attempt + 1));
+  }
+  return { ok: false, favorites: [], error: lastError };
 }
 
 async function fetchCloudCleanables(settings: RobotSettings): Promise<RoombaFavorite[]> {
@@ -2186,4 +2521,352 @@ export function getDorita980Version(): string | null {
   } catch {
     return null;
   }
+}
+
+export type ExploreResult = {
+  external: {
+    method: string;
+    url: string;
+    protocol: string;
+    notes?: string;
+  };
+  http_status: number | null;
+  ok: boolean;
+  body: unknown;
+};
+
+export type RoombaExploreOperation =
+  | "get-state"
+  | "preferences"
+  | "wireless-status"
+  | "cloud-config"
+  | "start"
+  | "pause"
+  | "resume"
+  | "stop"
+  | "dock"
+  | "clean-room";
+
+function redactSecret(value: string, visible = 6): string {
+  if (!value) return value;
+  if (value.length <= visible) return "…";
+  return `${value.slice(0, visible)}…`;
+}
+
+async function parseExploreResponseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+function redactGigyaLoginBody(body: Record<string, unknown>): Record<string, unknown> {
+  const redacted = { ...body };
+  if (typeof redacted.UIDSignature === "string") {
+    redacted.UIDSignature = redactSecret(redacted.UIDSignature, 10);
+  }
+  if (typeof redacted.sessionInfo === "object" && redacted.sessionInfo) {
+    const sessionInfo = { ...(redacted.sessionInfo as Record<string, unknown>) };
+    if (typeof sessionInfo.cookieValue === "string") {
+      sessionInfo.cookieValue = "[redacted]";
+    }
+    redacted.sessionInfo = sessionInfo;
+  }
+  return redacted;
+}
+
+function redactCloudLoginBody(body: CloudLoginBody): unknown {
+  const redacted = structuredClone(body) as Record<string, unknown>;
+  const credentials = redacted.credentials;
+  if (credentials && typeof credentials === "object") {
+    const creds = { ...(credentials as Record<string, unknown>) };
+    creds.SecretKey = "[redacted]";
+    if (typeof creds.SessionToken === "string") {
+      creds.SessionToken = redactSecret(creds.SessionToken, 12);
+    }
+    redacted.credentials = creds;
+  }
+  const robots = redacted.robots;
+  if (robots && typeof robots === "object") {
+    const nextRobots: Record<string, unknown> = {};
+    for (const [blid, robot] of Object.entries(robots as Record<string, Record<string, unknown>>)) {
+      nextRobots[blid] = {
+        ...robot,
+        password: robot.password ? "[redacted]" : robot.password,
+      };
+    }
+    redacted.robots = nextRobots;
+  }
+  return redacted;
+}
+
+function resolveExploreCredentials(
+  settings: RobotSettings,
+  username?: string,
+  password?: string,
+): { username: string; password: string } {
+  const resolvedUsername = username?.trim() || settings.irobot_username.trim();
+  const resolvedPassword = password?.trim() || settings.irobot_password.trim();
+  if (!resolvedUsername || !resolvedPassword) {
+    throw new Error("iRobot account username and password are required in the request body or Settings");
+  }
+  return { username: resolvedUsername, password: resolvedPassword };
+}
+
+function roombaExternalMeta(settings: RobotSettings, notes: string): ExploreResult["external"] {
+  return {
+    method: "MQTT",
+    protocol: "MQTT/TLS (dorita980)",
+    url: `mqtts://${settings.robot_ip.trim()}:${MQTT_PORT}`,
+    notes,
+  };
+}
+
+export function getIrobotDiscoveryUrl(): string {
+  return IROBOT_DISCOVERY_URL;
+}
+
+export async function exploreIrobotDiscovery(): Promise<ExploreResult> {
+  const response = await fetch(IROBOT_DISCOVERY_URL, {
+    signal: AbortSignal.timeout(HTTP_PROBE_TIMEOUT_MS),
+    headers: { Connection: "close" },
+  });
+  const body = await parseExploreResponseBody(response);
+  return {
+    external: {
+      method: "GET",
+      protocol: "HTTPS",
+      url: IROBOT_DISCOVERY_URL,
+      notes: "Resolves Gigya, AWS, and iRobot HTTP hosts for the account region.",
+    },
+    http_status: response.status,
+    ok: response.ok,
+    body,
+  };
+}
+
+export async function exploreIrobotGigyaLogin(
+  settings: RobotSettings,
+  username?: string,
+  password?: string,
+): Promise<ExploreResult> {
+  const credentials = resolveExploreCredentials(settings, username, password);
+  const endpoints = await discoverIrobotEndpoints();
+  const gigyaForm = new URLSearchParams({
+    apiKey: endpoints.apiKey,
+    targetenv: "mobile",
+    loginID: credentials.username,
+    password: credentials.password,
+    format: "json",
+    targetEnv: "mobile",
+  });
+  const response = await fetch(`${endpoints.gigyaBase}/accounts.login`, {
+    method: "POST",
+    body: gigyaForm,
+    signal: AbortSignal.timeout(HTTP_PROBE_TIMEOUT_MS),
+    headers: { Connection: "close" },
+  });
+  const body = await parseExploreResponseBody(response);
+  return {
+    external: {
+      method: "POST",
+      protocol: "HTTPS (Gigya)",
+      url: `${endpoints.gigyaBase}/accounts.login`,
+      notes: "Form body: apiKey, loginID, password, targetEnv=mobile.",
+    },
+    http_status: response.status,
+    ok: response.ok && typeof body === "object" && body !== null && Number((body as Record<string, unknown>).errorCode) === 0,
+    body: typeof body === "object" && body !== null ? redactGigyaLoginBody(body as Record<string, unknown>) : body,
+  };
+}
+
+export async function exploreIrobotCloudLogin(
+  settings: RobotSettings,
+  username?: string,
+  password?: string,
+): Promise<ExploreResult> {
+  const credentials = resolveExploreCredentials(settings, username, password);
+  const login = await loginIrobotCloud(credentials.username, credentials.password);
+  const redactedLogin = redactCloudLoginBody({
+    credentials: login.credentials,
+    robots: login.robots,
+  }) as Record<string, unknown>;
+  return {
+    external: {
+      method: "POST",
+      protocol: "HTTPS (iRobot cloud)",
+      url: `${login.endpoints.httpBase}/v2/login`,
+      notes: `JSON body includes app_id and Gigya uid/signature/timestamp. IoT host: ${login.endpoints.iotHost}`,
+    },
+    http_status: 200,
+    ok: true,
+    body: {
+      endpoints: {
+        gigya_base: login.endpoints.gigyaBase,
+        http_base: login.endpoints.httpBase,
+        iot_host: login.endpoints.iotHost,
+        aws_region: login.endpoints.awsRegion,
+      },
+      credentials: redactedLogin.credentials,
+      robots: redactedLogin.robots,
+    },
+  };
+}
+
+export async function exploreIrobotSignedGet(
+  settings: RobotSettings,
+  uri: string,
+  query = "",
+  username?: string,
+  password?: string,
+): Promise<ExploreResult> {
+  const credentials = resolveExploreCredentials(settings, username, password);
+  const blid = settings.blid.trim();
+  if (!blid) {
+    throw new Error("Robot BLID must be configured in Settings");
+  }
+
+  const resolvedUri = uri.includes("{blid}") ? uri.replace("{blid}", blid) : uri;
+  const login = await loginIrobotCloud(credentials.username, credentials.password);
+  const response = await awsSignedGet(
+    login.endpoints.iotHost,
+    resolvedUri,
+    query,
+    login.credentials,
+    login.endpoints.awsRegion,
+  );
+  const body = await parseExploreResponseBody(response);
+  const externalUrl = `https://${login.endpoints.iotHost}${resolvedUri}${query ? `?${query}` : ""}`;
+  return {
+    external: {
+      method: "GET",
+      protocol: "HTTPS (AWS SigV4)",
+      url: externalUrl,
+      notes: "Requires x-amz-date, x-amz-security-token, and Authorization headers from /v2/login credentials.",
+    },
+    http_status: response.status,
+    ok: response.ok,
+    body,
+  };
+}
+
+export async function exploreRoomba(
+  settings: RobotSettings,
+  operation: RoombaExploreOperation,
+  payload: { fields?: string[]; command?: Record<string, unknown> } = {},
+): Promise<ExploreResult> {
+  if (!isConfigured(settings)) {
+    throw new Error("Robot is not configured yet");
+  }
+
+  return withRobot(settings, async (robot) => {
+    switch (operation) {
+      case "get-state": {
+        const fields =
+          payload.fields && payload.fields.length
+            ? payload.fields
+            : ["batPct", "cleanMissionStatus", "bin", "pmaps", "softwareVer", "sku", "lastCommand"];
+        const body = await robot.getRobotState(fields);
+        return {
+          external: roombaExternalMeta(settings, `dorita980.getRobotState(${JSON.stringify(fields)})`),
+          http_status: null,
+          ok: true,
+          body,
+        };
+      }
+      case "preferences": {
+        const body = await robot.getPreferences();
+        return {
+          external: roombaExternalMeta(settings, "dorita980.getPreferences()"),
+          http_status: null,
+          ok: true,
+          body,
+        };
+      }
+      case "wireless-status": {
+        const body = await robot.getWirelessStatus();
+        return {
+          external: roombaExternalMeta(settings, "dorita980.getWirelessStatus()"),
+          http_status: null,
+          ok: true,
+          body,
+        };
+      }
+      case "cloud-config": {
+        const body = await robot.getCloudConfig();
+        return {
+          external: roombaExternalMeta(settings, "dorita980.getCloudConfig()"),
+          http_status: null,
+          ok: true,
+          body,
+        };
+      }
+      case "start": {
+        const result = await sendStartClean(robot);
+        return {
+          external: roombaExternalMeta(settings, "dorita980.start() or resume()"),
+          http_status: null,
+          ok: true,
+          body: result,
+        };
+      }
+      case "pause": {
+        await robot.pause();
+        const snapshot = await readMissionSnapshot(robot);
+        return {
+          external: roombaExternalMeta(settings, "dorita980.pause()"),
+          http_status: null,
+          ok: true,
+          body: formatMissionState(snapshot.mission),
+        };
+      }
+      case "resume": {
+        await robot.resume();
+        const snapshot = await readMissionSnapshot(robot);
+        return {
+          external: roombaExternalMeta(settings, "dorita980.resume()"),
+          http_status: null,
+          ok: true,
+          body: formatMissionState(snapshot.mission),
+        };
+      }
+      case "stop": {
+        await robot.stop();
+        const snapshot = await readMissionSnapshot(robot);
+        return {
+          external: roombaExternalMeta(settings, "dorita980.stop()"),
+          http_status: null,
+          ok: true,
+          body: formatMissionState(snapshot.mission),
+        };
+      }
+      case "dock": {
+        const result = await sendDock(robot);
+        return {
+          external: roombaExternalMeta(settings, "dorita980.dock()"),
+          http_status: null,
+          ok: true,
+          body: result,
+        };
+      }
+      case "clean-room": {
+        if (!payload.command || typeof payload.command !== "object") {
+          throw new Error("command object is required for clean-room");
+        }
+        await robot.cleanRoom(payload.command);
+        const snapshot = await readMissionSnapshot(robot);
+        return {
+          external: roombaExternalMeta(settings, "dorita980.cleanRoom(command)"),
+          http_status: null,
+          ok: true,
+          body: formatMissionState(snapshot.mission),
+        };
+      }
+      default:
+        throw new Error(`Unknown Roomba explore operation: ${String(operation)}`);
+    }
+  });
 }

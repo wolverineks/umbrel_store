@@ -1,16 +1,17 @@
 {
   "name": "wolverineks-roomba",
   "private": true,
-  "version": "1.2.9",
+  "version": "1.2.26",
   "scripts": {
     "postinstall": "node patch-dorita980.js",
-    "build": "tsc && cp dist/server.js server.js && cp dist/roomba-client.js roomba-client.js",
+    "build": "tsc && cp dist/server.js server.js && cp dist/roomba-client.js roomba-client.js && cp dist/custom-favorites.js custom-favorites.js",
     "start": "node server.js",
     "dev": "ROOMBA_DEV=1 ROOMBA_DATA_DIR=./.local-data PORT=4050 tsx watch server.ts",
     "dev:local": "ROOMBA_DEV=1 ROOMBA_DATA_DIR=./.local-data PORT=4050 tsx watch server.ts"
   },
   "dependencies": {
-    "dorita980": "^4.0.0"
+    "dorita980": "^4.0.0",
+    "lucide": "^0.469.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

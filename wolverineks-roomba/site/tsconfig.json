@@ -9,5 +9,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["server.ts", "roomba-client.ts", "dorita980.d.ts"]
+  "include": ["server.ts", "roomba-client.ts", "custom-favorites.ts", "dorita980.d.ts"]
 }

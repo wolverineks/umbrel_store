@@ -8,12 +8,13 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const roomba_client_1 = require("./roomba-client");
-const APP_VERSION = "1.2.9";
+const APP_VERSION = "1.2.25";
 const API_TIMEOUT_MS = 45_000;
 const IS_LOCAL_DEV = process.env.ROOMBA_DEV === "1";
 const DATA_ROOT = process.env.ROOMBA_DATA_DIR ?? "/data";
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
+const LUCIDE_PATH = node_path_1.default.join(__dirname, "node_modules/lucide/dist/umd/lucide.min.js");
 const PORT = Number(process.env.PORT ?? 3000);
 const DEFAULT_SETTINGS = {
     robot_ip: process.env.ROOMBA_IP?.trim() || "",
@@ -250,6 +251,16 @@ function pageStyles() {
     }
     .stat .label { color: var(--muted); font-size: 13px; }
     .stat .value { font-size: 24px; font-weight: 700; margin-top: 6px; }
+    .stat.stat-active {
+      background: #ecfdf5;
+      border: 1px solid #bbf7d0;
+    }
+    .stat.stat-active .label {
+      color: #166534;
+    }
+    .stat.stat-active .value {
+      color: #15803d;
+    }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
     button, .button {
       border: 0;
@@ -358,28 +369,112 @@ function pageStyles() {
       font-size: 14px;
     }
     .favorite-list {
-      display: grid;
-      gap: 12px;
       margin-top: 12px;
     }
-    .favorite-card {
+    .favorite-list.muted {
+      font-size: 14px;
+    }
+    .favorite-tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+      gap: 12px;
+    }
+    button.favorite-tile {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-end;
+      min-height: 120px;
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #bae6fd;
+      border-radius: 14px;
+      background: var(--accent-soft);
+      color: var(--text);
+      text-align: center;
+      box-shadow: none;
+      gap: 8px;
+    }
+    button.favorite-tile:hover:not(:disabled) {
+      background: #bae6fd;
+      border-color: var(--accent);
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.16);
+      color: var(--text);
+    }
+    button.favorite-tile:active:not(:disabled) {
+      background: #7dd3fc;
+      border-color: var(--accent-active);
+      color: var(--text);
+    }
+    button.favorite-tile:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.favorite-tile.favorite-tile-zone {
+      border-color: #fcd34d;
+      background: #fffbeb;
+    }
+    button.favorite-tile.favorite-tile-zone:hover:not(:disabled) {
+      background: #fef3c7;
+      border-color: #f59e0b;
+      box-shadow: 0 4px 14px rgba(245, 158, 11, 0.16);
+    }
+    button.favorite-tile.favorite-tile-zone:active:not(:disabled) {
+      background: #fde68a;
+      border-color: #d97706;
+    }
+    .favorite-tile-zone .favorite-tile-icon .icon-badge {
+      background: linear-gradient(180deg, rgba(245, 158, 11, 0.24) 0%, rgba(245, 158, 11, 0.1) 100%);
+      color: #b45309;
+    }
+    .favorite-tile-icon {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px 16px;
-      background: #f8fafc;
+      justify-content: center;
+      flex: 1;
+      width: 100%;
+      min-height: 56px;
+      color: var(--accent);
     }
-    .favorite-card strong {
+    .favorite-tile-icon .icon-badge {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(2, 132, 199, 0.2) 0%, rgba(2, 132, 199, 0.08) 100%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+      color: #0369a1;
+    }
+    .favorite-tile-icon svg {
+      width: 26px;
+      height: 26px;
       display: block;
-      font-size: 15px;
-      margin-bottom: 4px;
     }
-    .favorite-card .muted {
-      margin: 0;
+    .favorite-tile-name {
       font-size: 13px;
+      font-weight: 700;
+      line-height: 1.25;
+      word-break: break-word;
+      width: 100%;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      margin-top: auto;
+    }
+    .favorite-tile-estimate {
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.2;
+      color: var(--muted);
+      margin-top: 3px;
+      width: 100%;
+    }
+    .favorite-tile-zone .favorite-tile-estimate {
+      color: #b45309;
+      opacity: 0.9;
     }
     .maintenance-badge {
       display: inline-block;
@@ -474,6 +569,141 @@ function pageStyles() {
       border: 1px solid #fecaca;
       color: #991b1b;
     }
+    .api-explorer-grid {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .api-explorer-card h3 {
+      margin: 0 0 4px;
+      font-size: 18px;
+    }
+    .api-explorer-card .card-hint {
+      margin: 0 0 14px;
+      font-size: 13px;
+    }
+    .api-endpoint-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .api-workspace-panel {
+      margin-top: 18px;
+    }
+    .api-workspace-panel h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+    .api-endpoint-item {
+      width: 100%;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      box-shadow: none;
+    }
+    .api-endpoint-item:hover {
+      background: var(--accent-soft);
+      border-color: #bae6fd;
+      box-shadow: none;
+    }
+    .api-endpoint-item.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px rgba(2, 132, 199, 0.12);
+    }
+    .api-endpoint-item .api-endpoint-path {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.35;
+      word-break: break-all;
+    }
+    .api-workspace {
+      min-width: 0;
+    }
+    .api-request-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .api-request-header code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 14px;
+      background: #f1f5f9;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+    }
+    .api-method {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 52px;
+      border-radius: 8px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+    .api-method.get { background: #16a34a; }
+    .api-method.post { background: #0284c7; }
+    .api-method.put { background: #d97706; }
+    .api-body-textarea {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.45;
+      min-height: 160px;
+      resize: vertical;
+    }
+    .api-response-meta {
+      margin-top: 14px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+    .api-response {
+      margin: 8px 0 0;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow: auto;
+      max-height: 520px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #1e293b;
+    }
+    .api-response.ok { border-color: #166534; }
+    .api-response.error { border-color: #991b1b; }
+    .api-external {
+      margin: 0 0 10px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      word-break: break-all;
+    }
+    .api-endpoint-item .api-endpoint-subpath {
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      line-height: 1.35;
+      word-break: break-all;
+    }
     @media (max-width: 900px) {
       .layout {
         grid-template-columns: 1fr;
@@ -539,6 +769,333 @@ function pageStyles() {
     }
   `;
 }
+const API_EXPLORER_SECTIONS = [
+    {
+        id: "app",
+        title: "App",
+        hint: "HTTP API served by this Umbrel app on your LAN.",
+    },
+    {
+        id: "roomba",
+        title: "Roomba",
+        hint: "Proxied local MQTT via dorita980 and LAN discovery to your robot.",
+    },
+    {
+        id: "irobot",
+        title: "iRobot",
+        hint: "Proxied HTTPS to iRobot cloud with Gigya login and AWS SigV4 signing.",
+    },
+];
+function apiExplorerCardsHtml() {
+    return API_EXPLORER_SECTIONS.map((section) => `<div class="panel diagnostics-card api-explorer-card">` +
+        `<h3>${escapeHtml(section.title)}</h3>` +
+        `<p class="muted card-hint">${escapeHtml(section.hint)}</p>` +
+        `<div class="api-endpoint-list" id="api-endpoints-${section.id}"></div>` +
+        `</div>`).join("");
+}
+const API_ENDPOINTS = [
+    {
+        id: "status",
+        section: "app",
+        method: "GET",
+        path: "/api/status",
+        summary: "Live robot status, Smart Map spaces, and saved favorites.",
+    },
+    {
+        id: "maintenance",
+        section: "app",
+        method: "GET",
+        path: "/api/maintenance",
+        summary: "Maintenance counters and replacement reminders.",
+    },
+    {
+        id: "preferences",
+        section: "app",
+        method: "GET",
+        path: "/api/preferences",
+        summary: "Robot preferences from local MQTT.",
+    },
+    {
+        id: "diagnostics",
+        section: "app",
+        method: "GET",
+        path: "/api/diagnostics",
+        summary: "Combined app, Roomba, and iRobot cloud diagnostics snapshot.",
+    },
+    {
+        id: "settings-get",
+        section: "app",
+        method: "GET",
+        path: "/api/settings",
+        summary: "Saved app settings with secrets redacted.",
+    },
+    {
+        id: "settings-put",
+        section: "app",
+        method: "PUT",
+        path: "/api/settings",
+        summary: "Update robot connection settings and polling options.",
+        body: JSON.stringify({
+            robot_ip: "192.168.1.100",
+            blid: "your-blid",
+            password: "your-local-mqtt-password",
+            robot_name: "Roomba",
+            firmware_version: "3",
+            connection_mode: "on_demand",
+            live_poll_seconds: 30,
+        }, null, 2),
+        warning: "Sends credentials to the server. Use only on your local network.",
+    },
+    {
+        id: "discover",
+        section: "app",
+        method: "POST",
+        path: "/api/setup/discover",
+        summary: "Scan the LAN for Roomba robots. Optional robot_ip hint narrows the search.",
+        body: JSON.stringify({ robot_ip: "192.168.1.100" }, null, 2),
+    },
+    {
+        id: "fetch-credentials",
+        section: "app",
+        method: "POST",
+        path: "/api/setup/fetch-credentials",
+        summary: "Log in to iRobot cloud and fetch robot BLID/password for setup.",
+        body: JSON.stringify({ username: "you@example.com", password: "your-password" }, null, 2),
+        warning: "Sends your iRobot account password to this app. Credentials are stored locally in settings.",
+    },
+    {
+        id: "test",
+        section: "app",
+        method: "POST",
+        path: "/api/setup/test",
+        summary: "Test a robot connection without saving settings.",
+        body: JSON.stringify({
+            robot_ip: "192.168.1.100",
+            blid: "your-blid",
+            password: "your-local-mqtt-password",
+            firmware_version: "3",
+        }, null, 2),
+    },
+    {
+        id: "action-clean",
+        section: "app",
+        method: "POST",
+        path: "/api/action/clean",
+        summary: "Start a cleaning job.",
+        warning: "Requires a brief exclusive local MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "action-pause",
+        section: "app",
+        method: "POST",
+        path: "/api/action/pause",
+        summary: "Pause the current job.",
+        warning: "Requires a brief exclusive local MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "action-resume",
+        section: "app",
+        method: "POST",
+        path: "/api/action/resume",
+        summary: "Resume a paused job.",
+        warning: "Requires a brief exclusive local MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "action-stop",
+        section: "app",
+        method: "POST",
+        path: "/api/action/stop",
+        summary: "Stop the current job.",
+        warning: "Requires a brief exclusive local MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "action-dock",
+        section: "app",
+        method: "POST",
+        path: "/api/action/dock",
+        summary: "Send the robot back to the dock.",
+        warning: "Requires a brief exclusive local MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "action-favorite",
+        section: "app",
+        method: "POST",
+        path: "/api/action/favorite",
+        summary: "Run a saved favorite or Smart Map space by id.",
+        body: JSON.stringify({ favorite_id: "room:pmap-id:region-id" }, null, 2),
+        warning: "Requires a brief exclusive local MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "irobot-discovery",
+        section: "irobot",
+        method: "GET",
+        path: "/api/explore/irobot/discovery",
+        external: `GET ${(0, roomba_client_1.getIrobotDiscoveryUrl)()}`,
+        summary: "Discover regional Gigya, AWS, and iRobot HTTP endpoints.",
+    },
+    {
+        id: "irobot-gigya-login",
+        section: "irobot",
+        method: "POST",
+        path: "/api/explore/irobot/gigya-login",
+        external: "POST {gigya_base}/accounts.login",
+        summary: "Gigya account login step before iRobot /v2/login. Uses Settings credentials unless overridden in the body.",
+        body: JSON.stringify({ username: "you@example.com", password: "your-password" }, null, 2),
+        warning: "Sends your iRobot account password. Credentials are redacted in the response.",
+    },
+    {
+        id: "irobot-cloud-login",
+        section: "irobot",
+        method: "POST",
+        path: "/api/explore/irobot/cloud-login",
+        external: "POST {http_base}/v2/login",
+        summary: "Full iRobot cloud login. Returns AWS session credentials and robots on the account (secrets redacted).",
+        body: JSON.stringify({ username: "you@example.com", password: "your-password" }, null, 2),
+        warning: "Sends your iRobot account password. AWS and robot secrets are redacted in the response.",
+    },
+    {
+        id: "irobot-pmaps",
+        section: "irobot",
+        method: "GET",
+        path: "/api/explore/irobot/pmaps?activeDetails=2",
+        external: "GET https://{iot_host}/v1/{blid}/pmaps?activeDetails=2",
+        summary: "AWS SigV4 GET for Smart Map pmaps, including room names and saved favorite metadata.",
+        warning: "Uses your iRobot account from Settings. Requires configured BLID.",
+    },
+    {
+        id: "irobot-smartcleanfavorites",
+        section: "irobot",
+        method: "GET",
+        path: "/api/explore/irobot/smartcleanfavorites",
+        external: "GET https://{iot_host}/v1/{blid}/smartcleanfavorites",
+        summary: "AWS SigV4 GET for saved Smart Clean favorites. Often returns HTTP 403 on consumer accounts.",
+        warning: "Uses your iRobot account from Settings. Requires configured BLID.",
+    },
+    {
+        id: "irobot-favorites",
+        section: "irobot",
+        method: "GET",
+        path: "/api/explore/irobot/favorites",
+        external: "GET https://{iot_host}/v1/{blid}/favorites",
+        summary: "AWS SigV4 GET for legacy favorites endpoint. Often returns HTTP 403 on consumer accounts.",
+        warning: "Uses your iRobot account from Settings. Requires configured BLID.",
+    },
+    {
+        id: "roomba-lan-discovery",
+        section: "roomba",
+        method: "POST",
+        path: "/api/setup/discover",
+        external: "UDP broadcast irobotmcs → port 5678",
+        summary: "LAN discovery packet the app sends to find robots. Proxied here because browsers cannot send UDP.",
+        body: JSON.stringify({ robot_ip: "192.168.1.100" }, null, 2),
+    },
+    {
+        id: "roomba-mqtt-tcp",
+        section: "roomba",
+        method: "GET",
+        path: "",
+        external: "TCP mqtts://{robot_ip}:8883",
+        summary: "Local MQTT/TLS port used by dorita980. Not HTTP — use the Roomba · MQTT proxy endpoints below to read or command the robot.",
+        referenceOnly: true,
+    },
+    {
+        id: "roomba-get-state",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/get-state",
+        external: "MQTT dorita980.getRobotState(fields)",
+        summary: "Read robot state fields over local MQTT.",
+        body: JSON.stringify({ fields: ["batPct", "cleanMissionStatus", "bin", "pmaps", "softwareVer", "sku", "lastCommand"] }, null, 2),
+        warning: "Brief exclusive MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "roomba-preferences",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/preferences",
+        external: "MQTT dorita980.getPreferences()",
+        summary: "Read robot preferences over local MQTT.",
+        warning: "Brief exclusive MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "roomba-wireless",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/wireless-status",
+        external: "MQTT dorita980.getWirelessStatus()",
+        summary: "Read Wi-Fi and cloud link status from the robot.",
+        warning: "Brief exclusive MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "roomba-cloud-config",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/cloud-config",
+        external: "MQTT dorita980.getCloudConfig()",
+        summary: "Read the robot's cloud configuration over local MQTT.",
+        warning: "Brief exclusive MQTT connection. Close the iRobot app if the request fails.",
+    },
+    {
+        id: "roomba-start",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/start",
+        external: "MQTT dorita980.start() / resume()",
+        summary: "Start or resume a cleaning mission.",
+        warning: "Sends a robot command over MQTT. Close the iRobot app first.",
+    },
+    {
+        id: "roomba-pause",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/pause",
+        external: "MQTT dorita980.pause()",
+        summary: "Pause the active mission.",
+        warning: "Sends a robot command over MQTT. Close the iRobot app first.",
+    },
+    {
+        id: "roomba-resume",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/resume",
+        external: "MQTT dorita980.resume()",
+        summary: "Resume a paused mission.",
+        warning: "Sends a robot command over MQTT. Close the iRobot app first.",
+    },
+    {
+        id: "roomba-stop",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/stop",
+        external: "MQTT dorita980.stop()",
+        summary: "Stop the active mission.",
+        warning: "Sends a robot command over MQTT. Close the iRobot app first.",
+    },
+    {
+        id: "roomba-dock",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/dock",
+        external: "MQTT dorita980.dock()",
+        summary: "Send the robot to the dock.",
+        warning: "Sends a robot command over MQTT. Close the iRobot app first.",
+    },
+    {
+        id: "roomba-clean-room",
+        section: "roomba",
+        method: "POST",
+        path: "/api/explore/roomba/clean-room",
+        external: "MQTT dorita980.cleanRoom(command)",
+        summary: "Start a room or favorite clean with a raw command payload.",
+        body: JSON.stringify({
+            command: "start",
+            pmap_id: "your-pmap-id",
+            regions: [{ region_id: "1", type: "rid" }],
+            ordered: 0,
+        }, null, 2),
+        warning: "Sends a robot command over MQTT. Close the iRobot app first.",
+    },
+];
 function layout(page, title, body) {
     const nav = [
         ["dashboard", "Dashboard", "/"],
@@ -546,6 +1103,7 @@ function layout(page, title, body) {
         ["maintenance", "Maintenance", "/maintenance"],
         ["settings", "Settings", "/settings"],
         ["diagnostics", "Diagnostics", "/diagnostics"],
+        ["api", "API Explorer", "/api-explorer"],
     ]
         .map(([id, label, href]) => `<a href="${href}" class="nav-link ${page === id ? "active" : ""}">${label}</a>`)
         .join("");
@@ -634,6 +1192,7 @@ function dashboardPage() {
         <div class="stat"><div class="label">Battery</div><div class="value" id="battery">—</div></div>
         <div class="stat"><div class="label">Status</div><div class="value" id="phase">—</div></div>
         <div class="stat"><div class="label">Job</div><div class="value" id="cycle">—</div></div>
+        <div class="stat" id="time-remaining-stat"><div class="label">Time left</div><div class="value" id="time-remaining">—</div></div>
         <div class="stat"><div class="label">Bin</div><div class="value" id="bin">—</div></div>
       </div>
       <p class="muted" id="meta">Loading status…</p>
@@ -650,9 +1209,15 @@ function dashboardPage() {
     </div>
     <div class="panel">
       <h2>Favorites</h2>
-      <p class="muted">Saved favorites and Smart Map rooms. Favorites are created in the iRobot app; rooms load from iRobot cloud when local MQTT does not include them.</p>
+      <p class="muted">Custom routines plus saved favorites from the iRobot app when available.</p>
       <div id="favorites-list" class="favorite-list muted">Loading favorites…</div>
     </div>
+    <div class="panel">
+      <h2>Spaces</h2>
+      <p class="muted">Smart Map rooms and custom clean areas from iRobot cloud. Custom areas appear as amber tiles.</p>
+      <div id="spaces-list" class="favorite-list muted">Loading spaces…</div>
+    </div>
+    <script src="/lucide.min.js"></script>
     <script>
       const errorEl = document.getElementById("error");
       const successEl = document.getElementById("success");
@@ -666,42 +1231,156 @@ function dashboardPage() {
         successEl.textContent = message || "";
         if (message) errorEl.style.display = "none";
       }
-      function renderFavorites(data) {
-        const favoritesEl = document.getElementById("favorites-list");
-        const favorites = Array.isArray(data.favorites) ? data.favorites : [];
-        if (!data.connected) {
-          favoritesEl.className = "favorite-list muted";
-          favoritesEl.textContent = "Connect to the robot to load favorites.";
+      function lucideTileIcon(name) {
+        return '<span class="icon-badge"><i data-lucide="' + name + '" aria-hidden="true"></i></span>';
+      }
+      const tileIcons = {
+        kitchen: lucideTileIcon("cooking-pot"),
+        bathroom: lucideTileIcon("toilet"),
+        bedroom: lucideTileIcon("bed-double"),
+        living: lucideTileIcon("sofa"),
+        dining: lucideTileIcon("utensils-crossed"),
+        laundry: lucideTileIcon("washing-machine"),
+        hallway: lucideTileIcon("move-horizontal"),
+        door: lucideTileIcon("door-closed"),
+        office: lucideTileIcon("lamp-desk"),
+        garage: lucideTileIcon("warehouse"),
+        kids: lucideTileIcon("baby"),
+        routine: lucideTileIcon("star"),
+        multi: lucideTileIcon("layers"),
+        room: lucideTileIcon("home"),
+        zone: lucideTileIcon("square-dashed"),
+      };
+      function isCustomZone(item) {
+        return item.space_kind === "zone" || String(item.id).startsWith("zone:") ||
+          (item.command_regions && item.command_regions[0] && item.command_regions[0].type === "zid");
+      }
+      function isSpaceTile(item) {
+        return item.source === "cloud" || String(item.id).startsWith("room:") || String(item.id).startsWith("zone:");
+      }
+      function spaceTileIcon(item) {
+        if (isCustomZone(item)) {
+          const name = String(item.name || "").toLowerCase();
+          if (name.includes("bed")) return tileIcons.bedroom;
+          if (name.includes("entry") || name.includes("door")) return tileIcons.door;
+          return tileIcons.zone;
+        }
+        const regionType = String((item.command_regions && item.command_regions[0] && item.command_regions[0].region_type) || "").toLowerCase();
+        const name = String(item.name || "").toLowerCase();
+        const byType = {
+          kitchen: tileIcons.kitchen,
+          dining_room: tileIcons.dining,
+          laundry_room: tileIcons.laundry,
+          hallway: tileIcons.hallway,
+          entryway: tileIcons.door,
+          foyer: tileIcons.door,
+          bathroom: tileIcons.bathroom,
+          primary_bathroom: tileIcons.bathroom,
+          bedroom: tileIcons.bedroom,
+          kids_room: tileIcons.kids,
+          living_room: tileIcons.living,
+          family_room: tileIcons.living,
+          office: tileIcons.office,
+          garage: tileIcons.garage,
+        };
+        if (byType[regionType]) return byType[regionType];
+        if (name.includes("kitchen")) return tileIcons.kitchen;
+        if (name.includes("dining")) return tileIcons.dining;
+        if (name.includes("laundry")) return tileIcons.laundry;
+        if (name.includes("hall")) return tileIcons.hallway;
+        if (name.includes("door") || name.includes("entry") || name.includes("foyer")) return tileIcons.door;
+        if (name.includes("bath")) return tileIcons.bathroom;
+        if (name.includes("bed")) return tileIcons.bedroom;
+        if (name.includes("living") || name.includes("family")) return tileIcons.living;
+        if (name.includes("office") || name.includes("study")) return tileIcons.office;
+        if (name.includes("garage")) return tileIcons.garage;
+        if (name.includes("kid") || name.includes("nursery")) return tileIcons.kids;
+        return tileIcons.room;
+      }
+      function savedFavoriteTileIcon(item) {
+        if (item.region_count > 1) return tileIcons.multi;
+        return tileIcons.routine;
+      }
+      function renderCleanableTiles(listEl, items, errorMessage, emptyMessage) {
+        if (!items.length) {
+          listEl.className = "favorite-list muted";
+          listEl.textContent = errorMessage || emptyMessage;
           return;
         }
-        if (!favorites.length) {
-          favoritesEl.className = "favorite-list muted";
-          favoritesEl.textContent =
-            data.favorites_error ||
-            "No favorites found. Add favorites in the iRobot app, then refresh.";
-          return;
-        }
-        favoritesEl.className = "favorite-list";
-        favoritesEl.innerHTML = favorites
-          .map((favorite) => {
-            const summary = favorite.regions_summary || (favorite.region_count ? favorite.region_count + " room(s)" : "Routine");
-            const disabled = favorite.runnable ? "" : " disabled";
-            return (
-              '<div class="favorite-card">' +
-              '<div><strong>' + favorite.name + '</strong><p class="muted">' + summary + '</p></div>' +
-              '<button type="button" class="secondary" data-favorite-id="' + favorite.id + '"' + disabled + '>Run</button>' +
-              "</div>"
-            );
-          })
-          .join("");
-        favoritesEl.querySelectorAll("[data-favorite-id]").forEach((button) => {
+        listEl.className = "favorite-list";
+        listEl.innerHTML =
+          '<div class="favorite-tiles">' +
+          items
+            .map((item) => {
+              const disabled = item.runnable ? "" : " disabled";
+              const icon = isSpaceTile(item) ? spaceTileIcon(item) : savedFavoriteTileIcon(item);
+              const zoneClass = isSpaceTile(item) && isCustomZone(item) ? " favorite-tile-zone" : "";
+              const estimateLabel = item.clean_estimate_label
+                ? '<span class="favorite-tile-estimate">' + item.clean_estimate_label + "</span>"
+                : "";
+              return (
+                '<button type="button" class="favorite-tile' + zoneClass + '" data-favorite-id="' + item.id + '"' + disabled + ">" +
+                '<span class="favorite-tile-icon">' + icon + "</span>" +
+                '<span class="favorite-tile-name">' + item.name + "</span>" +
+                estimateLabel +
+                "</button>"
+              );
+            })
+            .join("") +
+          "</div>";
+        listEl.querySelectorAll("[data-favorite-id]").forEach((button) => {
           button.addEventListener("click", () => {
             runFavorite(button.getAttribute("data-favorite-id")).catch((error) => showError(error.message));
           });
         });
+        if (window.lucide && typeof window.lucide.createIcons === "function") {
+          window.lucide.createIcons({ root: listEl, attrs: { "stroke-width": 1.75 } });
+        }
+      }
+      function renderFavorites(data) {
+        const favorites = Array.isArray(data.favorites) ? data.favorites : [];
+        renderCleanableTiles(
+          document.getElementById("favorites-list"),
+          favorites,
+          data.favorites_error,
+          data.connected
+            ? "No favorites available. Custom favorites need Smart Map spaces loaded."
+            : "Connect to the robot to load favorites.",
+        );
+      }
+      function sortSpaces(spaces) {
+        return [...spaces].sort((a, b) => {
+          const aZone = isCustomZone(a);
+          const bZone = isCustomZone(b);
+          if (aZone !== bZone) return aZone ? 1 : -1;
+          return String(a.name || "").localeCompare(String(b.name || ""));
+        });
+      }
+      function renderSpaces(data) {
+        const spaces = sortSpaces(Array.isArray(data.spaces) ? data.spaces : []);
+        renderCleanableTiles(
+          document.getElementById("spaces-list"),
+          spaces,
+          data.spaces_error,
+          data.connected
+            ? "No spaces found. Finish your Smart Map in the iRobot app, then refresh."
+            : "Connect to the robot to load spaces.",
+        );
       }
       let statusLoaded = false;
       let lastGoodStatus = null;
+      let statusPollTimer = null;
+      const MISSION_POLL_MS = 10000;
+      function scheduleStatusPoll(data) {
+        if (statusPollTimer) {
+          clearInterval(statusPollTimer);
+          statusPollTimer = null;
+        }
+        if (!data.mission_active) return;
+        statusPollTimer = setInterval(() => {
+          loadStatus().catch(() => {});
+        }, MISSION_POLL_MS);
+      }
       function setStatusRefreshing(refreshing) {
         const refreshButton = document.getElementById("refresh");
         refreshButton.disabled = refreshing;
@@ -717,6 +1396,9 @@ function dashboardPage() {
         if (!lastGoodStatus || !statusLoaded) return data;
         if (data.connected) {
           const merged = { ...data };
+          if (!merged.spaces?.length && lastGoodStatus.spaces?.length) {
+            merged.spaces = lastGoodStatus.spaces;
+          }
           if (!merged.favorites?.length && lastGoodStatus.favorites?.length) {
             merged.favorites = lastGoodStatus.favorites;
           }
@@ -728,14 +1410,22 @@ function dashboardPage() {
         const stale = Boolean(options && options.stale);
         document.getElementById("battery").textContent =
           data.battery_percent == null ? "—" : data.battery_percent + "%";
-        document.getElementById("phase").textContent = data.phase_label || data.phase || "—";
-        let jobLabel = data.cycle_label || data.cycle || "—";
-        if (data.time_remaining_label) jobLabel += " · " + data.time_remaining_label;
-        document.getElementById("cycle").textContent = jobLabel;
+        document.getElementById("phase").textContent = data.status_label || data.phase_label || data.phase || "—";
+        document.getElementById("cycle").textContent = data.cycle_label || data.cycle || "—";
+        const timeRemainingStat = document.getElementById("time-remaining-stat");
+        const timeRemainingEl = document.getElementById("time-remaining");
+        if (data.mission_active) {
+          timeRemainingStat.classList.add("stat-active");
+          timeRemainingEl.textContent = data.time_remaining_label || "—";
+        } else {
+          timeRemainingStat.classList.remove("stat-active");
+          timeRemainingEl.textContent = "—";
+        }
         const bin =
           data.bin_full == null ? "—" : data.bin_full ? "Full" : data.bin_present === false ? "Missing" : "OK";
         document.getElementById("bin").textContent = bin;
         renderFavorites(data);
+        renderSpaces(data);
         if (!stale && data.connected) {
           showError("");
           document.getElementById("meta").textContent = formatStatusMeta(data, false);
@@ -746,6 +1436,7 @@ function dashboardPage() {
           document.getElementById("meta").textContent = message;
           showError(message);
         }
+        scheduleStatusPoll(data);
         statusLoaded = true;
       }
       async function loadStatus() {
@@ -753,6 +1444,7 @@ function dashboardPage() {
         if (isInitial) {
           document.getElementById("meta").textContent = "Loading status…";
           document.getElementById("favorites-list").textContent = "Loading favorites…";
+          document.getElementById("spaces-list").textContent = "Loading spaces…";
         }
         setStatusRefreshing(true);
         try {
@@ -761,9 +1453,11 @@ function dashboardPage() {
           if (!response.ok) throw new Error(data.error || "Failed to load status");
           if (data.connected) {
             const merged = mergeStatusResponse(data);
-            if (!data.favorites?.length && merged.favorites?.length && data.favorites_error) {
-              showError(data.favorites_error);
-            }
+            const staleMessage =
+              (!data.spaces?.length && merged.spaces?.length && data.spaces_error) ||
+              (!data.favorites?.length && merged.favorites?.length && data.favorites_error) ||
+              "";
+            if (staleMessage) showError(staleMessage);
             lastGoodStatus = merged;
             renderStatus(merged);
             return;
@@ -1463,6 +2157,302 @@ function diagnosticsPage() {
     </script>
     `);
 }
+function apiExplorerPage() {
+    const endpointsJson = JSON.stringify(API_ENDPOINTS);
+    const sectionsJson = JSON.stringify(API_EXPLORER_SECTIONS);
+    return layout("api", "API Explorer", `
+    <p class="muted">Pick an endpoint from App, Roomba, or iRobot below, then send it from the request panel. External targets are shown on each entry; requests run through this server because browsers cannot speak AWS SigV4 or MQTT directly.</p>
+    <div class="api-explorer-grid">
+      ${apiExplorerCardsHtml()}
+    </div>
+    <div class="panel api-workspace-panel">
+      <h2>Request</h2>
+      <div class="api-request-header">
+        <span class="api-method get" id="api-method">GET</span>
+        <code id="api-path">/api/status</code>
+      </div>
+      <p class="api-external muted" id="api-external" hidden></p>
+      <p class="muted" id="api-description">Select an endpoint to inspect it.</p>
+      <div class="notice" id="api-warning" hidden></div>
+      <label for="api-body" id="api-body-label" hidden>Request body (JSON)</label>
+      <textarea id="api-body" class="api-body-textarea" hidden spellcheck="false"></textarea>
+      <div class="actions">
+        <button type="button" id="api-send">Send request</button>
+        <button type="button" class="secondary" id="api-copy-curl">Copy as curl</button>
+      </div>
+      <div class="api-response-meta" id="api-response-meta"></div>
+      <pre class="api-response muted" id="api-response">Select an endpoint and click Send request.</pre>
+      <div class="error" id="error"></div>
+    </div>
+    <script>
+      const endpoints = ${endpointsJson};
+      const sections = ${sectionsJson};
+      const errorEl = document.getElementById("error");
+      const methodEl = document.getElementById("api-method");
+      const pathEl = document.getElementById("api-path");
+      const descriptionEl = document.getElementById("api-description");
+      const warningEl = document.getElementById("api-warning");
+      const bodyLabelEl = document.getElementById("api-body-label");
+      const bodyEl = document.getElementById("api-body");
+      const externalEl = document.getElementById("api-external");
+      const responseMetaEl = document.getElementById("api-response-meta");
+      const responseEl = document.getElementById("api-response");
+      const sendButton = document.getElementById("api-send");
+      const copyCurlButton = document.getElementById("api-copy-curl");
+      let selectedEndpoint = endpoints.find((endpoint) => endpoint.section === "app") || endpoints[0] || null;
+
+      function showError(message) {
+        errorEl.style.display = message ? "block" : "none";
+        errorEl.textContent = message || "";
+      }
+
+      function methodClass(method) {
+        return method.toLowerCase();
+      }
+
+      function renderEndpointButton(endpoint) {
+        const active = selectedEndpoint && selectedEndpoint.id === endpoint.id ? " active" : "";
+        const subpath = endpoint.external
+          ? '<span class="api-endpoint-subpath">' + endpoint.external + "</span>"
+          : "";
+        const proxyPath = endpoint.path || "(reference only)";
+        return (
+          '<button type="button" class="api-endpoint-item' + active + '" data-endpoint-id="' + endpoint.id + '">' +
+          '<span class="api-method ' + methodClass(endpoint.method) + '">' + endpoint.method + "</span>" +
+          '<span class="api-endpoint-path">' + proxyPath + subpath + "</span>" +
+          "</button>"
+        );
+      }
+
+      function renderEndpointList() {
+        for (const section of sections) {
+          const listEl = document.getElementById("api-endpoints-" + section.id);
+          if (!listEl) continue;
+          listEl.innerHTML = endpoints
+            .filter((endpoint) => endpoint.section === section.id)
+            .map((endpoint) => renderEndpointButton(endpoint))
+            .join("");
+        }
+        document.querySelectorAll("[data-endpoint-id]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const endpoint = endpoints.find((item) => item.id === button.getAttribute("data-endpoint-id"));
+            if (endpoint) selectEndpoint(endpoint);
+          });
+        });
+      }
+
+      function selectEndpoint(endpoint) {
+        selectedEndpoint = endpoint;
+        methodEl.textContent = endpoint.method;
+        methodEl.className = "api-method " + methodClass(endpoint.method);
+        pathEl.textContent = endpoint.path || "(reference only)";
+        if (endpoint.external) {
+          externalEl.hidden = false;
+          externalEl.textContent = "External: " + endpoint.external;
+        } else {
+          externalEl.hidden = true;
+          externalEl.textContent = "";
+        }
+        descriptionEl.textContent = endpoint.summary;
+        sendButton.disabled = Boolean(endpoint.referenceOnly);
+        copyCurlButton.disabled = Boolean(endpoint.referenceOnly);
+        if (endpoint.referenceOnly) {
+          responseEl.textContent = "Reference only. This protocol cannot be sent from the browser or this HTTP proxy.";
+          responseEl.className = "api-response muted";
+        }
+        if (endpoint.warning) {
+          warningEl.hidden = false;
+          warningEl.textContent = endpoint.warning;
+        } else {
+          warningEl.hidden = true;
+          warningEl.textContent = "";
+        }
+        if (endpoint.body) {
+          bodyLabelEl.hidden = false;
+          bodyEl.hidden = false;
+          bodyEl.value = endpoint.body;
+        } else {
+          bodyLabelEl.hidden = true;
+          bodyEl.hidden = true;
+          bodyEl.value = "";
+        }
+        if (!endpoint.referenceOnly) {
+          responseMetaEl.textContent = "";
+          responseEl.textContent = "Ready. Click Send request.";
+          responseEl.className = "api-response muted";
+        } else {
+          responseMetaEl.textContent = "";
+        }
+        showError("");
+        renderEndpointList();
+      }
+
+      function formatResponseBody(text) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === "object" && parsed.external && Object.prototype.hasOwnProperty.call(parsed, "body")) {
+            return JSON.stringify(parsed, null, 2);
+          }
+          return JSON.stringify(parsed, null, 2);
+        } catch {
+          return text;
+        }
+      }
+
+      function buildCurl(endpoint, bodyValue) {
+        const origin = window.location.origin;
+        if (!endpoint.path) return endpoint.external || "";
+        let command = 'curl -sS -X ' + endpoint.method + ' "' + origin + endpoint.path + '" -H "Content-Type: application/json"';
+        if (endpoint.method !== "GET" && bodyValue) {
+          command += " -d " + JSON.stringify(bodyValue);
+        }
+        if (endpoint.external) {
+          command += "  # proxied external: " + endpoint.external;
+        }
+        return command;
+      }
+
+      function formatExploreMeta(parsed) {
+        if (!parsed || typeof parsed !== "object" || !parsed.external) return "";
+        const external = parsed.external;
+        const bits = [];
+        if (external.method && external.url) bits.push(external.method + " " + external.url);
+        if (external.protocol) bits.push(external.protocol);
+        if (typeof parsed.http_status === "number") bits.push("remote HTTP " + parsed.http_status);
+        else if (parsed.http_status === null && external.protocol) bits.push("non-HTTP transport");
+        if (typeof parsed.ok === "boolean") bits.push(parsed.ok ? "remote ok" : "remote failed");
+        return bits.join(" · ");
+      }
+
+      async function sendRequest() {
+        if (!selectedEndpoint || selectedEndpoint.referenceOnly) return;
+        showError("");
+        sendButton.disabled = true;
+        sendButton.textContent = "Sending…";
+        responseMetaEl.textContent = "";
+        responseEl.textContent = "Waiting for response…";
+        responseEl.className = "api-response muted";
+        const started = performance.now();
+        try {
+          let body;
+          if (selectedEndpoint.method !== "GET") {
+            const rawBody = bodyEl.hidden ? "" : bodyEl.value.trim();
+            if (rawBody) {
+              try {
+                body = JSON.stringify(JSON.parse(rawBody));
+              } catch {
+                throw new Error("Request body must be valid JSON.");
+              }
+            }
+          }
+          const response = await fetch(selectedEndpoint.path, {
+            method: selectedEndpoint.method,
+            headers: body ? { "Content-Type": "application/json" } : undefined,
+            body,
+            signal: AbortSignal.timeout(${API_TIMEOUT_MS}),
+          });
+          const text = await response.text();
+          const elapsed = Math.round(performance.now() - started);
+          let exploreMeta = "";
+          try {
+            exploreMeta = formatExploreMeta(JSON.parse(text));
+          } catch {
+            exploreMeta = "";
+          }
+          responseMetaEl.textContent = (exploreMeta ? exploreMeta + " · " : "") + "proxy HTTP " + response.status + " · " + elapsed + " ms";
+          responseEl.textContent = formatResponseBody(text || "(empty response)");
+          responseEl.className = response.ok ? "api-response ok" : "api-response error";
+        } catch (error) {
+          const elapsed = Math.round(performance.now() - started);
+          responseMetaEl.textContent = "Request failed · " + elapsed + " ms";
+          responseEl.textContent = error instanceof Error ? error.message : String(error);
+          responseEl.className = "api-response error";
+        } finally {
+          sendButton.disabled = false;
+          sendButton.textContent = "Send request";
+        }
+      }
+
+      document.getElementById("api-send").addEventListener("click", () => {
+        sendRequest().catch((error) => showError(error.message));
+      });
+      document.getElementById("api-copy-curl").addEventListener("click", async () => {
+        if (!selectedEndpoint) return;
+        const bodyValue = bodyEl.hidden ? selectedEndpoint.body : bodyEl.value.trim() || selectedEndpoint.body;
+        const curl = buildCurl(selectedEndpoint, bodyValue);
+        try {
+          await navigator.clipboard.writeText(curl);
+          responseMetaEl.textContent = "Copied curl command to clipboard.";
+        } catch {
+          showError("Could not copy to clipboard.");
+        }
+      });
+
+      if (selectedEndpoint) selectEndpoint(selectedEndpoint);
+      else renderEndpointList();
+    </script>
+    `);
+}
+const ROOMBA_EXPLORE_OPERATIONS = new Set([
+    "get-state",
+    "preferences",
+    "wireless-status",
+    "cloud-config",
+    "start",
+    "pause",
+    "resume",
+    "stop",
+    "dock",
+    "clean-room",
+]);
+async function handleExploreRequest(req, res, pathname, method, settings) {
+    if (!pathname.startsWith("/api/explore/")) {
+        return false;
+    }
+    try {
+        let result;
+        if (method === "GET" && pathname === "/api/explore/irobot/discovery") {
+            result = await (0, roomba_client_1.exploreIrobotDiscovery)();
+        }
+        else if (method === "POST" && pathname === "/api/explore/irobot/gigya-login") {
+            const body = await readJson(req);
+            result = await (0, roomba_client_1.exploreIrobotGigyaLogin)(settings, body.username, body.password);
+        }
+        else if (method === "POST" && pathname === "/api/explore/irobot/cloud-login") {
+            const body = await readJson(req);
+            result = await (0, roomba_client_1.exploreIrobotCloudLogin)(settings, body.username, body.password);
+        }
+        else if (method === "GET" && pathname === "/api/explore/irobot/pmaps") {
+            const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+            result = await (0, roomba_client_1.exploreIrobotSignedGet)(settings, `/v1/${settings.blid.trim()}/pmaps`, url.searchParams.toString());
+        }
+        else if (method === "GET" && pathname === "/api/explore/irobot/smartcleanfavorites") {
+            result = await (0, roomba_client_1.exploreIrobotSignedGet)(settings, `/v1/${settings.blid.trim()}/smartcleanfavorites`);
+        }
+        else if (method === "GET" && pathname === "/api/explore/irobot/favorites") {
+            result = await (0, roomba_client_1.exploreIrobotSignedGet)(settings, `/v1/${settings.blid.trim()}/favorites`);
+        }
+        else if (method === "POST" && pathname.startsWith("/api/explore/roomba/")) {
+            const operation = pathname.replace("/api/explore/roomba/", "");
+            if (!ROOMBA_EXPLORE_OPERATIONS.has(operation)) {
+                sendJson(res, 404, { error: "Unknown Roomba explore operation" });
+                return true;
+            }
+            const body = await readJson(req);
+            result = await (0, roomba_client_1.exploreRoomba)(settings, operation, body);
+        }
+        else {
+            sendJson(res, 404, { error: "Unknown explore endpoint" });
+            return true;
+        }
+        sendJson(res, 200, result);
+        return true;
+    }
+    catch (error) {
+        sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
+        return true;
+    }
+}
 function mergeSettings(current, patch) {
     return {
         robot_ip: patch.robot_ip?.trim() ?? current.robot_ip,
@@ -1496,6 +2486,22 @@ async function handleRequest(req, res) {
             return;
         }
     }
+    if (method === "GET" && pathname === "/lucide.min.js") {
+        try {
+            const script = await (0, promises_1.readFile)(LUCIDE_PATH);
+            res.writeHead(200, {
+                "Content-Type": "application/javascript; charset=utf-8",
+                "Content-Length": script.length,
+                "Cache-Control": "public, max-age=86400",
+            });
+            res.end(script);
+            return;
+        }
+        catch {
+            sendText(res, 404, "text/plain", "Not found");
+            return;
+        }
+    }
     if (method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
         sendText(res, 200, "text/html; charset=utf-8", dashboardPage());
         return;
@@ -1516,7 +2522,14 @@ async function handleRequest(req, res) {
         sendText(res, 200, "text/html; charset=utf-8", diagnosticsPage());
         return;
     }
+    if (method === "GET" && pathname === "/api-explorer") {
+        sendText(res, 200, "text/html; charset=utf-8", apiExplorerPage());
+        return;
+    }
     const settings = await loadSettings();
+    if (await handleExploreRequest(req, res, pathname, method, settings)) {
+        return;
+    }
     if (method === "GET" && pathname === "/api/status") {
         sendJson(res, 200, await (0, roomba_client_1.getRobotStatus)(settings));
         return;
@@ -1582,6 +2595,11 @@ async function handleRequest(req, res) {
                 return;
             }
             const result = await (0, roomba_client_1.fetchCredentialsFromCloud)(body.username, body.password);
+            const next = mergeSettings(settings, {
+                irobot_username: body.username.trim(),
+                irobot_password: body.password.trim(),
+            });
+            await saveSettings(next);
             sendJson(res, 200, result);
         }
         catch (error) {
