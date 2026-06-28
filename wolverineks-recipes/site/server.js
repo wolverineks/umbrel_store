@@ -10,7 +10,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.40";
+const APP_VERSION = "1.0.41";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -1545,6 +1545,20 @@ main {
   padding: 0.3rem 0;
 }
 .search input:focus { outline: none; }
+.utility-title {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.view-utility #search-bar { display: none; }
 .theme-toggle {
   flex-shrink: 0;
   border: 0;
@@ -2164,6 +2178,9 @@ a { color: var(--accent); }
   body { grid-template-columns: 1fr; }
   body.sidebar-open { overflow: hidden; }
   .sidebar-toggle { display: grid; }
+  body.view-utility #search-bar { display: flex; }
+  body.view-utility #search-bar .search { display: none; }
+  body.view-utility .utility-title { display: block; }
   .collapsible-header {
     display: flex;
     align-items: center;
@@ -2327,6 +2344,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           spellcheck="false"
         />
       </label>
+      <h1 id="utility-title" class="utility-title"></h1>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Dark mode">☾</button>
     </div>
     <div class="content">
@@ -2513,6 +2531,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
     const searchBar = document.getElementById("search-bar");
+    const utilityTitle = document.getElementById("utility-title");
     const LIBRARY_SEARCH_PLACEHOLDER = "Search by name, ingredients, servings, prep time, cook time, or total time…";
     let activeView = "library";
     const tokenValue = document.getElementById("token-value");
@@ -4081,10 +4100,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       navDevice.classList.toggle("active", view === "device");
       document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
-      const showSearch = view === "library" || view === "blocklist" || view === "trash";
       const utilityView = view === "device" || view === "import";
-      if (searchBar) searchBar.classList.toggle("hidden", !showSearch);
       document.body.classList.toggle("view-utility", utilityView);
+      if (utilityTitle) {
+        utilityTitle.textContent =
+          view === "device" ? "Setup" : view === "import" ? "Save from URL" : "";
+      }
       searchInput.placeholder =
         view === "blocklist" ? "Search in Blocklist" : view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
       if (view !== "blocklist") blocklistEmptyEl.classList.add("hidden");
