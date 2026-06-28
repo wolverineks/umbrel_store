@@ -5,12 +5,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_http_1 = require("node:http");
 const backup_restore_1 = require("./backup-restore");
+const library_dedupe_1 = require("./library-dedupe");
 const recipe_import_1 = require("./recipe-import");
 const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.44";
+const APP_VERSION = "1.0.45";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -441,7 +442,13 @@ async function saveExtensionSettings(input) {
     return persistSettings(next);
 }
 async function loadIndex() {
-    return readJsonFile(INDEX_PATH, []);
+    const entries = await readJsonFile(INDEX_PATH, []);
+    const deduped = (0, library_dedupe_1.dedupeIndexEntries)(entries, new Map());
+    if (deduped.removedIds.size > 0) {
+        await (0, library_dedupe_1.reconcileLibraryData)(DATA_ROOT);
+        return readJsonFile(INDEX_PATH, []);
+    }
+    return deduped.kept;
 }
 async function saveIndex(entries) {
     const sorted = [...entries].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
@@ -492,7 +499,8 @@ async function upsertRecipe(payload) {
     }
     const now = new Date().toISOString();
     const index = await loadIndex();
-    const existing = index.find((entry) => entry.source_url === normalized.source_url);
+    const incomingUrl = (0, library_dedupe_1.canonicalSourceUrl)(normalized.source_url);
+    const existing = index.find((entry) => (0, library_dedupe_1.canonicalSourceUrl)(entry.source_url) === incomingUrl);
     if (existing) {
         const current = await loadRecipe(existing.id);
         const updated = {
@@ -3711,6 +3719,34 @@ const HTML_PAGE = `<!DOCTYPE html>
       renderRecipes();
     }
 
+    function recipeListKey(recipe) {
+      const sourceUrl = String(recipe.source_url || "").trim();
+      if (sourceUrl && !sourceUrl.startsWith("urn:")) {
+        try {
+          const url = new URL(sourceUrl);
+          url.hash = "";
+          url.hostname = url.hostname.toLowerCase().replace(/^www\\./, "");
+          if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
+            url.pathname = url.pathname.slice(0, -1);
+          }
+          if (url.protocol === "http:") url.protocol = "https:";
+          return "url:" + url.toString();
+        } catch {
+          return "url:" + sourceUrl.toLowerCase();
+        }
+      }
+      if (sourceUrl) return "url:" + sourceUrl;
+      const title = String(recipe.title || "").trim().toLowerCase().replace(/\\s+/g, " ");
+      const ingredients = (recipe.ingredients || [])
+        .map((item) => String(item || "").trim().toLowerCase())
+        .filter(Boolean)
+        .sort()
+        .join("\\n");
+      if (title && ingredients) return "content:" + title + "\\n" + ingredients;
+      if (title) return "title:" + title;
+      return "id:" + recipe.id;
+    }
+
     async function loadRecipes() {
       if (activeView === "library") await refreshCategories();
       const listEndpoint =
@@ -3720,10 +3756,18 @@ const HTML_PAGE = `<!DOCTYPE html>
       const response = await fetch(listEndpoint);
       const payload = await response.json();
       const summaries = payload.recipes || [];
+      const seenKeys = new Set();
+      const seenIds = new Set();
       allRecipes = [];
       for (const summary of summaries) {
+        if (!summary?.id || seenIds.has(summary.id)) continue;
+        seenIds.add(summary.id);
         const detailResponse = await fetch(detailPrefix + encodeURIComponent(summary.id));
         const recipe = await detailResponse.json();
+        if (!recipe?.id) continue;
+        const key = recipeListKey(recipe);
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
         allRecipes.push(recipe);
       }
       renderRecipes();
@@ -4927,6 +4971,9 @@ async function handleRequest(req, res) {
 async function main() {
     await ensureDataDirs();
     await loadSettings();
+    const removed = await (0, library_dedupe_1.reconcileLibraryData)(DATA_ROOT);
+    if (removed > 0)
+        console.log(`Reconciled library index and removed ${removed} duplicate recipe(s).`);
     await seedDefaultRecipes();
     await seedDefaultRecipeImages();
     const server = (0, node_http_1.createServer)((req, res) => {

@@ -9,5 +9,5 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["server.ts", "recipe-import.ts", "backup-restore.ts"]
+  "include": ["server.ts", "recipe-import.ts", "backup-restore.ts", "library-dedupe.ts"]
 }

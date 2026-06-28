@@ -4,7 +4,7 @@ name: Recipes
 tagline: Save and browse recipes from the web
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-recipes/icon.svg
 category: files
-version: "1.0.44"
+version: "1.0.45"
 port: 4020
 description: >-
   A self-hosted recipe library for your Umbrel. Save recipes from the Recipe
@@ -15,8 +15,9 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Restore from backup deduplicates recipes by source URL and removes orphan
-  copies so the library does not show duplicates after a restore.
+  Restore fully replaces the live library, rebuilds the index from recipe
+  files, and deduplicates by canonical URL and matching content so duplicates
+  no longer appear after a restore.
 dependencies: []
 path: ""
 defaultUsername: ""

@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { exportRecipesData, getBackupStatus, importRecipesData } from "./backup-restore";
+import { canonicalSourceUrl, dedupeIndexEntries, reconcileLibraryData } from "./library-dedupe";
 import { fetchRecipePage, formatRecipeWithGrok } from "./recipe-import";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.44";
+const APP_VERSION = "1.0.45";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -548,7 +549,13 @@ async function saveExtensionSettings(input: {
 }
 
 async function loadIndex(): Promise<RecipeIndexEntry[]> {
-  return readJsonFile<RecipeIndexEntry[]>(INDEX_PATH, []);
+  const entries = await readJsonFile<RecipeIndexEntry[]>(INDEX_PATH, []);
+  const deduped = dedupeIndexEntries(entries, new Map());
+  if (deduped.removedIds.size > 0) {
+    await reconcileLibraryData(DATA_ROOT);
+    return readJsonFile<RecipeIndexEntry[]>(INDEX_PATH, []);
+  }
+  return deduped.kept;
 }
 
 async function saveIndex(entries: RecipeIndexEntry[]): Promise<void> {
@@ -608,7 +615,8 @@ async function upsertRecipe(payload: Record<string, unknown>): Promise<Recipe> {
   }
   const now = new Date().toISOString();
   const index = await loadIndex();
-  const existing = index.find((entry) => entry.source_url === normalized.source_url);
+  const incomingUrl = canonicalSourceUrl(normalized.source_url);
+  const existing = index.find((entry) => canonicalSourceUrl(entry.source_url) === incomingUrl);
 
   if (existing) {
     const current = await loadRecipe(existing.id);
@@ -3893,6 +3901,34 @@ const HTML_PAGE = `<!DOCTYPE html>
       renderRecipes();
     }
 
+    function recipeListKey(recipe) {
+      const sourceUrl = String(recipe.source_url || "").trim();
+      if (sourceUrl && !sourceUrl.startsWith("urn:")) {
+        try {
+          const url = new URL(sourceUrl);
+          url.hash = "";
+          url.hostname = url.hostname.toLowerCase().replace(/^www\\./, "");
+          if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
+            url.pathname = url.pathname.slice(0, -1);
+          }
+          if (url.protocol === "http:") url.protocol = "https:";
+          return "url:" + url.toString();
+        } catch {
+          return "url:" + sourceUrl.toLowerCase();
+        }
+      }
+      if (sourceUrl) return "url:" + sourceUrl;
+      const title = String(recipe.title || "").trim().toLowerCase().replace(/\\s+/g, " ");
+      const ingredients = (recipe.ingredients || [])
+        .map((item) => String(item || "").trim().toLowerCase())
+        .filter(Boolean)
+        .sort()
+        .join("\\n");
+      if (title && ingredients) return "content:" + title + "\\n" + ingredients;
+      if (title) return "title:" + title;
+      return "id:" + recipe.id;
+    }
+
     async function loadRecipes() {
       if (activeView === "library") await refreshCategories();
       const listEndpoint =
@@ -3902,10 +3938,18 @@ const HTML_PAGE = `<!DOCTYPE html>
       const response = await fetch(listEndpoint);
       const payload = await response.json();
       const summaries = payload.recipes || [];
+      const seenKeys = new Set();
+      const seenIds = new Set();
       allRecipes = [];
       for (const summary of summaries) {
+        if (!summary?.id || seenIds.has(summary.id)) continue;
+        seenIds.add(summary.id);
         const detailResponse = await fetch(detailPrefix + encodeURIComponent(summary.id));
         const recipe = await detailResponse.json();
+        if (!recipe?.id) continue;
+        const key = recipeListKey(recipe);
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
         allRecipes.push(recipe);
       }
       renderRecipes();
@@ -5134,6 +5178,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 async function main(): Promise<void> {
   await ensureDataDirs();
   await loadSettings();
+  const removed = await reconcileLibraryData(DATA_ROOT);
+  if (removed > 0) console.log(`Reconciled library index and removed ${removed} duplicate recipe(s).`);
   await seedDefaultRecipes();
   await seedDefaultRecipeImages();
   const server = createServer((req, res) => {
