@@ -315,7 +315,7 @@ export async function formatRecipeWithGrok(
   if (!response.ok) {
     const body = await response.text();
     if (response.status === 401) {
-      throw new Error("Invalid xAI API key. Update it under Add new device.");
+      throw new Error("Invalid xAI API key. Update it under Setup.");
     }
     if (response.status === 429) {
       throw new Error("Rate limited by xAI. Wait a moment and try again.");

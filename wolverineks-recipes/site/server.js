@@ -10,7 +10,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.36";
+const APP_VERSION = "1.0.37";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2194,7 +2194,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="nav-import" type="button">Save URL</button>
       <button id="nav-backup" type="button">Backup</button>
       <button id="nav-refresh" type="button">Refresh</button>
-      <button id="nav-device" type="button">Add device</button>
+      <button id="nav-device" type="button">Setup</button>
     </nav>
     <div class="sidebar-scroll">
       <div class="sidebar-section categories-section">
@@ -2217,7 +2217,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     </div>
   </aside>
   <main>
-    <div class="search-bar">
+    <div id="search-bar" class="search-bar">
       <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Open menu">☰</button>
       <label class="search">
         <span class="search-icon" aria-hidden="true">⌕</span>
@@ -2279,7 +2279,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         placeholder="https://example.com/recipe"
       />
     </div>
-    <p id="import-status" class="setup-field-status">Save an xAI API key under Add new device before importing.</p>
+    <p id="import-status" class="setup-field-status">Save an xAI API key under Setup before importing.</p>
     <div class="setup-actions import-actions">
       <button id="import-save-later" class="secondary" type="button">Save for later</button>
       <button id="import-save-print" class="primary" type="button">Save &amp; print</button>
@@ -2287,7 +2287,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     </div>
       </section>
       <section id="device-panel" class="panel hidden">
-    <h2>Add new device</h2>
+    <h2>Setup</h2>
     <p>Set up the Recipe Printer Chrome extension on a new computer or browser profile.</p>
     <ol class="setup-steps">
       <li>
@@ -2359,7 +2359,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         <div id="list-header" class="list-header" role="row" hidden></div>
         <div id="list" class="grid"></div>
       </div>
-      <div id="empty" class="empty hidden">No recipes saved yet. Click “Add new device” to set up the Chrome extension.</div>
+      <div id="empty" class="empty hidden">No recipes saved yet. Click Setup to set up the Chrome extension.</div>
       <div id="blocklist-empty" class="empty hidden">Blocklist is empty. Block recipes that did not work out — they will not be saved from the extension again.</div>
       <div id="trash-empty" class="empty hidden">Trash is empty.</div>
       <div id="no-results" class="empty hidden">No recipes match your search.</div>
@@ -2394,6 +2394,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
+    const searchBar = document.getElementById("search-bar");
     const LIBRARY_SEARCH_PLACEHOLDER = "Search by name, ingredients, servings, prep time, cook time, or total time…";
     let activeView = "library";
     const tokenValue = document.getElementById("token-value");
@@ -3852,7 +3853,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           statusEl.textContent = "Ready to import.";
           statusEl.className = "setup-field-status ok";
         } else {
-          statusEl.textContent = "Save an xAI API key under Add new device before importing.";
+          statusEl.textContent = "Save an xAI API key under Setup before importing.";
           statusEl.className = "setup-field-status";
         }
       } catch (error) {
@@ -3934,6 +3935,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       navDevice.classList.toggle("active", view === "device");
       document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
+      const showSearch = view === "library" || view === "blocklist" || view === "trash";
+      if (searchBar) searchBar.classList.toggle("hidden", !showSearch);
       searchInput.placeholder =
         view === "blocklist" ? "Search in Blocklist" : view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
       if (view !== "blocklist") blocklistEmptyEl.classList.add("hidden");
@@ -4259,7 +4262,7 @@ async function handleRequest(req, res) {
             const apiKey = (settings.extension_api_key ?? "").trim();
             if (!apiKey) {
                 sendJson(res, 400, {
-                    error: "No xAI API key saved. Add one under Add new device before importing from a URL.",
+                    error: "No xAI API key saved. Add one under Setup before importing from a URL.",
                 });
                 return;
             }
