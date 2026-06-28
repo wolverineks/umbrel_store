@@ -7,7 +7,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.47";
+const APP_VERSION = "1.0.48";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2447,6 +2447,54 @@ a { color: var(--accent); }
     transition: transform 0.2s ease;
   }
   body.sidebar-open aside { transform: translateX(0); }
+  .listing-table.list-active {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .listing-table.list-active .list-header.visible {
+    display: grid;
+    grid-template-columns: 2.25rem minmax(0, 1fr) minmax(0, auto);
+    column-gap: 0.4rem;
+    padding: 0.35rem 0.5rem;
+  }
+  .listing-table.list-active #list.list-view {
+    display: grid;
+    gap: 0.35rem;
+  }
+  .listing-table.list-active #list.list-view .card {
+    display: grid;
+    grid-template-columns: 2.25rem minmax(0, 1fr) minmax(0, auto);
+    column-gap: 0.4rem;
+    padding: 0.5rem;
+  }
+  .list-header-cell.cell-servings,
+  .list-header-cell.cell-total,
+  .grid.list-view .cell-servings,
+  .grid.list-view .cell-total {
+    display: none !important;
+  }
+  .grid.list-view .cell-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    max-width: 6.5rem;
+  }
+  .grid.list-view .cell-actions .print-btn,
+  .grid.list-view .cell-actions .restore-btn {
+    padding: 0.35rem 0.5rem;
+    font-size: 0.72rem;
+  }
+  .content {
+    padding: 1rem 0.75rem;
+  }
+  @supports not (grid-template-columns: subgrid) {
+    .listing-table.list-active .list-header.visible,
+    .listing-table.list-active #list.list-view .card {
+      grid-template-columns: 2.25rem minmax(0, 1fr) minmax(0, auto);
+    }
+  }
 }
 @media (max-width: 720px) {
   .columns { grid-template-columns: 1fr; }
