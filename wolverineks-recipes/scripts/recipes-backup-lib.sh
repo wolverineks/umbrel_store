@@ -29,7 +29,22 @@ recipes_resolve_backup_dir() {
     printf '%s\n' "$RECIPES_BACKUP_DIR"
     return 0
   fi
-  printf '%s\n' "/home/umbrel/recipes-backup"
+
+  local candidates=(
+    "/home/umbrel/umbrel/app-data/wolverineks-recipes/backup"
+    "$HOME/umbrel/app-data/wolverineks-recipes/backup"
+    "/home/umbrel/recipes-backup"
+  )
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "/home/umbrel/umbrel/app-data/wolverineks-recipes/backup"
 }
 
 recipes_fix_permissions() {

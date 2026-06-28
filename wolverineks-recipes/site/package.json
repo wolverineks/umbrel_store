@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "tsc && cp dist/server.js server.js && cp dist/recipe-import.js recipe-import.js",
+    "build": "tsc && cp dist/server.js server.js && cp dist/recipe-import.js recipe-import.js && cp dist/backup-restore.js backup-restore.js",
     "start": "node server.js",
     "dev": "RECIPES_DATA_DIR=../data PORT=4020 tsx watch server.ts",
     "dev:local": "RECIPES_DATA_DIR=./.local-data PORT=4020 tsx watch server.ts"

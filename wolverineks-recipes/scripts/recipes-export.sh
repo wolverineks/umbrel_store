@@ -5,6 +5,9 @@
 # Usage (on Umbrel over SSH):
 #   bash recipes-export.sh
 #   RECIPES_BACKUP_DIR=/mnt/storage/recipes-backup bash recipes-export.sh
+#
+# Default backup folder matches the app UI and docker volume:
+#   ~/umbrel/app-data/wolverineks-recipes/backup
 #   RECIPES_APP_DATA=/path/to/app/data RECIPES_BACKUP_DIR=/path/to/backup bash recipes-export.sh
 #
 # Copies the full persistent data tree:

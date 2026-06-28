@@ -19,8 +19,10 @@ services:
     volumes:
       - ${APP_DATA_DIR}/site:/app:ro
       - ${APP_DATA_DIR}/data:/data
+      - ${RECIPES_BACKUP_DIR:-${APP_DATA_DIR}/backup}:/backup
     environment:
       RECIPES_DATA_DIR: /data
+      RECIPES_BACKUP_DIR: /backup
       RECIPES_INGEST_TOKEN: ${RECIPES_INGEST_TOKEN:-}
       RECIPES_EXTENSION_API_KEY: ${RECIPES_EXTENSION_API_KEY:-}
       RECIPES_EXTENSION_MODEL: ${RECIPES_EXTENSION_MODEL:-}

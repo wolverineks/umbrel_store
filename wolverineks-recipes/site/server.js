@@ -4,16 +4,18 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_http_1 = require("node:http");
+const backup_restore_1 = require("./backup-restore");
 const recipe_import_1 = require("./recipe-import");
 const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.33";
+const APP_VERSION = "1.0.34";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
+const BACKUP_ROOT = process.env.RECIPES_BACKUP_DIR ?? "/backup";
 const RECIPES_DIR = node_path_1.default.join(DATA_ROOT, "recipes");
 const IMAGES_DIR = node_path_1.default.join(DATA_ROOT, "images");
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -415,6 +417,11 @@ async function loadSettings() {
         settingsInitPromise = initializeSettings();
     }
     return settingsInitPromise;
+}
+async function reloadSettingsFromDisk() {
+    cachedSettings = null;
+    settingsInitPromise = null;
+    return loadSettings();
 }
 async function saveExtensionSettings(input) {
     const settings = await loadSettings();
@@ -2184,6 +2191,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     <nav class="nav">
       <button id="nav-library" class="active" type="button">Library</button>
       <button id="nav-import" type="button">Save URL</button>
+      <button id="nav-backup" type="button">Backup</button>
       <button id="nav-refresh" type="button">Refresh</button>
       <button id="nav-device" type="button">Add device</button>
     </nav>
@@ -2233,6 +2241,27 @@ const HTML_PAGE = `<!DOCTYPE html>
           <button id="empty-trash" class="danger-btn" type="button">Empty trash</button>
         </div>
       </div>
+      <section id="backup-panel" class="panel hidden">
+    <h2>Backup &amp; restore</h2>
+    <p>
+      Copy your library to a folder outside the live app data directory, or restore from that
+      backup. SSH scripts in <code>wolverineks-recipes/scripts/</code> use the same backup folder.
+    </p>
+    <div class="setup-field">
+      <label>Live library</label>
+      <p id="backup-library-summary" class="setup-field-status">Loading…</p>
+    </div>
+    <div class="setup-field">
+      <label>Backup folder</label>
+      <p id="backup-folder-summary" class="setup-field-status">Loading…</p>
+    </div>
+    <p id="backup-status" class="setup-field-status"></p>
+    <div class="setup-actions import-actions">
+      <button id="backup-export-btn" class="primary" type="button">Back up now</button>
+      <button id="backup-import-btn" class="secondary" type="button">Restore from backup</button>
+      <button id="close-backup-btn" class="secondary" type="button">Close</button>
+    </div>
+      </section>
       <section id="import-panel" class="panel hidden">
     <h2>Save from URL</h2>
     <p>Paste a recipe page link. Grok formats it the same way as the Chrome extension.</p>
@@ -2355,9 +2384,11 @@ const HTML_PAGE = `<!DOCTYPE html>
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
     const importPanel = document.getElementById("import-panel");
+    const backupPanel = document.getElementById("backup-panel");
     const recipeStatus = document.getElementById("recipe-status");
     const navLibrary = document.getElementById("nav-library");
     const navImport = document.getElementById("nav-import");
+    const navBackup = document.getElementById("nav-backup");
     const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
@@ -3070,8 +3101,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           }
           toggleCategorySelection(button.dataset.id);
           activeView = "library";
-          devicePanel.classList.add("hidden");
-          importPanel.classList.add("hidden");
+          hideUtilityPanels();
           setActiveNav("library");
           renderCategoriesSidebar();
           renderRecipes();
@@ -3678,6 +3708,123 @@ const HTML_PAGE = `<!DOCTYPE html>
       }, 1500);
     }
 
+    function hideUtilityPanels() {
+      devicePanel.classList.add("hidden");
+      importPanel.classList.add("hidden");
+      backupPanel.classList.add("hidden");
+    }
+
+    function formatBackupTimestamp(value) {
+      if (!value) return "never";
+      try {
+        return new Date(value).toLocaleString();
+      } catch {
+        return value;
+      }
+    }
+
+    async function refreshBackupStatus(message) {
+      const librarySummary = document.getElementById("backup-library-summary");
+      const folderSummary = document.getElementById("backup-folder-summary");
+      const statusEl = document.getElementById("backup-status");
+      const exportBtn = document.getElementById("backup-export-btn");
+      const importBtn = document.getElementById("backup-import-btn");
+      try {
+        const response = await fetch("/api/backup/status");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Could not load backup status.");
+
+        if (librarySummary) {
+          librarySummary.textContent =
+            payload.library_recipe_count + " recipe(s) in the live library.";
+          librarySummary.className = "setup-field-status ok";
+        }
+        if (folderSummary) {
+          if (!payload.backup_writable) {
+            folderSummary.textContent = "Backup folder is not writable: " + payload.backup_dir;
+            folderSummary.className = "setup-field-status error";
+          } else if (!payload.backup_available) {
+            folderSummary.textContent =
+              "No backup yet at " + payload.backup_dir + ". Click Back up now to create one.";
+            folderSummary.className = "setup-field-status";
+          } else {
+            folderSummary.textContent =
+              payload.backup_recipe_count +
+              " recipe(s) backed up. Last backup: " +
+              formatBackupTimestamp(payload.backup_updated_at) +
+              ".";
+            folderSummary.className = "setup-field-status ok";
+          }
+        }
+        if (exportBtn) exportBtn.disabled = !payload.backup_writable;
+        if (importBtn) importBtn.disabled = !payload.backup_available;
+        if (statusEl) {
+          statusEl.textContent = message || "";
+          statusEl.className = message ? "setup-field-status ok" : "setup-field-status";
+        }
+      } catch (error) {
+        if (librarySummary) {
+          librarySummary.textContent = error.message || "Could not load backup status.";
+          librarySummary.className = "setup-field-status error";
+        }
+        if (folderSummary) folderSummary.textContent = "";
+        if (statusEl) statusEl.textContent = "";
+        if (exportBtn) exportBtn.disabled = true;
+        if (importBtn) importBtn.disabled = true;
+      }
+    }
+
+    async function runBackupExport() {
+      const exportBtn = document.getElementById("backup-export-btn");
+      const importBtn = document.getElementById("backup-import-btn");
+      if (exportBtn) exportBtn.disabled = true;
+      if (importBtn) importBtn.disabled = true;
+      await refreshBackupStatus("Creating backup…");
+      try {
+        const response = await fetch("/api/backup/export", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Backup failed.");
+        await refreshBackupStatus("Backup completed.");
+      } catch (error) {
+        const statusEl = document.getElementById("backup-status");
+        if (statusEl) {
+          statusEl.textContent = error.message || "Backup failed.";
+          statusEl.className = "setup-field-status error";
+        }
+        await refreshBackupStatus();
+      }
+    }
+
+    async function runBackupImport() {
+      if (
+        !confirm(
+          "Restore from backup? This replaces the live library with the backed-up copy, including settings, trash, and blocklist.",
+        )
+      ) {
+        return;
+      }
+      const exportBtn = document.getElementById("backup-export-btn");
+      const importBtn = document.getElementById("backup-import-btn");
+      if (exportBtn) exportBtn.disabled = true;
+      if (importBtn) importBtn.disabled = true;
+      await refreshBackupStatus("Restoring from backup…");
+      try {
+        const response = await fetch("/api/backup/import", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Restore failed.");
+        await refreshBackupStatus("Restore completed.");
+        showLibrary();
+        await loadRecipes();
+      } catch (error) {
+        const statusEl = document.getElementById("backup-status");
+        if (statusEl) {
+          statusEl.textContent = error.message || "Restore failed.";
+          statusEl.className = "setup-field-status error";
+        }
+        await refreshBackupStatus();
+      }
+    }
+
     async function refreshImportStatus() {
       const statusEl = document.getElementById("import-status");
       const saveLaterBtn = document.getElementById("import-save-later");
@@ -3769,6 +3916,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     function setActiveNav(view) {
       navLibrary.classList.toggle("active", view === "library");
       navImport.classList.toggle("active", view === "import");
+      navBackup.classList.toggle("active", view === "backup");
       navBlocklist.classList.toggle("active", view === "blocklist");
       navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
@@ -3781,8 +3929,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function showLibrary() {
-      devicePanel.classList.add("hidden");
-      importPanel.classList.add("hidden");
+      hideUtilityPanels();
       clearCategorySelection();
       activeView = "library";
       setActiveNav("library");
@@ -3793,8 +3940,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function showBlocklist() {
-      devicePanel.classList.add("hidden");
-      importPanel.classList.add("hidden");
+      hideUtilityPanels();
       clearCategorySelection();
       activeView = "blocklist";
       setActiveNav("blocklist");
@@ -3804,8 +3950,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function showTrash() {
-      devicePanel.classList.add("hidden");
-      importPanel.classList.add("hidden");
+      hideUtilityPanels();
       clearCategorySelection();
       activeView = "trash";
       setActiveNav("trash");
@@ -3829,8 +3974,24 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") setActiveNav("library");
     }
 
+    function openBackupPanel() {
+      hideUtilityPanels();
+      backupPanel.classList.remove("hidden");
+      setActiveNav("backup");
+      refreshBackupStatus();
+      closeSidebar();
+      backupPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function closeBackupPanel() {
+      backupPanel.classList.add("hidden");
+      if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") {
+        setActiveNav("library");
+      }
+    }
+
     function openImportPanel() {
-      devicePanel.classList.add("hidden");
+      hideUtilityPanels();
       importPanel.classList.remove("hidden");
       setActiveNav("import");
       refreshImportStatus();
@@ -3846,7 +4007,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     function openDevicePanel() {
-      importPanel.classList.add("hidden");
+      hideUtilityPanels();
       devicePanel.classList.remove("hidden");
       setActiveNav("device");
       loadDeviceSetup();
@@ -3924,7 +4085,15 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
     document.getElementById("nav-import").addEventListener("click", openImportPanel);
+    document.getElementById("nav-backup").addEventListener("click", openBackupPanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
+    document.getElementById("backup-export-btn").addEventListener("click", () => {
+      runBackupExport().catch((error) => alert(error.message || "Backup failed."));
+    });
+    document.getElementById("backup-import-btn").addEventListener("click", () => {
+      runBackupImport().catch((error) => alert(error.message || "Restore failed."));
+    });
+    document.getElementById("close-backup-btn").addEventListener("click", closeBackupPanel);
     document.getElementById("import-save-later").addEventListener("click", () => {
       importFromUrl(false).catch((error) => alert(error.message || "Import failed."));
     });
@@ -4097,6 +4266,40 @@ async function handleRequest(req, res) {
                 return;
             }
             const message = error instanceof Error ? error.message : "Import failed";
+            sendJson(res, 400, { error: message });
+        }
+        return;
+    }
+    if (route === "/api/backup/status" && req.method === "GET") {
+        try {
+            const status = await (0, backup_restore_1.getBackupStatus)(DATA_ROOT, BACKUP_ROOT);
+            sendJson(res, 200, status);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : "Could not read backup status";
+            sendJson(res, 500, { error: message });
+        }
+        return;
+    }
+    if (route === "/api/backup/export" && req.method === "POST") {
+        try {
+            const status = await (0, backup_restore_1.exportRecipesData)(DATA_ROOT, BACKUP_ROOT);
+            sendJson(res, 200, { ok: true, ...status });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : "Backup failed";
+            sendJson(res, 400, { error: message });
+        }
+        return;
+    }
+    if (route === "/api/backup/import" && req.method === "POST") {
+        try {
+            const status = await (0, backup_restore_1.importRecipesData)(DATA_ROOT, BACKUP_ROOT);
+            await reloadSettingsFromDisk();
+            sendJson(res, 200, { ok: true, ...status });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : "Restore failed";
             sendJson(res, 400, { error: message });
         }
         return;
