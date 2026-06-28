@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.43";
+const APP_VERSION = "1.0.44";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
