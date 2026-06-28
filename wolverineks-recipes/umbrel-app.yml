@@ -4,7 +4,7 @@ name: Recipes
 tagline: Save and browse recipes from the web
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-recipes/icon.svg
 category: files
-version: "1.0.41"
+version: "1.0.42"
 port: 4020
 description: >-
   A self-hosted recipe library for your Umbrel. Save recipes from the Recipe
@@ -15,8 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Setup and Save URL pages show a compact mobile header with menu access
-  instead of hiding navigation when the search bar is absent.
+  Cleaner Setup page focused on the Chrome extension. Backup and restore
+  moved to its own panel in the sidebar.
 dependencies: []
 path: ""
 defaultUsername: ""

@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.41";
+const APP_VERSION = "1.0.42";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2261,6 +2261,18 @@ body.view-utility #no-results {
 }
 .panel h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
 .panel p { margin: 0; color: var(--muted); line-height: 1.5; }
+.panel-lead { margin-bottom: 0.25rem; }
+.setup-grid {
+  display: grid;
+  gap: 0.25rem 1.25rem;
+  margin-top: 1rem;
+}
+@media (min-width: 720px) {
+  .setup-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .setup-field-wide { grid-column: 1 / -1; }
+}
 .token {
   display: flex;
   gap: 0.5rem;
@@ -2478,6 +2490,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           <button id="nav-import" type="button">Save URL</button>
           <button id="nav-refresh" type="button">Refresh</button>
           <button id="nav-device" type="button">Setup</button>
+          <button id="nav-backup" type="button">Backup</button>
         </nav>
       </div>
     </div>
@@ -2572,13 +2585,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       </section>
       <section id="device-panel" class="panel hidden">
     <h2 class="panel-title-desktop">Setup</h2>
-    <div class="collapsible-section panel-collapsible" data-collapsible>
-      <button type="button" class="collapsible-header" aria-expanded="false">
-        <span>Chrome extension</span>
-        <span class="collapsible-chevron" aria-hidden="true">▾</span>
-      </button>
-      <div class="collapsible-body">
-    <p>Set up the Recipes Chrome extension on a new computer or browser profile.</p>
+    <p class="panel-lead">Connect the Recipes Chrome extension on a new computer or browser profile.</p>
     <ol class="setup-steps">
       <li>
         Install the extension from
@@ -2589,83 +2596,79 @@ const HTML_PAGE = `<!DOCTYPE html>
         Get an <a href="https://console.x.ai/team/default/api-keys" target="_blank" rel="noreferrer">xAI API key</a>
         and save it below so every extension device can use it.
       </li>
-      <li>Copy the Umbrel URL and ingest token below into extension Settings on each device.</li>
+      <li>Copy the Umbrel URL and ingest token into extension Settings on each device.</li>
       <li>Click Save in the extension, allow Chrome network access, then Test Umbrel connection.</li>
       <li>Open any recipe page and click <strong>Format, Save &amp; Print</strong>.</li>
     </ol>
-    <div class="setup-field">
-      <label>Umbrel Recipes URL (include port :4020)</label>
-      <div class="token">
-        <code id="base-url">Loading…</code>
-        <button id="copy-url-btn" class="secondary" type="button">Copy URL</button>
+    <div class="setup-grid">
+      <div class="setup-field">
+        <label>Umbrel Recipes URL (include port :4020)</label>
+        <div class="token">
+          <code id="base-url">Loading…</code>
+          <button id="copy-url-btn" class="secondary" type="button">Copy URL</button>
+        </div>
       </div>
-    </div>
-    <div class="setup-field">
-      <label for="extension-api-key">Extension xAI API key (shared by all devices)</label>
-      <input
-        id="extension-api-key"
-        class="setup-input"
-        type="password"
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="xai-…"
-      />
-      <p id="extension-api-key-status" class="setup-field-status">Loading extension settings…</p>
-    </div>
-    <div class="setup-field">
-      <label for="extension-model">Grok model</label>
-      <select id="extension-model" class="setup-input">
-        <option value="grok-4-1-fast">grok-4-1-fast (recommended)</option>
-        <option value="grok-4-fast">grok-4-fast</option>
-        <option value="grok-4">grok-4 (higher quality, slower)</option>
-      </select>
-    </div>
-    <div class="setup-field">
-      <label>Ingest token (same for all devices)</label>
-      <p class="setup-field-status">
-        Persists across app updates in <code>/data/settings.json</code>. Only click Regenerate token if
-        the token was compromised — otherwise update each extension with the new token.
-      </p>
-      <div class="token">
-        <code id="token-value">Loading…</code>
-        <button id="copy-token-btn" class="secondary" type="button">Copy token</button>
+      <div class="setup-field">
+        <label for="extension-api-key">xAI API key (shared by all devices)</label>
+        <input
+          id="extension-api-key"
+          class="setup-input"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="xai-…"
+        />
+        <p id="extension-api-key-status" class="setup-field-status">Loading extension settings…</p>
+      </div>
+      <div class="setup-field">
+        <label for="extension-model">Grok model</label>
+        <select id="extension-model" class="setup-input">
+          <option value="grok-4-1-fast">grok-4-1-fast (recommended)</option>
+          <option value="grok-4-fast">grok-4-fast</option>
+          <option value="grok-4">grok-4 (higher quality, slower)</option>
+        </select>
+      </div>
+      <div class="setup-field setup-field-wide">
+        <label>Ingest token (same for all devices)</label>
+        <p class="setup-field-status">
+          Persists across app updates in <code>/data/settings.json</code>. Only regenerate if the token
+          was compromised.
+        </p>
+        <div class="token">
+          <code id="token-value">Loading…</code>
+          <button id="copy-token-btn" class="secondary" type="button">Copy token</button>
+        </div>
       </div>
     </div>
     <div class="setup-actions">
       <button id="save-extension-settings-btn" class="primary" type="button">Save extension settings</button>
       <button id="copy-setup-btn" class="secondary" type="button">Copy all for extension</button>
       <button id="regenerate-token-btn" class="danger-btn" type="button">Regenerate token</button>
+      <button id="close-device-btn" class="secondary" type="button">Close</button>
     </div>
+      </section>
+      <section id="backup-panel" class="panel hidden">
+    <h2 class="panel-title-desktop">Backup &amp; restore</h2>
+    <p class="panel-lead">
+      Copy your library to <code id="backup-host-path">/home/umbrel/recipes-backup</code> on your Umbrel.
+      This folder is outside the app install directory and survives uninstall. SSH scripts in
+      <code>wolverineks-recipes/scripts/</code> use the same location.
+    </p>
+    <div class="setup-grid">
+      <div class="setup-field">
+        <label>Live library</label>
+        <p id="backup-library-summary" class="setup-field-status">Loading…</p>
       </div>
-    </div>
-    <div class="collapsible-section panel-collapsible" data-collapsible>
-      <button type="button" class="collapsible-header" aria-expanded="false">
-        <span>Backup &amp; restore</span>
-        <span class="collapsible-chevron" aria-hidden="true">▾</span>
-      </button>
-      <div class="collapsible-body">
-      <p>
-        Copy your library to <code id="backup-host-path">/home/umbrel/recipes-backup</code> on your
-        Umbrel. This folder is outside the app install directory and survives uninstall. SSH scripts
-        in <code>wolverineks-recipes/scripts/</code> use the same location.
-      </p>
-    <div class="setup-field">
-      <label>Live library</label>
-      <p id="backup-library-summary" class="setup-field-status">Loading…</p>
-    </div>
-    <div class="setup-field">
-      <label>Backup folder</label>
-      <p id="backup-folder-summary" class="setup-field-status">Loading…</p>
+      <div class="setup-field">
+        <label>Backup folder</label>
+        <p id="backup-folder-summary" class="setup-field-status">Loading…</p>
+      </div>
     </div>
     <p id="backup-status" class="setup-field-status"></p>
-    <div class="setup-actions import-actions">
+    <div class="setup-actions">
       <button id="backup-export-btn" class="primary" type="button">Back up now</button>
       <button id="backup-import-btn" class="secondary" type="button">Restore from backup</button>
-    </div>
-      </div>
-    </div>
-    <div class="setup-actions">
-      <button id="close-device-btn" class="secondary" type="button">Close</button>
+      <button id="close-backup-btn" class="secondary" type="button">Close</button>
     </div>
       </section>
       <div class="listing-header">
@@ -2705,6 +2708,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     const noResultsEl = document.getElementById("no-results");
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
+    const backupPanel = document.getElementById("backup-panel");
     const importPanel = document.getElementById("import-panel");
     const recipeStatus = document.getElementById("recipe-status");
     const navLibrary = document.getElementById("nav-library");
@@ -2712,6 +2716,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
+    const navBackup = document.getElementById("nav-backup");
     const searchBar = document.getElementById("search-bar");
     const utilityTitle = document.getElementById("utility-title");
     const LIBRARY_SEARCH_PLACEHOLDER = "Search by name, ingredients, servings, prep time, cook time, or total time…";
@@ -3953,7 +3958,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       const modelSelect = document.getElementById("extension-model");
       if (modelSelect) modelSelect.value = extensionPayload.model || "grok-4-1-fast";
       renderExtensionSettingsStatus(extensionPayload);
-      await refreshBackupStatus();
     }
 
     async function saveExtensionSettings() {
@@ -4033,6 +4037,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function hideUtilityPanels() {
       devicePanel.classList.add("hidden");
+      backupPanel.classList.add("hidden");
       importPanel.classList.add("hidden");
     }
 
@@ -4280,13 +4285,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       navBlocklist.classList.toggle("active", view === "blocklist");
       navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
+      navBackup.classList.toggle("active", view === "backup");
       document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
-      const utilityView = view === "device" || view === "import";
+      const utilityView = view === "device" || view === "import" || view === "backup";
       document.body.classList.toggle("view-utility", utilityView);
       if (utilityTitle) {
         utilityTitle.textContent =
-          view === "device" ? "Setup" : view === "import" ? "Save from URL" : "";
+          view === "device" ? "Setup" : view === "import" ? "Save from URL" : view === "backup" ? "Backup" : "";
       }
       searchInput.placeholder =
         view === "blocklist" ? "Search in Blocklist" : view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
@@ -4357,12 +4363,27 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
+    function closeBackupPanel() {
+      backupPanel.classList.add("hidden");
+      if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") {
+        setActiveNav("library");
+      }
+    }
+
+    function openBackupPanel() {
+      hideUtilityPanels();
+      backupPanel.classList.remove("hidden");
+      setActiveNav("backup");
+      refreshBackupStatus();
+      closeSidebar();
+      backupPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
     function openDevicePanel() {
       hideUtilityPanels();
       devicePanel.classList.remove("hidden");
       setActiveNav("device");
       loadDeviceSetup();
-      expandPanelSections(devicePanel);
       closeSidebar();
       devicePanel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -4436,6 +4457,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
+    document.getElementById("nav-backup").addEventListener("click", openBackupPanel);
     document.getElementById("nav-import").addEventListener("click", openImportPanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
     document.getElementById("backup-export-btn").addEventListener("click", () => {
@@ -4466,6 +4488,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (event.target.id === "category-dialog") closeCategoryDialog();
     });
     document.getElementById("close-device-btn").addEventListener("click", closeDevicePanel);
+    document.getElementById("close-backup-btn").addEventListener("click", closeBackupPanel);
     document.getElementById("sidebar-toggle").addEventListener("click", () => {
       if (document.body.classList.contains("sidebar-open")) closeSidebar();
       else openSidebar();
