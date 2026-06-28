@@ -10,7 +10,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.42";
+const APP_VERSION = "1.0.43";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2174,6 +2174,12 @@ code {
   width: 100%;
   max-width: 18rem;
 }
+@media (max-width: 800px) {
+  .import-actions {
+    align-items: center;
+    width: 100%;
+  }
+}
 a { color: var(--accent); }
 .hidden { display: none; }
 .app-version {
@@ -2240,6 +2246,9 @@ a { color: var(--accent); }
   .panel-title-desktop {
     display: none;
   }
+  body.view-device #backup-panel .panel-title-desktop {
+    display: block;
+  }
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
@@ -2297,21 +2306,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       <div class="brand-badge">R</div>
       <span>Recipes</span>
     </div>
-    <div class="collapsible-section sidebar-collapsible" data-collapsible>
-      <button type="button" class="collapsible-header" aria-expanded="false">
-        <span>Navigate</span>
-        <span class="collapsible-chevron" aria-hidden="true">▾</span>
-      </button>
-      <div class="collapsible-body">
-        <nav class="nav">
-          <button id="nav-library" class="active" type="button">Library</button>
-          <button id="nav-import" type="button">Save URL</button>
-          <button id="nav-refresh" type="button">Refresh</button>
-          <button id="nav-device" type="button">Setup</button>
-          <button id="nav-backup" type="button">Backup</button>
-        </nav>
-      </div>
-    </div>
+    <nav class="nav">
+      <button id="nav-library" class="active" type="button">Library</button>
+      <button id="nav-import" type="button">Save URL</button>
+      <button id="nav-refresh" type="button">Refresh</button>
+      <button id="nav-device" type="button">Setup</button>
+    </nav>
     <div class="sidebar-scroll">
       <div class="sidebar-section categories-section collapsible-section sidebar-collapsible" data-collapsible>
         <div class="sidebar-section-header">
@@ -2327,21 +2327,15 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
       </div>
     </div>
-    <div class="collapsible-section sidebar-collapsible sidebar-footer-wrap" data-collapsible>
-      <button type="button" class="collapsible-header" aria-expanded="false">
-        <span>Blocklist &amp; trash</span>
-        <span class="collapsible-chevron" aria-hidden="true">▾</span>
+    <div class="sidebar-footer">
+      <button id="nav-blocklist" class="sidebar-blocklist" type="button" title="View blocklist — drag bad recipes here">
+        <span class="sidebar-blocklist-icon" aria-hidden="true">⛔</span>
+        <span>Blocklist</span>
       </button>
-      <div class="collapsible-body sidebar-footer">
-        <button id="nav-blocklist" class="sidebar-blocklist" type="button" title="View blocklist — drag bad recipes here">
-          <span class="sidebar-blocklist-icon" aria-hidden="true">⛔</span>
-          <span>Blocklist</span>
-        </button>
-        <button id="nav-trash" class="sidebar-trash" type="button" title="View trash — drag recipes here to delete">
-          <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
-          <span>Trash</span>
-        </button>
-      </div>
+      <button id="nav-trash" class="sidebar-trash" type="button" title="View trash — drag recipes here to delete">
+        <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
+        <span>Trash</span>
+      </button>
     </div>
   </aside>
   <main>
@@ -2373,13 +2367,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
       <section id="import-panel" class="panel hidden">
     <h2 class="panel-title-desktop">Save from URL</h2>
-    <div class="collapsible-section panel-collapsible" data-collapsible>
-      <button type="button" class="collapsible-header" aria-expanded="false">
-        <span>Save from URL</span>
-        <span class="collapsible-chevron" aria-hidden="true">▾</span>
-      </button>
-      <div class="collapsible-body">
-    <p>Paste a recipe page link. Grok formats it the same way as the Chrome extension.</p>
+    <p class="panel-lead">Paste a recipe page link. Grok formats it the same way as the Chrome extension.</p>
     <div class="setup-field">
       <label for="import-url">Recipe page URL</label>
       <input
@@ -2397,8 +2385,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="import-save-later" class="secondary" type="button">Save for later</button>
       <button id="import-save-print" class="primary" type="button">Save &amp; print</button>
       <button id="close-import-btn" class="secondary" type="button">Close</button>
-    </div>
-      </div>
     </div>
       </section>
       <section id="device-panel" class="panel hidden">
@@ -2486,7 +2472,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     <div class="setup-actions">
       <button id="backup-export-btn" class="primary" type="button">Back up now</button>
       <button id="backup-import-btn" class="secondary" type="button">Restore from backup</button>
-      <button id="close-backup-btn" class="secondary" type="button">Close</button>
     </div>
       </section>
       <div class="listing-header">
@@ -2534,7 +2519,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
-    const navBackup = document.getElementById("nav-backup");
     const searchBar = document.getElementById("search-bar");
     const utilityTitle = document.getElementById("utility-title");
     const LIBRARY_SEARCH_PLACEHOLDER = "Search by name, ingredients, servings, prep time, cook time, or total time…";
@@ -3776,6 +3760,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       const modelSelect = document.getElementById("extension-model");
       if (modelSelect) modelSelect.value = extensionPayload.model || "grok-4-1-fast";
       renderExtensionSettingsStatus(extensionPayload);
+      await refreshBackupStatus();
     }
 
     async function saveExtensionSettings() {
@@ -4103,14 +4088,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       navBlocklist.classList.toggle("active", view === "blocklist");
       navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
-      navBackup.classList.toggle("active", view === "backup");
       document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
-      const utilityView = view === "device" || view === "import" || view === "backup";
+      document.body.classList.toggle("view-device", view === "device");
+      const utilityView = view === "device" || view === "import";
       document.body.classList.toggle("view-utility", utilityView);
       if (utilityTitle) {
         utilityTitle.textContent =
-          view === "device" ? "Setup" : view === "import" ? "Save from URL" : view === "backup" ? "Backup" : "";
+          view === "device" ? "Setup" : view === "import" ? "Save from URL" : "";
       }
       searchInput.placeholder =
         view === "blocklist" ? "Search in Blocklist" : view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
@@ -4161,6 +4146,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function closeDevicePanel() {
       devicePanel.classList.add("hidden");
+      backupPanel.classList.add("hidden");
       if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") setActiveNav("library");
     }
 
@@ -4169,7 +4155,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       importPanel.classList.remove("hidden");
       setActiveNav("import");
       refreshImportStatus();
-      expandPanelSections(importPanel);
       closeSidebar();
       importPanel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -4181,25 +4166,10 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
-    function closeBackupPanel() {
-      backupPanel.classList.add("hidden");
-      if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") {
-        setActiveNav("library");
-      }
-    }
-
-    function openBackupPanel() {
-      hideUtilityPanels();
-      backupPanel.classList.remove("hidden");
-      setActiveNav("backup");
-      refreshBackupStatus();
-      closeSidebar();
-      backupPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-
     function openDevicePanel() {
       hideUtilityPanels();
       devicePanel.classList.remove("hidden");
+      backupPanel.classList.remove("hidden");
       setActiveNav("device");
       loadDeviceSetup();
       closeSidebar();
@@ -4275,7 +4245,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
-    document.getElementById("nav-backup").addEventListener("click", openBackupPanel);
     document.getElementById("nav-import").addEventListener("click", openImportPanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
     document.getElementById("backup-export-btn").addEventListener("click", () => {
@@ -4306,7 +4275,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (event.target.id === "category-dialog") closeCategoryDialog();
     });
     document.getElementById("close-device-btn").addEventListener("click", closeDevicePanel);
-    document.getElementById("close-backup-btn").addEventListener("click", closeBackupPanel);
     document.getElementById("sidebar-toggle").addEventListener("click", () => {
       if (document.body.classList.contains("sidebar-open")) closeSidebar();
       else openSidebar();
