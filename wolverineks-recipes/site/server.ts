@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.37";
+const APP_VERSION = "1.0.38";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -1773,6 +1773,14 @@ button.danger-btn {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+body.view-utility .listing-header,
+body.view-utility .listing-table,
+body.view-utility #empty,
+body.view-utility #blocklist-empty,
+body.view-utility #trash-empty,
+body.view-utility #no-results {
+  display: none !important;
 }
 .listing-header {
   display: flex;
@@ -4118,7 +4126,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
       const showSearch = view === "library" || view === "blocklist" || view === "trash";
+      const utilityView = view === "device" || view === "import" || view === "backup";
       if (searchBar) searchBar.classList.toggle("hidden", !showSearch);
+      document.body.classList.toggle("view-utility", utilityView);
       searchInput.placeholder =
         view === "blocklist" ? "Search in Blocklist" : view === "trash" ? "Search in Trash" : LIBRARY_SEARCH_PLACEHOLDER;
       if (view !== "blocklist") blocklistEmptyEl.classList.add("hidden");
