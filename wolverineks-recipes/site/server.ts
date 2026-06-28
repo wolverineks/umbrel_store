@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.38";
+const APP_VERSION = "1.0.39";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2267,6 +2267,21 @@ code {
 }
 .setup-steps li + li { margin-top: 0.65rem; }
 .setup-field { margin-top: 1rem; }
+.setup-section-divider {
+  margin: 1.75rem 0 0.25rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+.setup-section-divider h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+.setup-section-divider p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
 .setup-field label {
   display: block;
   font-size: 0.8rem;
@@ -2382,7 +2397,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     <nav class="nav">
       <button id="nav-library" class="active" type="button">Library</button>
       <button id="nav-import" type="button">Save URL</button>
-      <button id="nav-backup" type="button">Backup</button>
       <button id="nav-refresh" type="button">Refresh</button>
       <button id="nav-device" type="button">Setup</button>
     </nav>
@@ -2432,28 +2446,6 @@ const HTML_PAGE = `<!DOCTYPE html>
           <button id="empty-trash" class="danger-btn" type="button">Empty trash</button>
         </div>
       </div>
-      <section id="backup-panel" class="panel hidden">
-    <h2>Backup &amp; restore</h2>
-    <p>
-      Copy your library to <code id="backup-host-path">/home/umbrel/recipes-backup</code> on your
-      Umbrel. This folder is outside the app install directory and survives uninstall. SSH scripts
-      in <code>wolverineks-recipes/scripts/</code> use the same location.
-    </p>
-    <div class="setup-field">
-      <label>Live library</label>
-      <p id="backup-library-summary" class="setup-field-status">Loading…</p>
-    </div>
-    <div class="setup-field">
-      <label>Backup folder</label>
-      <p id="backup-folder-summary" class="setup-field-status">Loading…</p>
-    </div>
-    <p id="backup-status" class="setup-field-status"></p>
-    <div class="setup-actions import-actions">
-      <button id="backup-export-btn" class="primary" type="button">Back up now</button>
-      <button id="backup-import-btn" class="secondary" type="button">Restore from backup</button>
-      <button id="close-backup-btn" class="secondary" type="button">Close</button>
-    </div>
-      </section>
       <section id="import-panel" class="panel hidden">
     <h2>Save from URL</h2>
     <p>Paste a recipe page link. Grok formats it the same way as the Chrome extension.</p>
@@ -2531,6 +2523,27 @@ const HTML_PAGE = `<!DOCTYPE html>
         <button id="copy-token-btn" class="secondary" type="button">Copy token</button>
       </div>
     </div>
+    <div class="setup-section-divider">
+      <h3>Backup &amp; restore</h3>
+      <p>
+        Copy your library to <code id="backup-host-path">/home/umbrel/recipes-backup</code> on your
+        Umbrel. This folder is outside the app install directory and survives uninstall. SSH scripts
+        in <code>wolverineks-recipes/scripts/</code> use the same location.
+      </p>
+    </div>
+    <div class="setup-field">
+      <label>Live library</label>
+      <p id="backup-library-summary" class="setup-field-status">Loading…</p>
+    </div>
+    <div class="setup-field">
+      <label>Backup folder</label>
+      <p id="backup-folder-summary" class="setup-field-status">Loading…</p>
+    </div>
+    <p id="backup-status" class="setup-field-status"></p>
+    <div class="setup-actions import-actions">
+      <button id="backup-export-btn" class="primary" type="button">Back up now</button>
+      <button id="backup-import-btn" class="secondary" type="button">Restore from backup</button>
+    </div>
     <div class="setup-actions">
       <button id="save-extension-settings-btn" class="primary" type="button">Save extension settings</button>
       <button id="copy-setup-btn" class="secondary" type="button">Copy all for extension</button>
@@ -2576,11 +2589,9 @@ const HTML_PAGE = `<!DOCTYPE html>
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
     const importPanel = document.getElementById("import-panel");
-    const backupPanel = document.getElementById("backup-panel");
     const recipeStatus = document.getElementById("recipe-status");
     const navLibrary = document.getElementById("nav-library");
     const navImport = document.getElementById("nav-import");
-    const navBackup = document.getElementById("nav-backup");
     const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
@@ -3824,6 +3835,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       const modelSelect = document.getElementById("extension-model");
       if (modelSelect) modelSelect.value = extensionPayload.model || "grok-4-1-fast";
       renderExtensionSettingsStatus(extensionPayload);
+      await refreshBackupStatus();
     }
 
     async function saveExtensionSettings() {
@@ -3904,7 +3916,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     function hideUtilityPanels() {
       devicePanel.classList.add("hidden");
       importPanel.classList.add("hidden");
-      backupPanel.classList.add("hidden");
     }
 
     function formatBackupTimestamp(value) {
@@ -4119,14 +4130,13 @@ const HTML_PAGE = `<!DOCTYPE html>
     function setActiveNav(view) {
       navLibrary.classList.toggle("active", view === "library");
       navImport.classList.toggle("active", view === "import");
-      navBackup.classList.toggle("active", view === "backup");
       navBlocklist.classList.toggle("active", view === "blocklist");
       navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
       document.body.classList.toggle("view-blocklist", view === "blocklist");
       document.body.classList.toggle("view-trash", view === "trash");
       const showSearch = view === "library" || view === "blocklist" || view === "trash";
-      const utilityView = view === "device" || view === "import" || view === "backup";
+      const utilityView = view === "device" || view === "import";
       if (searchBar) searchBar.classList.toggle("hidden", !showSearch);
       document.body.classList.toggle("view-utility", utilityView);
       searchInput.placeholder =
@@ -4179,22 +4189,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     function closeDevicePanel() {
       devicePanel.classList.add("hidden");
       if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") setActiveNav("library");
-    }
-
-    function openBackupPanel() {
-      hideUtilityPanels();
-      backupPanel.classList.remove("hidden");
-      setActiveNav("backup");
-      refreshBackupStatus();
-      closeSidebar();
-      backupPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-
-    function closeBackupPanel() {
-      backupPanel.classList.add("hidden");
-      if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") {
-        setActiveNav("library");
-      }
     }
 
     function openImportPanel() {
@@ -4292,7 +4286,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
     document.getElementById("nav-import").addEventListener("click", openImportPanel);
-    document.getElementById("nav-backup").addEventListener("click", openBackupPanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
     document.getElementById("backup-export-btn").addEventListener("click", () => {
       runBackupExport().catch((error) => alert(error.message || "Backup failed."));
@@ -4300,7 +4293,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById("backup-import-btn").addEventListener("click", () => {
       runBackupImport().catch((error) => alert(error.message || "Restore failed."));
     });
-    document.getElementById("close-backup-btn").addEventListener("click", closeBackupPanel);
     document.getElementById("import-save-later").addEventListener("click", () => {
       importFromUrl(false).catch((error) => alert(error.message || "Import failed."));
     });
