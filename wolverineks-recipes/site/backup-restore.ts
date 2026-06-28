@@ -115,7 +115,7 @@ export async function exportRecipesData(dataDir: string, backupDir: string): Pro
   const writable = await isWritableDir(backupDir);
   if (!writable.ok) {
     throw new Error(
-      `Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}. Restart the Recipes app after updating to v1.0.35.`,
+      `Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}. Restart the Recipes app after updating.`,
     );
   }
 

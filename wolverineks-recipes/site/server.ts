@@ -6,12 +6,13 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.35";
+const APP_VERSION = "1.0.36";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
 const DATA_ROOT = process.env.RECIPES_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.RECIPES_BACKUP_DIR ?? "/backup";
+const BACKUP_HOST_PATH = process.env.RECIPES_BACKUP_HOST_PATH ?? "/home/umbrel/recipes-backup";
 const RECIPES_DIR = path.join(DATA_ROOT, "recipes");
 const IMAGES_DIR = path.join(DATA_ROOT, "images");
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -2426,8 +2427,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       <section id="backup-panel" class="panel hidden">
     <h2>Backup &amp; restore</h2>
     <p>
-      Copy your library to a folder outside the live app data directory, or restore from that
-      backup. SSH scripts in <code>wolverineks-recipes/scripts/</code> use the same backup folder.
+      Copy your library to <code id="backup-host-path">/home/umbrel/recipes-backup</code> on your
+      Umbrel. This folder is outside the app install directory and survives uninstall. SSH scripts
+      in <code>wolverineks-recipes/scripts/</code> use the same location.
     </p>
     <div class="setup-field">
       <label>Live library</label>
@@ -3908,6 +3910,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     async function refreshBackupStatus(message) {
       const librarySummary = document.getElementById("backup-library-summary");
       const folderSummary = document.getElementById("backup-folder-summary");
+      const hostPathEl = document.getElementById("backup-host-path");
       const statusEl = document.getElementById("backup-status");
       const exportBtn = document.getElementById("backup-export-btn");
       const importBtn = document.getElementById("backup-import-btn");
@@ -3915,6 +3918,9 @@ const HTML_PAGE = `<!DOCTYPE html>
         const response = await fetch("/api/backup/status");
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Could not load backup status.");
+
+        const hostPath = payload.backup_host_path || "/home/umbrel/recipes-backup";
+        if (hostPathEl) hostPathEl.textContent = hostPath;
 
         if (librarySummary) {
           librarySummary.textContent =
@@ -3925,18 +3931,20 @@ const HTML_PAGE = `<!DOCTYPE html>
           if (!payload.backup_writable) {
             folderSummary.textContent =
               "Backup folder is not writable: " +
-              payload.backup_dir +
+              hostPath +
               (payload.backup_writable_error ? " (" + payload.backup_writable_error + ")." : ".") +
-              " Restart the Recipes app after updating to v1.0.35.";
+              " Restart the Recipes app after updating.";
             folderSummary.className = "setup-field-status error";
           } else if (!payload.backup_available) {
             folderSummary.textContent =
-              "No backup yet at " + payload.backup_dir + ". Click Back up now to create one.";
+              "No backup yet at " + hostPath + ". Click Back up now to create one.";
             folderSummary.className = "setup-field-status";
           } else {
             folderSummary.textContent =
               payload.backup_recipe_count +
-              " recipe(s) backed up. Last backup: " +
+              " recipe(s) backed up at " +
+              hostPath +
+              ". Last backup: " +
               formatBackupTimestamp(payload.backup_updated_at) +
               ".";
             folderSummary.className = "setup-field-status ok";
@@ -4472,7 +4480,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (route === "/api/backup/status" && req.method === "GET") {
     try {
       const status = await getBackupStatus(DATA_ROOT, BACKUP_ROOT);
-      sendJson(res, 200, status);
+      sendJson(res, 200, { ...status, backup_host_path: BACKUP_HOST_PATH });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not read backup status";
       sendJson(res, 500, { error: message });
@@ -4483,7 +4491,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (route === "/api/backup/export" && req.method === "POST") {
     try {
       const status = await exportRecipesData(DATA_ROOT, BACKUP_ROOT);
-      sendJson(res, 200, { ok: true, ...status });
+      sendJson(res, 200, { ok: true, ...status, backup_host_path: BACKUP_HOST_PATH });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Backup failed";
       sendJson(res, 400, { error: message });
@@ -4495,7 +4503,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     try {
       const status = await importRecipesData(DATA_ROOT, BACKUP_ROOT);
       await reloadSettingsFromDisk();
-      sendJson(res, 200, { ok: true, ...status });
+      sendJson(res, 200, { ok: true, ...status, backup_host_path: BACKUP_HOST_PATH });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Restore failed";
       sendJson(res, 400, { error: message });

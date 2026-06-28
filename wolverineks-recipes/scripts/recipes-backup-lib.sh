@@ -31,9 +31,10 @@ recipes_resolve_backup_dir() {
   fi
 
   local candidates=(
+    "/home/umbrel/recipes-backup"
+    "$HOME/recipes-backup"
     "/home/umbrel/umbrel/app-data/wolverineks-recipes/backup"
     "$HOME/umbrel/app-data/wolverineks-recipes/backup"
-    "/home/umbrel/recipes-backup"
   )
 
   local candidate
@@ -44,7 +45,7 @@ recipes_resolve_backup_dir() {
     fi
   done
 
-  printf '%s\n' "/home/umbrel/umbrel/app-data/wolverineks-recipes/backup"
+  printf '%s\n' "/home/umbrel/recipes-backup"
 }
 
 recipes_fix_permissions() {

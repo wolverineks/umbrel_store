@@ -100,7 +100,7 @@ async function getBackupStatus(dataDir, backupDir) {
 async function exportRecipesData(dataDir, backupDir) {
     const writable = await isWritableDir(backupDir);
     if (!writable.ok) {
-        throw new Error(`Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}. Restart the Recipes app after updating to v1.0.35.`);
+        throw new Error(`Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}. Restart the Recipes app after updating.`);
     }
     await syncDirectory(dataDir, backupDir);
     const manifest = {

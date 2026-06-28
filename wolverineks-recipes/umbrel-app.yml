@@ -4,7 +4,7 @@ name: Recipes
 tagline: Save and browse recipes from the web
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-recipes/icon.svg
 category: files
-version: "1.0.35"
+version: "1.0.36"
 port: 4020
 description: >-
   A self-hosted recipe library for your Umbrel. Save recipes from the Recipe
@@ -15,8 +15,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Fix backup folder permissions on startup so /backup is writable inside the
-  container.
+  Store backups at /home/umbrel/recipes-backup so they survive app uninstall.
+  Override with RECIPES_BACKUP_HOST_DIR in docker-compose if needed.
 dependencies: []
 path: ""
 defaultUsername: ""
