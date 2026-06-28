@@ -10,7 +10,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.39";
+const APP_VERSION = "1.0.40";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -1396,11 +1396,22 @@ aside {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sidebar-footer-wrap {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
 .sidebar-footer {
   margin-top: auto;
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+.sidebar-footer-wrap .sidebar-footer {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 .sidebar-trash {
   display: flex;
@@ -2086,20 +2097,18 @@ code {
 }
 .setup-steps li + li { margin-top: 0.65rem; }
 .setup-field { margin-top: 1rem; }
-.setup-section-divider {
-  margin: 1.75rem 0 0.25rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
-}
-.setup-section-divider h3 {
-  margin: 0 0 0.35rem;
-  font-size: 1.05rem;
-}
-.setup-section-divider p {
-  margin: 0;
+.collapsible-chevron {
+  flex-shrink: 0;
   color: var(--muted);
-  font-size: 0.92rem;
-  line-height: 1.5;
+  font-size: 0.85rem;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.collapsible-header {
+  display: none;
+}
+.panel-title-desktop {
+  margin: 0 0 0.5rem;
 }
 .setup-field label {
   display: block;
@@ -2155,6 +2164,53 @@ a { color: var(--accent); }
   body { grid-template-columns: 1fr; }
   body.sidebar-open { overflow: hidden; }
   .sidebar-toggle { display: grid; }
+  .collapsible-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    padding: 0.7rem 0.75rem;
+    border-radius: 0.65rem;
+    font: inherit;
+    font-weight: 600;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+  }
+  .collapsible-header:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .panel-collapsible .collapsible-header {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    margin-top: 0.65rem;
+  }
+  .panel-collapsible:first-of-type .collapsible-header {
+    margin-top: 0;
+  }
+  .collapsible-section:not(.is-open) .collapsible-body {
+    display: none;
+  }
+  .collapsible-section.is-open .collapsible-chevron {
+    transform: rotate(180deg);
+  }
+  .categories-section .sidebar-section-header .sidebar-section-label {
+    display: none;
+  }
+  .categories-section .sidebar-section-header .collapsible-header {
+    flex: 1;
+    min-width: 0;
+  }
+  .categories-section .sidebar-section-header {
+    gap: 0.35rem;
+  }
+  .panel-title-desktop {
+    display: none;
+  }
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
@@ -2212,30 +2268,50 @@ const HTML_PAGE = `<!DOCTYPE html>
       <div class="brand-badge">R</div>
       <span>Recipes</span>
     </div>
-    <nav class="nav">
-      <button id="nav-library" class="active" type="button">Library</button>
-      <button id="nav-import" type="button">Save URL</button>
-      <button id="nav-refresh" type="button">Refresh</button>
-      <button id="nav-device" type="button">Setup</button>
-    </nav>
+    <div class="collapsible-section sidebar-collapsible" data-collapsible>
+      <button type="button" class="collapsible-header" aria-expanded="false">
+        <span>Navigate</span>
+        <span class="collapsible-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div class="collapsible-body">
+        <nav class="nav">
+          <button id="nav-library" class="active" type="button">Library</button>
+          <button id="nav-import" type="button">Save URL</button>
+          <button id="nav-refresh" type="button">Refresh</button>
+          <button id="nav-device" type="button">Setup</button>
+        </nav>
+      </div>
+    </div>
     <div class="sidebar-scroll">
-      <div class="sidebar-section categories-section">
+      <div class="sidebar-section categories-section collapsible-section sidebar-collapsible" data-collapsible>
         <div class="sidebar-section-header">
+          <button type="button" class="collapsible-header" aria-expanded="false">
+            <span>Categories</span>
+            <span class="collapsible-chevron" aria-hidden="true">▾</span>
+          </button>
           <div class="sidebar-section-label">Categories</div>
           <button id="add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
         </div>
-        <div id="categories-list" class="categories-list"></div>
+        <div class="collapsible-body">
+          <div id="categories-list" class="categories-list"></div>
+        </div>
       </div>
     </div>
-    <div class="sidebar-footer">
-      <button id="nav-blocklist" class="sidebar-blocklist" type="button" title="View blocklist — drag bad recipes here">
-        <span class="sidebar-blocklist-icon" aria-hidden="true">⛔</span>
-        <span>Blocklist</span>
+    <div class="collapsible-section sidebar-collapsible sidebar-footer-wrap" data-collapsible>
+      <button type="button" class="collapsible-header" aria-expanded="false">
+        <span>Blocklist &amp; trash</span>
+        <span class="collapsible-chevron" aria-hidden="true">▾</span>
       </button>
-      <button id="nav-trash" class="sidebar-trash" type="button" title="View trash — drag recipes here to delete">
-        <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
-        <span>Trash</span>
-      </button>
+      <div class="collapsible-body sidebar-footer">
+        <button id="nav-blocklist" class="sidebar-blocklist" type="button" title="View blocklist — drag bad recipes here">
+          <span class="sidebar-blocklist-icon" aria-hidden="true">⛔</span>
+          <span>Blocklist</span>
+        </button>
+        <button id="nav-trash" class="sidebar-trash" type="button" title="View trash — drag recipes here to delete">
+          <span class="sidebar-trash-icon" aria-hidden="true">🗑</span>
+          <span>Trash</span>
+        </button>
+      </div>
     </div>
   </aside>
   <main>
@@ -2265,7 +2341,13 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
       </div>
       <section id="import-panel" class="panel hidden">
-    <h2>Save from URL</h2>
+    <h2 class="panel-title-desktop">Save from URL</h2>
+    <div class="collapsible-section panel-collapsible" data-collapsible>
+      <button type="button" class="collapsible-header" aria-expanded="false">
+        <span>Save from URL</span>
+        <span class="collapsible-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div class="collapsible-body">
     <p>Paste a recipe page link. Grok formats it the same way as the Chrome extension.</p>
     <div class="setup-field">
       <label for="import-url">Recipe page URL</label>
@@ -2285,10 +2367,18 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="import-save-print" class="primary" type="button">Save &amp; print</button>
       <button id="close-import-btn" class="secondary" type="button">Close</button>
     </div>
+      </div>
+    </div>
       </section>
       <section id="device-panel" class="panel hidden">
-    <h2>Setup</h2>
-    <p>Set up the Recipe Printer Chrome extension on a new computer or browser profile.</p>
+    <h2 class="panel-title-desktop">Setup</h2>
+    <div class="collapsible-section panel-collapsible" data-collapsible>
+      <button type="button" class="collapsible-header" aria-expanded="false">
+        <span>Chrome extension</span>
+        <span class="collapsible-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div class="collapsible-body">
+    <p>Set up the Recipes Chrome extension on a new computer or browser profile.</p>
     <ol class="setup-steps">
       <li>
         Install the extension from
@@ -2341,14 +2431,24 @@ const HTML_PAGE = `<!DOCTYPE html>
         <button id="copy-token-btn" class="secondary" type="button">Copy token</button>
       </div>
     </div>
-    <div class="setup-section-divider">
-      <h3>Backup &amp; restore</h3>
+    <div class="setup-actions">
+      <button id="save-extension-settings-btn" class="primary" type="button">Save extension settings</button>
+      <button id="copy-setup-btn" class="secondary" type="button">Copy all for extension</button>
+      <button id="regenerate-token-btn" class="danger-btn" type="button">Regenerate token</button>
+    </div>
+      </div>
+    </div>
+    <div class="collapsible-section panel-collapsible" data-collapsible>
+      <button type="button" class="collapsible-header" aria-expanded="false">
+        <span>Backup &amp; restore</span>
+        <span class="collapsible-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div class="collapsible-body">
       <p>
         Copy your library to <code id="backup-host-path">/home/umbrel/recipes-backup</code> on your
         Umbrel. This folder is outside the app install directory and survives uninstall. SSH scripts
         in <code>wolverineks-recipes/scripts/</code> use the same location.
       </p>
-    </div>
     <div class="setup-field">
       <label>Live library</label>
       <p id="backup-library-summary" class="setup-field-status">Loading…</p>
@@ -2362,10 +2462,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="backup-export-btn" class="primary" type="button">Back up now</button>
       <button id="backup-import-btn" class="secondary" type="button">Restore from backup</button>
     </div>
+      </div>
+    </div>
     <div class="setup-actions">
-      <button id="save-extension-settings-btn" class="primary" type="button">Save extension settings</button>
-      <button id="copy-setup-btn" class="secondary" type="button">Copy all for extension</button>
-      <button id="regenerate-token-btn" class="danger-btn" type="button">Regenerate token</button>
       <button id="close-device-btn" class="secondary" type="button">Close</button>
     </div>
       </section>
@@ -3736,6 +3835,35 @@ const HTML_PAGE = `<!DOCTYPE html>
       importPanel.classList.add("hidden");
     }
 
+    function isMobileLayout() {
+      return window.matchMedia("(max-width: 800px)").matches;
+    }
+
+    function expandPanelSections(panel) {
+      if (!panel || !isMobileLayout()) return;
+      panel.querySelectorAll("[data-collapsible]").forEach((section) => {
+        section.classList.add("is-open");
+        const header = section.querySelector(".collapsible-header");
+        if (header) header.setAttribute("aria-expanded", "true");
+      });
+    }
+
+    function bindCollapsibleSections() {
+      document.querySelectorAll("[data-collapsible]").forEach((section) => {
+        const header = section.querySelector(".collapsible-header");
+        if (!header) return;
+        header.addEventListener("click", (event) => {
+          if (!isMobileLayout()) return;
+          if (event.target.closest(".categories-add")) return;
+          const open = section.classList.toggle("is-open");
+          header.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+      });
+      document.getElementById("add-category")?.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+    }
+
     function formatBackupTimestamp(value) {
       if (!value) return "never";
       try {
@@ -4014,6 +4142,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       importPanel.classList.remove("hidden");
       setActiveNav("import");
       refreshImportStatus();
+      expandPanelSections(importPanel);
       closeSidebar();
       importPanel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -4030,6 +4159,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       devicePanel.classList.remove("hidden");
       setActiveNav("device");
       loadDeviceSetup();
+      expandPanelSections(devicePanel);
       closeSidebar();
       devicePanel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -4186,6 +4316,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       tokenValue.textContent = ingestToken;
     });
 
+    bindCollapsibleSections();
     setActiveNav("library");
     loadRecipes();
   </script>
