@@ -11,7 +11,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.45";
+const APP_VERSION = "1.0.46";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2536,6 +2536,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     let ingestToken = "";
     const DRAG_MIME = "application/x-recipes-entry";
     let allRecipes = [];
+    let loadRecipesGeneration = 0;
     let categories = [];
     let activeCategoryIds = new Set();
     let dragRecipe = null;
@@ -3748,28 +3749,36 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
 
     async function loadRecipes() {
+      const generation = ++loadRecipesGeneration;
       if (activeView === "library") await refreshCategories();
+      if (generation !== loadRecipesGeneration) return;
+
       const listEndpoint =
         activeView === "trash" ? "/api/trash" : activeView === "blocklist" ? "/api/blocklist" : "/api/recipes";
       const detailPrefix =
         activeView === "trash" ? "/api/trash/" : activeView === "blocklist" ? "/api/blocklist/" : "/api/recipes/";
       const response = await fetch(listEndpoint);
+      if (generation !== loadRecipesGeneration) return;
       const payload = await response.json();
       const summaries = payload.recipes || [];
       const seenKeys = new Set();
       const seenIds = new Set();
-      allRecipes = [];
+      const nextRecipes = [];
       for (const summary of summaries) {
+        if (generation !== loadRecipesGeneration) return;
         if (!summary?.id || seenIds.has(summary.id)) continue;
         seenIds.add(summary.id);
         const detailResponse = await fetch(detailPrefix + encodeURIComponent(summary.id));
+        if (generation !== loadRecipesGeneration) return;
         const recipe = await detailResponse.json();
         if (!recipe?.id) continue;
         const key = recipeListKey(recipe);
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
-        allRecipes.push(recipe);
+        nextRecipes.push(recipe);
       }
+      if (generation !== loadRecipesGeneration) return;
+      allRecipes = nextRecipes;
       renderRecipes();
     }
 
@@ -4026,8 +4035,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Restore failed.");
         await refreshBackupStatus("Restore completed.");
-        showLibrary();
-        await loadRecipes();
+        await showLibrary();
       } catch (error) {
         const statusEl = document.getElementById("backup-status");
         if (statusEl) {
@@ -4110,8 +4118,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           statusEl.className = "setup-field-status ok";
         }
 
-        showLibrary();
-        await loadRecipes();
+        await showLibrary();
 
         if (shouldPrint && payload.id) {
           window.open("/recipes/" + encodeURIComponent(payload.id) + "/print?auto=1", "_blank", "noopener");
@@ -4147,7 +4154,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (view !== "trash") trashEmptyEl.classList.add("hidden");
     }
 
-    function showLibrary() {
+    async function showLibrary() {
       hideUtilityPanels();
       clearCategorySelection();
       activeView = "library";
@@ -4155,7 +4162,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       closeContextMenu();
       closeSidebar();
       renderCategoriesSidebar();
-      loadRecipes();
+      await loadRecipes();
     }
 
     function showBlocklist() {
