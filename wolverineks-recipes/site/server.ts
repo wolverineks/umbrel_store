@@ -7,7 +7,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-const APP_VERSION = "1.0.46";
+const APP_VERSION = "1.0.47";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"] as const;
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2422,16 +2422,7 @@ a { color: var(--accent); }
   .collapsible-section.is-open .collapsible-chevron {
     transform: rotate(180deg);
   }
-  .categories-section .sidebar-section-header .sidebar-section-label {
-    display: none;
-  }
-  .categories-section .sidebar-section-header .collapsible-header {
-    flex: 1;
-    min-width: 0;
-  }
-  .categories-section .sidebar-section-header {
-    gap: 0.35rem;
-  }
+
   .panel-title-desktop {
     display: none;
   }
@@ -2503,18 +2494,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="nav-device" type="button">Setup</button>
     </nav>
     <div class="sidebar-scroll">
-      <div class="sidebar-section categories-section collapsible-section sidebar-collapsible" data-collapsible>
+      <div class="sidebar-section categories-section">
         <div class="sidebar-section-header">
-          <button type="button" class="collapsible-header" aria-expanded="false">
-            <span>Categories</span>
-            <span class="collapsible-chevron" aria-hidden="true">▾</span>
-          </button>
           <div class="sidebar-section-label">Categories</div>
           <button id="add-category" class="categories-add" type="button" title="New category" aria-label="New category">+</button>
         </div>
-        <div class="collapsible-body">
-          <div id="categories-list" class="categories-list"></div>
-        </div>
+        <div id="categories-list" class="categories-list"></div>
       </div>
     </div>
     <div class="sidebar-footer">
