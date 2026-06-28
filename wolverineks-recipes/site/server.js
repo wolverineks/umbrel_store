@@ -10,7 +10,7 @@ const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.34";
+const APP_VERSION = "1.0.35";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -3741,7 +3741,11 @@ const HTML_PAGE = `<!DOCTYPE html>
         }
         if (folderSummary) {
           if (!payload.backup_writable) {
-            folderSummary.textContent = "Backup folder is not writable: " + payload.backup_dir;
+            folderSummary.textContent =
+              "Backup folder is not writable: " +
+              payload.backup_dir +
+              (payload.backup_writable_error ? " (" + payload.backup_writable_error + ")." : ".") +
+              " Restart the Recipes app after updating to v1.0.35.";
             folderSummary.className = "setup-field-status error";
           } else if (!payload.backup_available) {
             folderSummary.textContent =

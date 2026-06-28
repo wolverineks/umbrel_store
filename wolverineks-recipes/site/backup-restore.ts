@@ -15,6 +15,7 @@ export type BackupStatus = {
   backup_dir: string;
   backup_available: boolean;
   backup_writable: boolean;
+  backup_writable_error?: string | null;
   library_recipe_count: number;
   backup_recipe_count: number;
   backup_updated_at: string | null;
@@ -32,15 +33,16 @@ async function countRecipesInDir(dataDir: string): Promise<number> {
   }
 }
 
-async function isWritableDir(dir: string): Promise<boolean> {
+async function isWritableDir(dir: string): Promise<{ ok: boolean; error: string | null }> {
   try {
     await mkdir(dir, { recursive: true });
     const probe = path.join(dir, `.write-test-${process.pid}`);
     await writeFile(probe, "ok", "utf8");
     await rm(probe, { force: true });
-    return true;
-  } catch {
-    return false;
+    return { ok: true, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "not writable";
+    return { ok: false, error: message };
   }
 }
 
@@ -95,12 +97,14 @@ function looksLikeRecipesBackup(backupDir: string): boolean {
 export async function getBackupStatus(dataDir: string, backupDir: string): Promise<BackupStatus> {
   const backupAvailable = existsSync(backupDir) && looksLikeRecipesBackup(backupDir);
   const manifest = backupAvailable ? await readManifest(backupDir) : null;
+  const writable = await isWritableDir(backupDir);
 
   return {
     data_dir: dataDir,
     backup_dir: backupDir,
     backup_available: backupAvailable,
-    backup_writable: await isWritableDir(backupDir),
+    backup_writable: writable.ok,
+    backup_writable_error: writable.error,
     library_recipe_count: await countRecipesInDir(dataDir),
     backup_recipe_count: backupAvailable ? await countRecipesInDir(backupDir) : 0,
     backup_updated_at: manifest?.exported_at ?? null,
@@ -108,8 +112,11 @@ export async function getBackupStatus(dataDir: string, backupDir: string): Promi
 }
 
 export async function exportRecipesData(dataDir: string, backupDir: string): Promise<BackupStatus> {
-  if (!(await isWritableDir(backupDir))) {
-    throw new Error(`Backup directory is not writable: ${backupDir}`);
+  const writable = await isWritableDir(backupDir);
+  if (!writable.ok) {
+    throw new Error(
+      `Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}. Restart the Recipes app after updating to v1.0.35.`,
+    );
   }
 
   await syncDirectory(dataDir, backupDir);

@@ -13,8 +13,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        mkdir -p /data/recipes /data/images
-        chown -R 1000:1000 /data
+        mkdir -p /data/recipes /data/images /backup
+        chown -R 1000:1000 /data /backup
         exec su -s /bin/sh node -c "node /app/server.js"
     volumes:
       - ${APP_DATA_DIR}/site:/app:ro
