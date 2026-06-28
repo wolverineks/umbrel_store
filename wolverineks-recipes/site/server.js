@@ -4,11 +4,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_http_1 = require("node:http");
+const recipe_import_1 = require("./recipe-import");
 const node_crypto_1 = require("node:crypto");
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
-const APP_VERSION = "1.0.32";
+const APP_VERSION = "1.0.33";
 const DEFAULT_EXTENSION_MODEL = "grok-4-1-fast";
 const EXTENSION_MODELS = ["grok-4-1-fast", "grok-4-fast", "grok-4"];
 const SAMPLE_SOURCE_PREFIX = "urn:wolverineks-recipes:sample:";
@@ -2099,6 +2100,14 @@ code {
   flex-wrap: wrap;
   margin-top: 1rem;
 }
+.import-actions {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.import-actions button {
+  width: 100%;
+  max-width: 18rem;
+}
 a { color: var(--accent); }
 .hidden { display: none; }
 .app-version {
@@ -2174,6 +2183,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     </div>
     <nav class="nav">
       <button id="nav-library" class="active" type="button">Library</button>
+      <button id="nav-import" type="button">Save URL</button>
       <button id="nav-refresh" type="button">Refresh</button>
       <button id="nav-device" type="button">Add device</button>
     </nav>
@@ -2223,6 +2233,28 @@ const HTML_PAGE = `<!DOCTYPE html>
           <button id="empty-trash" class="danger-btn" type="button">Empty trash</button>
         </div>
       </div>
+      <section id="import-panel" class="panel hidden">
+    <h2>Save from URL</h2>
+    <p>Paste a recipe page link. Grok formats it the same way as the Chrome extension.</p>
+    <div class="setup-field">
+      <label for="import-url">Recipe page URL</label>
+      <input
+        id="import-url"
+        class="setup-input"
+        type="url"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="https://example.com/recipe"
+      />
+    </div>
+    <p id="import-status" class="setup-field-status">Save an xAI API key under Add new device before importing.</p>
+    <div class="setup-actions import-actions">
+      <button id="import-save-later" class="secondary" type="button">Save for later</button>
+      <button id="import-save-print" class="primary" type="button">Save &amp; print</button>
+      <button id="close-import-btn" class="secondary" type="button">Close</button>
+    </div>
+      </section>
       <section id="device-panel" class="panel hidden">
     <h2>Add new device</h2>
     <p>Set up the Recipe Printer Chrome extension on a new computer or browser profile.</p>
@@ -2322,8 +2354,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     const noResultsEl = document.getElementById("no-results");
     const searchInput = document.getElementById("search-input");
     const devicePanel = document.getElementById("device-panel");
+    const importPanel = document.getElementById("import-panel");
     const recipeStatus = document.getElementById("recipe-status");
     const navLibrary = document.getElementById("nav-library");
+    const navImport = document.getElementById("nav-import");
     const navBlocklist = document.getElementById("nav-blocklist");
     const navTrash = document.getElementById("nav-trash");
     const navDevice = document.getElementById("nav-device");
@@ -3037,6 +3071,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           toggleCategorySelection(button.dataset.id);
           activeView = "library";
           devicePanel.classList.add("hidden");
+          importPanel.classList.add("hidden");
           setActiveNav("library");
           renderCategoriesSidebar();
           renderRecipes();
@@ -3643,8 +3678,97 @@ const HTML_PAGE = `<!DOCTYPE html>
       }, 1500);
     }
 
+    async function refreshImportStatus() {
+      const statusEl = document.getElementById("import-status");
+      const saveLaterBtn = document.getElementById("import-save-later");
+      const savePrintBtn = document.getElementById("import-save-print");
+      try {
+        const response = await fetch("/api/settings/extension");
+        const payload = await response.json();
+        const ready = Boolean(payload.api_key_configured);
+        if (saveLaterBtn) saveLaterBtn.disabled = !ready;
+        if (savePrintBtn) savePrintBtn.disabled = !ready;
+        if (!statusEl) return;
+        if (ready) {
+          statusEl.textContent = "Ready to import.";
+          statusEl.className = "setup-field-status ok";
+        } else {
+          statusEl.textContent = "Save an xAI API key under Add new device before importing.";
+          statusEl.className = "setup-field-status";
+        }
+      } catch (error) {
+        if (statusEl) {
+          statusEl.textContent = error.message || "Could not load import settings.";
+          statusEl.className = "setup-field-status error";
+        }
+        if (saveLaterBtn) saveLaterBtn.disabled = true;
+        if (savePrintBtn) savePrintBtn.disabled = true;
+      }
+    }
+
+    async function importFromUrl(shouldPrint) {
+      const urlInput = document.getElementById("import-url");
+      const statusEl = document.getElementById("import-status");
+      const saveLaterBtn = document.getElementById("import-save-later");
+      const savePrintBtn = document.getElementById("import-save-print");
+      const sourceUrl = (urlInput?.value || "").trim();
+      if (!sourceUrl) {
+        if (statusEl) {
+          statusEl.textContent = "Enter a recipe page URL.";
+          statusEl.className = "setup-field-status error";
+        }
+        return;
+      }
+
+      if (saveLaterBtn) saveLaterBtn.disabled = true;
+      if (savePrintBtn) savePrintBtn.disabled = true;
+      if (statusEl) {
+        statusEl.textContent = "Fetching page and formatting with Grok…";
+        statusEl.className = "setup-field-status";
+      }
+
+      try {
+        const response = await fetch("/api/import-from-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_url: sourceUrl }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          if (statusEl) {
+            statusEl.textContent = payload.error || "Import failed.";
+            statusEl.className = "setup-field-status error";
+          }
+          return;
+        }
+
+        if (urlInput) urlInput.value = "";
+        if (statusEl) {
+          statusEl.textContent = shouldPrint
+            ? "Saved to your library. Opening print preview…"
+            : "Saved to your library.";
+          statusEl.className = "setup-field-status ok";
+        }
+
+        showLibrary();
+        await loadRecipes();
+
+        if (shouldPrint && payload.id) {
+          window.open("/recipes/" + encodeURIComponent(payload.id) + "/print?auto=1", "_blank", "noopener");
+        }
+      } catch (error) {
+        if (statusEl) {
+          statusEl.textContent = error.message || "Import failed.";
+          statusEl.className = "setup-field-status error";
+        }
+      } finally {
+        await refreshImportStatus();
+      }
+    }
+
     function setActiveNav(view) {
       navLibrary.classList.toggle("active", view === "library");
+      navImport.classList.toggle("active", view === "import");
       navBlocklist.classList.toggle("active", view === "blocklist");
       navTrash.classList.toggle("active", view === "trash");
       navDevice.classList.toggle("active", view === "device");
@@ -3658,6 +3782,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function showLibrary() {
       devicePanel.classList.add("hidden");
+      importPanel.classList.add("hidden");
       clearCategorySelection();
       activeView = "library";
       setActiveNav("library");
@@ -3669,6 +3794,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function showBlocklist() {
       devicePanel.classList.add("hidden");
+      importPanel.classList.add("hidden");
       clearCategorySelection();
       activeView = "blocklist";
       setActiveNav("blocklist");
@@ -3679,6 +3805,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     function showTrash() {
       devicePanel.classList.add("hidden");
+      importPanel.classList.add("hidden");
       clearCategorySelection();
       activeView = "trash";
       setActiveNav("trash");
@@ -3702,7 +3829,24 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") setActiveNav("library");
     }
 
+    function openImportPanel() {
+      devicePanel.classList.add("hidden");
+      importPanel.classList.remove("hidden");
+      setActiveNav("import");
+      refreshImportStatus();
+      closeSidebar();
+      importPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function closeImportPanel() {
+      importPanel.classList.add("hidden");
+      if (!activeCategoryIds.size && activeView !== "trash" && activeView !== "blocklist") {
+        setActiveNav("library");
+      }
+    }
+
     function openDevicePanel() {
+      importPanel.classList.add("hidden");
       devicePanel.classList.remove("hidden");
       setActiveNav("device");
       loadDeviceSetup();
@@ -3779,7 +3923,15 @@ const HTML_PAGE = `<!DOCTYPE html>
       await loadRecipes();
     });
     document.getElementById("nav-device").addEventListener("click", openDevicePanel);
+    document.getElementById("nav-import").addEventListener("click", openImportPanel);
     document.getElementById("nav-library").addEventListener("click", showLibrary);
+    document.getElementById("import-save-later").addEventListener("click", () => {
+      importFromUrl(false).catch((error) => alert(error.message || "Import failed."));
+    });
+    document.getElementById("import-save-print").addEventListener("click", () => {
+      importFromUrl(true).catch((error) => alert(error.message || "Import failed."));
+    });
+    document.getElementById("close-import-btn").addEventListener("click", closeImportPanel);
     navBlocklist.addEventListener("click", showBlocklist);
     navTrash.addEventListener("click", showTrash);
     document.getElementById("empty-blocklist").addEventListener("click", emptyBlocklistBin);
@@ -3906,6 +4058,45 @@ async function handleRequest(req, res) {
                 return;
             }
             const message = error instanceof Error ? error.message : "Invalid recipe payload";
+            sendJson(res, 400, { error: message });
+        }
+        return;
+    }
+    if (route === "/api/import-from-url" && req.method === "POST") {
+        try {
+            const body = JSON.parse(await readBody(req));
+            const sourceUrl = typeof body.source_url === "string" ? body.source_url.trim() : "";
+            if (!sourceUrl) {
+                sendJson(res, 400, { error: "source_url is required." });
+                return;
+            }
+            if (await isSourceUrlBlocked(sourceUrl)) {
+                const entry = await findBlocklistEntryByUrl(sourceUrl);
+                sendJson(res, 403, blockedRecipeResponse(entry, sourceUrl));
+                return;
+            }
+            const apiKey = (settings.extension_api_key ?? "").trim();
+            if (!apiKey) {
+                sendJson(res, 400, {
+                    error: "No xAI API key saved. Add one under Add new device before importing from a URL.",
+                });
+                return;
+            }
+            const extracted = await (0, recipe_import_1.fetchRecipePage)(sourceUrl);
+            const formatted = await (0, recipe_import_1.formatRecipeWithGrok)(extracted, apiKey, normalizeExtensionModel(settings.extension_model));
+            if (extracted.image_url) {
+                formatted.image_url = extracted.image_url;
+            }
+            const recipe = await upsertRecipe(formatted);
+            sendJson(res, 200, { ok: true, id: recipe.id, recipe });
+        }
+        catch (error) {
+            if (error instanceof BlockedRecipeError) {
+                const entry = await findBlocklistEntryByUrl(error.sourceUrl);
+                sendJson(res, 403, blockedRecipeResponse(entry, error.sourceUrl));
+                return;
+            }
+            const message = error instanceof Error ? error.message : "Import failed";
             sendJson(res, 400, { error: message });
         }
         return;
