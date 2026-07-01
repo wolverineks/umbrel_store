@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -290,6 +290,30 @@ function pageStyles() {
     .chart-bar {
       cursor: crosshair;
     }
+    .drop-zone {
+      margin-top: 0.8rem;
+      border: 2px dashed var(--border);
+      border-radius: 14px;
+      padding: 1.5rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      background: var(--bg);
+      transition: border-color 0.15s ease, background 0.15s ease;
+      cursor: pointer;
+    }
+    .drop-zone strong {
+      display: block;
+      color: var(--text);
+      margin-bottom: 0.25rem;
+    }
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .drop-zone input[type="file"] {
+      display: none;
+    }
     .imports {
       display: grid;
       gap: 0.6rem;
@@ -395,9 +419,11 @@ function dashboardPage() {
       <div class="card">
         <h2>Import files</h2>
         <p class="muted">Upload Green Button XML, hourly CSV, or reading history CSV from Customer Connect.</p>
-        <div style="margin-top:0.8rem">
+        <label class="drop-zone" id="drop-zone" for="upload">
           <input type="file" id="upload" multiple accept=".xml,.csv,text/xml,text/csv">
-        </div>
+          <strong>Drop NBU exports here</strong>
+          or click to browse
+        </label>
         <p class="muted" id="upload-status" style="margin-top:0.8rem"></p>
       </div>
       <div class="card">
@@ -746,12 +772,63 @@ function dashboardPage() {
       await loadOverview();
       await loadUsage();
     });
-    document.getElementById("upload").addEventListener("change", async (event) => {
-      const input = event.target;
-      if (!input.files?.length) return;
-      await uploadFiles(input.files);
-      input.value = "";
-    });
+    function acceptedUploadFiles(fileList) {
+      return [...fileList].filter((file) => /\.(xml|csv)$/i.test(file.name));
+    }
+
+    function bindDropZone() {
+      const dropZone = document.getElementById("drop-zone");
+      const input = document.getElementById("upload");
+      if (!dropZone || !input) return;
+
+      const setDragState = (active) => {
+        dropZone.classList.toggle("dragover", active);
+      };
+
+      ["dragenter", "dragover"].forEach((eventName) => {
+        dropZone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setDragState(true);
+        });
+      });
+
+      ["dragleave", "drop"].forEach((eventName) => {
+        dropZone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (eventName === "dragleave" && dropZone.contains(event.relatedTarget)) return;
+          setDragState(false);
+        });
+      });
+
+      dropZone.addEventListener("drop", async (event) => {
+        const files = acceptedUploadFiles(event.dataTransfer?.files ?? []);
+        if (!files.length) {
+          const status = document.getElementById("upload-status");
+          if (status) status.textContent = "Drop XML or CSV files only.";
+          return;
+        }
+        await uploadFiles(files);
+        input.value = "";
+      });
+
+      input.addEventListener("change", async (event) => {
+        const target = event.target;
+        if (!target.files?.length) return;
+        const files = acceptedUploadFiles(target.files);
+        if (!files.length) {
+          const status = document.getElementById("upload-status");
+          if (status) status.textContent = "Choose XML or CSV files only.";
+          target.value = "";
+          return;
+        }
+        await uploadFiles(files);
+        target.value = "";
+      });
+    }
+
+    bindDropZone();
     document.getElementById("rotate-token").addEventListener("click", async () => {
       const res = await fetch("/api/settings/rotate-token", { method: "POST" });
       const payload = await res.json();
