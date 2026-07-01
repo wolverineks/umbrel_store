@@ -9,5 +9,5 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["server.ts", "parsers.ts", "store.ts"]
+  "include": ["server.ts", "parsers.ts", "store.ts", "backup-restore.ts"]
 }

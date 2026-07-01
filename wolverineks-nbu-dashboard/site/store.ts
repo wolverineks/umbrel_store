@@ -64,6 +64,12 @@ let settingsCache: Settings | null = null;
 let importsCache: ImportRecord[] | null = null;
 let readingsCache: StoredReading[] | null = null;
 
+export function resetStoreCaches(): void {
+  settingsCache = null;
+  importsCache = null;
+  readingsCache = null;
+}
+
 export function buildPropertyId(accountId: string | null, usagePoint: string | null): string | null {
   if (accountId && usagePoint) return `${accountId}-${usagePoint}`;
   if (accountId) return accountId;

@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resetStoreCaches = resetStoreCaches;
 exports.buildPropertyId = buildPropertyId;
 exports.loadSettings = loadSettings;
 exports.saveSettings = saveSettings;
@@ -25,6 +26,11 @@ const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 let settingsCache = null;
 let importsCache = null;
 let readingsCache = null;
+function resetStoreCaches() {
+    settingsCache = null;
+    importsCache = null;
+    readingsCache = null;
+}
 function buildPropertyId(accountId, usagePoint) {
     if (accountId && usagePoint)
         return `${accountId}-${usagePoint}`;

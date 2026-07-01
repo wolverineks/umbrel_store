@@ -6,10 +6,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const node_http_1 = require("node:http");
 const promises_1 = require("node:fs/promises");
 const node_path_1 = __importDefault(require("node:path"));
+const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const PORT = Number(process.env.PORT ?? 3000);
+const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
+const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
+const BACKUP_HOST_PATH = process.env.NBU_BACKUP_HOST_PATH ?? "/home/umbrel/nbu-backup";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
 function sendJson(res, statusCode, payload) {
     const body = Buffer.from(JSON.stringify(payload));
@@ -410,6 +414,29 @@ function dashboardPage() {
       <h2>Recent imports</h2>
       <div class="imports" id="imports"></div>
     </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2>Backup &amp; restore</h2>
+      <p class="muted">
+        Copy all usage data, settings, and property names to
+        <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel.
+      </p>
+      <div class="grid" style="margin-top:0.8rem">
+        <div>
+          <h3>Live data</h3>
+          <p class="muted" id="backup-live-summary">Loading…</p>
+        </div>
+        <div>
+          <h3>Backup folder</h3>
+          <p class="muted" id="backup-folder-summary">Loading…</p>
+        </div>
+      </div>
+      <p class="muted" id="backup-status" style="margin-top:0.8rem"></p>
+      <div class="toolbar" style="margin-top:0.8rem; margin-bottom:0">
+        <button id="backup-export-btn">Back up now</button>
+        <button id="backup-import-btn" class="secondary">Restore from backup</button>
+      </div>
+    </div>
   </div>
   <script>
     const state = { overview: null, usage: null };
@@ -734,7 +761,106 @@ function dashboardPage() {
       }
     });
 
-    loadOverview().then(loadUsage);
+    function formatBackupTimestamp(iso) {
+      if (!iso) return "never";
+      return new Date(iso).toLocaleString();
+    }
+
+    async function refreshBackupStatus(message) {
+      const liveSummary = document.getElementById("backup-live-summary");
+      const folderSummary = document.getElementById("backup-folder-summary");
+      const hostPathEl = document.getElementById("backup-host-path");
+      const statusEl = document.getElementById("backup-status");
+      const exportBtn = document.getElementById("backup-export-btn");
+      const importBtn = document.getElementById("backup-import-btn");
+      if (message && statusEl) statusEl.textContent = message;
+      try {
+        const response = await fetch("/api/backup/status");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Could not load backup status.");
+        const hostPath = payload.backup_host_path || "/home/umbrel/nbu-backup";
+        if (hostPathEl) hostPathEl.textContent = hostPath;
+        if (liveSummary) {
+          liveSummary.textContent =
+            payload.live_reading_count + " readings · " + payload.live_import_count + " imports";
+        }
+        if (folderSummary) {
+          if (!payload.backup_available) {
+            folderSummary.textContent = "No backup yet.";
+          } else {
+            folderSummary.textContent =
+              payload.backup_reading_count + " readings · " + payload.backup_import_count + " imports";
+          }
+        }
+        if (statusEl) {
+          if (!payload.backup_writable) {
+            statusEl.textContent =
+              "Backup folder is not writable" +
+              (payload.backup_writable_error ? " (" + payload.backup_writable_error + ")." : ".");
+          } else if (!payload.backup_available) {
+            statusEl.textContent = "No backup yet at " + hostPath + ". Click Back up now to create one.";
+          } else {
+            statusEl.textContent =
+              "Backup ready with " +
+              payload.backup_reading_count +
+              " readings. Last backup: " +
+              formatBackupTimestamp(payload.backup_updated_at) +
+              ".";
+          }
+        }
+        if (exportBtn) exportBtn.disabled = !payload.backup_writable;
+        if (importBtn) importBtn.disabled = !payload.backup_available;
+      } catch (error) {
+        if (liveSummary) liveSummary.textContent = "Unavailable";
+        if (folderSummary) folderSummary.textContent = "Unavailable";
+        if (statusEl) statusEl.textContent = error.message || "Could not load backup status.";
+        if (exportBtn) exportBtn.disabled = true;
+        if (importBtn) importBtn.disabled = true;
+      }
+    }
+
+    document.getElementById("backup-export-btn").addEventListener("click", async () => {
+      const exportBtn = document.getElementById("backup-export-btn");
+      const importBtn = document.getElementById("backup-import-btn");
+      if (exportBtn) exportBtn.disabled = true;
+      if (importBtn) importBtn.disabled = true;
+      await refreshBackupStatus("Creating backup…");
+      try {
+        const response = await fetch("/api/backup/export", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Backup failed.");
+        await refreshBackupStatus("Backup completed.");
+      } catch (error) {
+        const statusEl = document.getElementById("backup-status");
+        if (statusEl) statusEl.textContent = error.message || "Backup failed.";
+        await refreshBackupStatus();
+      }
+    });
+
+    document.getElementById("backup-import-btn").addEventListener("click", async () => {
+      if (!confirm("Restore from backup? This replaces all live usage data and settings with the backed-up copy.")) {
+        return;
+      }
+      const exportBtn = document.getElementById("backup-export-btn");
+      const importBtn = document.getElementById("backup-import-btn");
+      if (exportBtn) exportBtn.disabled = true;
+      if (importBtn) importBtn.disabled = true;
+      await refreshBackupStatus("Restoring from backup…");
+      try {
+        const response = await fetch("/api/backup/import", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Restore failed.");
+        await loadOverview();
+        await loadUsage();
+        await refreshBackupStatus("Restore completed.");
+      } catch (error) {
+        const statusEl = document.getElementById("backup-status");
+        if (statusEl) statusEl.textContent = error.message || "Restore failed.";
+        await refreshBackupStatus();
+      }
+    });
+
+    loadOverview().then(loadUsage).then(() => refreshBackupStatus());
   </script>
 </body>
 </html>`;
@@ -802,6 +928,31 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
         }
         if (req.method === "POST" && pathname === "/api/ingest") {
             await handleIngest(req, res);
+            return;
+        }
+        if (req.method === "GET" && pathname === "/api/backup/status") {
+            sendJson(res, 200, await (0, backup_restore_1.getBackupStatus)(DATA_ROOT, BACKUP_ROOT, BACKUP_HOST_PATH));
+            return;
+        }
+        if (req.method === "POST" && pathname === "/api/backup/export") {
+            try {
+                const status = await (0, backup_restore_1.exportNbuData)(DATA_ROOT, BACKUP_ROOT, BACKUP_HOST_PATH);
+                sendJson(res, 200, status);
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        if (req.method === "POST" && pathname === "/api/backup/import") {
+            try {
+                const status = await (0, backup_restore_1.importNbuData)(DATA_ROOT, BACKUP_ROOT, BACKUP_HOST_PATH);
+                (0, store_1.resetStoreCaches)();
+                sendJson(res, 200, status);
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
             return;
         }
         if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {

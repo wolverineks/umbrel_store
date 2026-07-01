@@ -8,13 +8,21 @@ services:
 
   server:
     image: node:22-alpine
-    user: "1000:1000"
-    command: node /app/server.js
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /data /backup
+        chown -R 1000:1000 /data /backup
+        exec su -s /bin/sh node -c "node /app/server.js"
     volumes:
       - ${APP_DATA_DIR}/site:/app:ro
       - ${APP_DATA_DIR}/data:/data
+      - ${NBU_BACKUP_HOST_DIR:-/home/umbrel/nbu-backup}:/backup
     environment:
       NBU_DATA_DIR: /data
+      NBU_BACKUP_DIR: /backup
+      NBU_BACKUP_HOST_PATH: ${NBU_BACKUP_HOST_DIR:-/home/umbrel/nbu-backup}
       NODE_ENV: production
     restart: on-failure
     init: true
