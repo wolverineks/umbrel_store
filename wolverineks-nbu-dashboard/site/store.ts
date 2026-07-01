@@ -11,9 +11,16 @@ const READINGS_PATH = path.join(DATA_ROOT, "readings.json");
 
 export type Settings = {
   ingest_token: string;
+  selected_property_id: string | null;
+  property_labels: Record<string, string>;
+};
+
+export type Property = {
+  id: string;
   account_id: string | null;
   usage_point: string | null;
   address: string | null;
+  label: string;
 };
 
 export type ImportRecord = {
@@ -24,6 +31,7 @@ export type ImportRecord = {
   imported_at: string;
   account_id: string | null;
   usage_point: string | null;
+  property_id: string | null;
   reading_count: number;
 };
 
@@ -41,6 +49,7 @@ export type UsagePoint = {
 };
 
 export type UsageSummary = {
+  property_id: string | null;
   utility: Utility;
   granularity: Granularity;
   unit: "kWh" | "gal";
@@ -54,6 +63,39 @@ export type UsageSummary = {
 let settingsCache: Settings | null = null;
 let importsCache: ImportRecord[] | null = null;
 let readingsCache: StoredReading[] | null = null;
+
+export function buildPropertyId(accountId: string | null, usagePoint: string | null): string | null {
+  if (accountId && usagePoint) return `${accountId}-${usagePoint}`;
+  if (accountId) return accountId;
+  return null;
+}
+
+function normalizeSettings(raw: Record<string, unknown>): Settings {
+  if ("selected_property_id" in raw) {
+    return {
+      ingest_token: String(raw.ingest_token ?? newToken()),
+      selected_property_id:
+        typeof raw.selected_property_id === "string" ? raw.selected_property_id : null,
+      property_labels:
+        raw.property_labels && typeof raw.property_labels === "object"
+          ? (raw.property_labels as Record<string, string>)
+          : {},
+    };
+  }
+
+  const accountId = typeof raw.account_id === "string" ? raw.account_id : null;
+  const usagePoint = typeof raw.usage_point === "string" ? raw.usage_point : null;
+  const address = typeof raw.address === "string" ? raw.address : null;
+  const propertyId = buildPropertyId(accountId, usagePoint);
+  const property_labels: Record<string, string> = {};
+  if (propertyId && address) property_labels[propertyId] = address;
+
+  return {
+    ingest_token: String(raw.ingest_token ?? newToken()),
+    selected_property_id: propertyId,
+    property_labels,
+  };
+}
 
 async function ensureDataRoot(): Promise<void> {
   if (!existsSync(DATA_ROOT)) {
@@ -71,15 +113,14 @@ export async function loadSettings(): Promise<Settings> {
   if (!existsSync(SETTINGS_PATH)) {
     settingsCache = {
       ingest_token: newToken(),
-      account_id: null,
-      usage_point: null,
-      address: null,
+      selected_property_id: null,
+      property_labels: {},
     };
     await saveSettings(settingsCache);
     return settingsCache;
   }
-  const raw = await readFile(SETTINGS_PATH, "utf8");
-  settingsCache = JSON.parse(raw) as Settings;
+  const raw = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+  settingsCache = normalizeSettings(raw);
   if (!settingsCache.ingest_token) {
     settingsCache.ingest_token = newToken();
     await saveSettings(settingsCache);
@@ -100,6 +141,37 @@ export async function rotateIngestToken(): Promise<Settings> {
   return settings;
 }
 
+export async function setSelectedProperty(propertyId: string | null): Promise<Settings> {
+  const settings = await loadSettings();
+  settings.selected_property_id = propertyId;
+  await saveSettings(settings);
+  return settings;
+}
+
+export async function setPropertyLabel(propertyId: string, label: string): Promise<Settings> {
+  const settings = await loadSettings();
+  const trimmed = label.trim();
+  if (trimmed) settings.property_labels[propertyId] = trimmed;
+  else delete settings.property_labels[propertyId];
+  await saveSettings(settings);
+  return settings;
+}
+
+function propertyLabel(
+  propertyId: string,
+  address: string | null,
+  settings: Settings,
+  accountId: string | null,
+  usagePoint: string | null,
+): string {
+  const custom = settings.property_labels[propertyId]?.trim();
+  if (custom) return custom;
+  if (address) return address.replace(/\s+/g, " ").trim();
+  if (accountId && usagePoint) return `Account ${accountId}-${usagePoint}`;
+  if (accountId) return `Account ${accountId}`;
+  return "Unknown property";
+}
+
 async function loadImports(): Promise<ImportRecord[]> {
   if (importsCache) return importsCache;
   await ensureDataRoot();
@@ -107,7 +179,11 @@ async function loadImports(): Promise<ImportRecord[]> {
     importsCache = [];
     return importsCache;
   }
-  importsCache = JSON.parse(await readFile(IMPORTS_PATH, "utf8")) as ImportRecord[];
+  const raw = JSON.parse(await readFile(IMPORTS_PATH, "utf8")) as ImportRecord[];
+  importsCache = raw.map((item) => ({
+    ...item,
+    property_id: item.property_id ?? buildPropertyId(item.account_id, item.usage_point),
+  }));
   return importsCache;
 }
 
@@ -140,17 +216,73 @@ function readingKey(reading: ParsedReading): string {
     reading.period_start,
     reading.meter_id ?? "",
     reading.account_id ?? "",
+    reading.usage_point ?? "",
   ].join("|");
+}
+
+function readingPropertyId(reading: ParsedReading): string | null {
+  return buildPropertyId(reading.account_id, reading.usage_point);
+}
+
+function matchesProperty(
+  propertyId: string | null,
+  accountId: string | null,
+  usagePoint: string | null,
+): boolean {
+  if (!propertyId) return true;
+  return buildPropertyId(accountId, usagePoint) === propertyId;
+}
+
+export async function listProperties(): Promise<Property[]> {
+  const settings = await loadSettings();
+  const readings = await loadReadings();
+  const imports = await loadImports();
+  const map = new Map<string, Property>();
+
+  const upsert = (
+    accountId: string | null,
+    usagePoint: string | null,
+    address: string | null,
+  ): void => {
+    const id = buildPropertyId(accountId, usagePoint);
+    if (!id) return;
+    const existing = map.get(id);
+    if (!existing) {
+      map.set(id, {
+        id,
+        account_id: accountId,
+        usage_point: usagePoint,
+        address,
+        label: propertyLabel(id, address, settings, accountId, usagePoint),
+      });
+      return;
+    }
+    if (address && !existing.address) existing.address = address;
+    existing.label = propertyLabel(id, existing.address, settings, accountId, usagePoint);
+  };
+
+  for (const reading of readings) {
+    upsert(reading.account_id, reading.usage_point, reading.address);
+  }
+  for (const item of imports) {
+    upsert(item.account_id, item.usage_point, null);
+  }
+
+  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 export async function importParsed(result: ParseResult): Promise<ImportRecord> {
   const settings = await loadSettings();
   const imports = await loadImports();
   const readings = await loadReadings();
+  const propertyId = buildPropertyId(result.account_id, result.usage_point);
 
-  if (result.account_id && !settings.account_id) settings.account_id = result.account_id;
-  if (result.usage_point && !settings.usage_point) settings.usage_point = result.usage_point;
-  if (result.address && !settings.address) settings.address = result.address;
+  if (propertyId && result.address && !settings.property_labels[propertyId]) {
+    settings.property_labels[propertyId] = result.address.replace(/\s+/g, " ").trim();
+  }
+  if (!settings.selected_property_id && propertyId) {
+    settings.selected_property_id = propertyId;
+  }
   await saveSettings(settings);
 
   const importId = randomBytes(8).toString("hex");
@@ -162,6 +294,7 @@ export async function importParsed(result: ParseResult): Promise<ImportRecord> {
     imported_at: new Date().toISOString(),
     account_id: result.account_id,
     usage_point: result.usage_point,
+    property_id: propertyId,
     reading_count: result.readings.length,
   };
 
@@ -182,32 +315,37 @@ export async function importParsed(result: ParseResult): Promise<ImportRecord> {
   return importRecord;
 }
 
-export async function listImports(limit = 20): Promise<ImportRecord[]> {
+async function listImports(limit = 20, propertyId: string | null = null): Promise<ImportRecord[]> {
   const imports = await loadImports();
-  return imports.slice(0, limit);
+  return imports
+    .filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point))
+    .slice(0, limit);
 }
 
 function filterReadings(
   readings: StoredReading[],
+  propertyId: string | null,
   utility: Utility,
   granularity: Granularity,
   days: number | null,
 ): StoredReading[] {
   const cutoff = days ? Date.now() - days * 86_400_000 : null;
   return readings
+    .filter((r) => matchesProperty(propertyId, r.account_id, r.usage_point))
     .filter((r) => r.utility === utility && r.granularity === granularity)
     .filter((r) => !cutoff || new Date(r.period_start).getTime() >= cutoff)
     .sort((a, b) => a.period_start.localeCompare(b.period_start));
 }
 
 export async function getUsageSummary(
+  propertyId: string | null,
   utility: Utility,
   granularity: Granularity,
   days: number | null,
 ): Promise<UsageSummary> {
   const readings = await loadReadings();
   const imports = await loadImports();
-  const filtered = filterReadings(readings, utility, granularity, days);
+  const filtered = filterReadings(readings, propertyId, utility, granularity, days);
   const points: UsagePoint[] = filtered.map((r) => ({
     period_start: r.period_start,
     value: Math.round(r.value * 1000) / 1000,
@@ -218,9 +356,13 @@ export async function getUsageSummary(
     return best;
   }, null);
   const unit = filtered[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
-  const utilityImports = imports.filter((item) => item.utility === utility);
+  const utilityImports = imports.filter(
+    (item) =>
+      matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility,
+  );
 
   return {
+    property_id: propertyId,
     utility,
     granularity,
     unit,
@@ -232,8 +374,10 @@ export async function getUsageSummary(
   };
 }
 
-export async function getOverview(): Promise<{
+export async function getOverview(propertyId: string | null = null): Promise<{
   settings: Settings;
+  properties: Property[];
+  selected_property: Property | null;
   imports: ImportRecord[];
   electric_hours: number;
   electric_days: number;
@@ -243,14 +387,21 @@ export async function getOverview(): Promise<{
   water_billing_periods: number;
 }> {
   const settings = await loadSettings();
-  const imports = await loadImports();
+  const properties = await listProperties();
+  const effectivePropertyId = propertyId ?? settings.selected_property_id;
+  const selected_property = properties.find((item) => item.id === effectivePropertyId) ?? null;
   const readings = await loadReadings();
+  const scoped = readings.filter((r) =>
+    matchesProperty(effectivePropertyId, r.account_id, r.usage_point),
+  );
   const count = (utility: Utility, granularity: Granularity) =>
-    readings.filter((r) => r.utility === utility && r.granularity === granularity).length;
+    scoped.filter((r) => r.utility === utility && r.granularity === granularity).length;
 
   return {
     settings,
-    imports: imports.slice(0, 10),
+    properties,
+    selected_property,
+    imports: await listImports(10, effectivePropertyId),
     electric_hours: count("electric", "hour"),
     electric_days: count("electric", "day"),
     electric_billing_periods: count("electric", "billing_period"),
@@ -258,4 +409,14 @@ export async function getOverview(): Promise<{
     water_days: count("water", "day"),
     water_billing_periods: count("water", "billing_period"),
   };
+}
+
+export function resolvePropertyId(
+  requested: string | null,
+  settings: Settings,
+  properties: Property[],
+): string | null {
+  if (requested) return requested;
+  if (settings.selected_property_id) return settings.selected_property_id;
+  return properties[0]?.id ?? null;
 }

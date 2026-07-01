@@ -6,11 +6,15 @@ import {
   getOverview,
   getUsageSummary,
   importParsed,
+  listProperties,
   loadSettings,
+  resolvePropertyId,
   rotateIngestToken,
+  setPropertyLabel,
+  setSelectedProperty,
 } from "./store";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const ICON_PATH = path.join(__dirname, "icon.svg");
 
@@ -178,9 +182,9 @@ function pageStyles(): string {
       color: var(--text);
     }
     .layout {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 1.5rem;
+      width: 100%;
+      min-height: 100vh;
+      padding: 1.25rem 1.5rem 2rem;
     }
     header {
       display: flex;
@@ -220,6 +224,27 @@ function pageStyles(): string {
       align-items: center;
       margin-bottom: 1rem;
     }
+    .property-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .property-bar input[type="text"] {
+      min-width: 220px;
+      flex: 1 1 220px;
+    }
+    input[type="text"] {
+      font: inherit;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.55rem 0.8rem;
+      background: var(--panel);
+      color: var(--text);
+    }
     select, button, input[type="file"] {
       font: inherit;
       border: 1px solid var(--border);
@@ -243,14 +268,40 @@ function pageStyles(): string {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 1rem;
+      padding: 1rem 1.25rem 1.25rem;
       box-shadow: var(--shadow);
       margin-bottom: 1.5rem;
+      width: 100%;
+    }
+    .chart-shell {
+      position: relative;
     }
     .chart {
       width: 100%;
-      height: 280px;
+      height: min(42vh, 420px);
+      min-height: 280px;
       display: block;
+    }
+    .chart-tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.55rem 0.75rem;
+      font-size: 0.85rem;
+      line-height: 1.35;
+      box-shadow: var(--shadow);
+      z-index: 2;
+      transform: translate(-50%, calc(-100% - 10px));
+      white-space: nowrap;
+    }
+    .chart-tooltip strong {
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    .chart-bar {
+      cursor: crosshair;
     }
     .imports {
       display: grid;
@@ -323,6 +374,11 @@ function dashboardPage(): string {
     <div class="grid" id="stats"></div>
 
     <div class="chart-wrap">
+      <div class="property-bar">
+        <select id="property"></select>
+        <input id="property-label" type="text" placeholder="House name">
+        <button id="save-label" class="secondary">Save name</button>
+      </div>
       <div class="toolbar">
         <select id="utility">
           <option value="electric">Electric</option>
@@ -342,7 +398,10 @@ function dashboardPage(): string {
         </select>
         <button id="refresh" class="secondary">Refresh</button>
       </div>
-      <svg class="chart" id="chart" viewBox="0 0 1000 280" preserveAspectRatio="none"></svg>
+      <div class="chart-shell">
+        <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
+        <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+      </div>
       <div class="empty" id="chart-empty" hidden>No readings for this view yet. Import NBU exports below.</div>
     </div>
 
@@ -373,21 +432,120 @@ function dashboardPage(): string {
   <script>
     const state = { overview: null, usage: null };
 
+    function selectedPropertyId() {
+      return document.getElementById("property").value || null;
+    }
+
+    function propertyParams() {
+      const params = new URLSearchParams();
+      const propertyId = selectedPropertyId();
+      if (propertyId) params.set("property", propertyId);
+      return params;
+    }
+
+    function renderPropertySelector() {
+      const select = document.getElementById("property");
+      const labelInput = document.getElementById("property-label");
+      const o = state.overview;
+      if (!select || !o) return;
+
+      if (!o.properties.length) {
+        select.innerHTML = '<option value="">No properties yet</option>';
+        if (labelInput) labelInput.value = "";
+        return;
+      }
+
+      const selectedId = o.selected_property?.id ?? o.properties[0].id;
+      select.innerHTML = o.properties.map((property) =>
+        \`<option value="\${property.id}">\${property.label}</option>\`
+      ).join("");
+      select.value = selectedId;
+      if (labelInput && o.selected_property) {
+        labelInput.value = o.settings.property_labels[o.selected_property.id] ?? o.selected_property.label ?? "";
+      }
+      if (o.selected_property) {
+        document.getElementById("address").textContent = o.selected_property.label;
+      }
+    }
+
     function fmtDate(iso) {
       return new Date(iso).toLocaleString();
     }
 
-    function fmtShortDate(iso) {
-      return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    function chartSpansYears(points) {
+      if (!points?.length) return false;
+      const years = new Set(points.map((point) => new Date(point.period_start).getFullYear()));
+      return years.size > 1;
+    }
+
+    function fmtShortDate(iso, withYear = false) {
+      const opts = withYear
+        ? { month: "short", day: "numeric", year: "numeric" }
+        : { month: "short", day: "numeric" };
+      return new Date(iso).toLocaleDateString(undefined, opts);
+    }
+
+    function fmtTooltipLabel(iso, granularity) {
+      const date = new Date(iso);
+      if (granularity === "hour") {
+        return date.toLocaleString(undefined, {
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
+      }
+      if (granularity === "billing_period") {
+        return date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+      }
+      return date.toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    }
+
+    function fmtTooltipHtml(point, unit, granularity) {
+      const value = Number(point.value).toFixed(2);
+      return \`\${fmtTooltipLabel(point.period_start, granularity)}<br><strong>\${value} \${unit}</strong>\`;
+    }
+
+    function positionChartTooltip(event, tooltip) {
+      const shell = document.querySelector(".chart-shell");
+      if (!shell) return;
+      const rect = shell.getBoundingClientRect();
+      tooltip.style.left = (event.clientX - rect.left) + "px";
+      tooltip.style.top = (event.clientY - rect.top) + "px";
+    }
+
+    function bindChartHover(usage) {
+      const tooltip = document.getElementById("chart-tooltip");
+      const granularity = document.getElementById("granularity").value;
+      const bars = document.querySelectorAll(".chart-bar");
+      bars.forEach((bar) => {
+        bar.addEventListener("mouseenter", (event) => {
+          const index = Number(bar.dataset.index);
+          const point = usage.points[index];
+          if (!point) return;
+          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity);
+          tooltip.hidden = false;
+          positionChartTooltip(event, tooltip);
+        });
+        bar.addEventListener("mousemove", (event) => positionChartTooltip(event, tooltip));
+        bar.addEventListener("mouseleave", () => {
+          tooltip.hidden = true;
+        });
+      });
     }
 
     function renderStats() {
       const el = document.getElementById("stats");
       const o = state.overview;
       if (!o) return;
-      if (o.settings.address) {
-        document.getElementById("address").textContent = o.settings.address;
-      }
+      renderPropertySelector();
       document.getElementById("token").textContent = o.settings.ingest_token;
       el.innerHTML = [
         ["Electric hours", o.electric_hours, "stored"],
@@ -420,45 +578,82 @@ function dashboardPage(): string {
     function renderChart() {
       const usage = state.usage;
       const svg = document.getElementById("chart");
+      const tooltip = document.getElementById("chart-tooltip");
       const empty = document.getElementById("chart-empty");
       if (!usage || !usage.points.length) {
         svg.innerHTML = "";
+        if (tooltip) tooltip.hidden = true;
         empty.hidden = false;
         return;
       }
       empty.hidden = true;
       const width = 1000;
-      const height = 280;
-      const pad = { top: 20, right: 16, bottom: 36, left: 48 };
+      const height = 300;
+      const pad = { top: 20, right: 16, bottom: 52, left: 48 };
       const innerW = width - pad.left - pad.right;
       const innerH = height - pad.top - pad.bottom;
-      const values = usage.points.map(p => p.value);
+      const values = usage.points.map((p) => p.value);
       const max = Math.max(...values, 0.001);
-      const barW = Math.max(2, innerW / values.length - 2);
+      const step = innerW / values.length;
+      const barW = Math.max(2, step - 2);
+      const showYears = chartSpansYears(usage.points);
+      const color = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
+
       const bars = usage.points.map((point, index) => {
         const h = (point.value / max) * innerH;
-        const x = pad.left + index * (innerW / values.length);
+        const x = pad.left + index * step;
         const y = pad.top + innerH - h;
-        const color = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
-        return \`<rect x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${color}" opacity="0.9"><title>\${fmtShortDate(point.period_start)}: \${point.value} \${usage.unit}</title></rect>\`;
+        return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${color}" opacity="0.9"></rect>\`;
       }).join("");
-      const labels = [usage.points[0], usage.points[Math.floor(usage.points.length / 2)], usage.points[usage.points.length - 1]]
-        .filter(Boolean)
-        .map((point, idx, arr) => {
-          const index = usage.points.indexOf(point);
-          const x = pad.left + index * (innerW / values.length);
-          return \`<text x="\${x}" y="\${height - 10}" fill="#64748b" font-size="12">\${fmtShortDate(point.period_start)}</text>\`;
+
+      let lastYear = null;
+      const yearMarkers = [];
+      usage.points.forEach((point, index) => {
+        const year = new Date(point.period_start).getFullYear();
+        if (year !== lastYear) {
+          yearMarkers.push({ year, index });
+          lastYear = year;
+        }
+      });
+
+      const yearLines = yearMarkers.map(({ year, index }) => {
+        const x = pad.left + index * step;
+        return \`
+          <line x1="\${x}" y1="\${pad.top}" x2="\${x}" y2="\${pad.top + innerH}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 4"></line>
+          <text x="\${x + 4}" y="\${height - 8}" fill="#475569" font-size="12" font-weight="700">\${year}</text>
+        \`;
+      }).join("");
+
+      const tickIndexes = new Set(
+        [0, Math.floor(usage.points.length / 2), usage.points.length - 1]
+          .concat(yearMarkers.map((marker) => marker.index))
+      );
+      const labels = [...tickIndexes]
+        .sort((a, b) => a - b)
+        .map((index) => {
+          const point = usage.points[index];
+          const x = pad.left + index * step;
+          const year = new Date(point.period_start).getFullYear();
+          const isYearStart = yearMarkers.some((marker) => marker.index === index);
+          const label = isYearStart
+            ? fmtShortDate(point.period_start, true)
+            : fmtShortDate(point.period_start, showYears);
+          return \`<text x="\${x}" y="\${height - 28}" fill="#64748b" font-size="11">\${label}</text>\`;
         }).join("");
+
       svg.innerHTML = \`
-        <line x1="\${pad.left}" y1="\${pad.top + innerH}" x2="\${width - pad.right}" y2="\${pad.top + innerH}" stroke="#e2e8f0"/>
+        <line x1="\${pad.left}" y1="\${pad.top + innerH}" x2="\${width - pad.right}" y2="\${pad.top + innerH}" stroke="#e2e8f0"></line>
         <text x="12" y="\${pad.top + 12}" fill="#64748b" font-size="12">\${max.toFixed(1)} \${usage.unit}</text>
+        \${yearLines}
         \${bars}
         \${labels}
       \`;
+      bindChartHover(usage);
     }
 
     async function loadOverview() {
-      const res = await fetch("/api/overview");
+      const params = propertyParams();
+      const res = await fetch("/api/overview?" + params.toString());
       state.overview = await res.json();
       renderStats();
     }
@@ -467,11 +662,21 @@ function dashboardPage(): string {
       const utility = document.getElementById("utility").value;
       const granularity = document.getElementById("granularity").value;
       const days = document.getElementById("range").value;
-      const params = new URLSearchParams({ utility, granularity });
+      const params = propertyParams();
+      params.set("utility", utility);
+      params.set("granularity", granularity);
       if (days) params.set("days", days);
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
       renderChart();
+    }
+
+    async function savePropertySelection(propertyId) {
+      await fetch("/api/settings/property", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ property_id: propertyId }),
+      });
     }
 
     async function uploadFiles(fileList) {
@@ -499,6 +704,32 @@ function dashboardPage(): string {
       await loadUsage();
     }
 
+    document.getElementById("property").addEventListener("change", async (event) => {
+      const propertyId = event.target.value;
+      const property = state.overview?.properties.find((item) => item.id === propertyId);
+      const labelInput = document.getElementById("property-label");
+      if (labelInput && property) {
+        labelInput.value = state.overview.settings.property_labels[property.id] ?? property.label ?? "";
+      }
+      await savePropertySelection(propertyId);
+      await loadOverview();
+      await loadUsage();
+    });
+    document.getElementById("save-label").addEventListener("click", async () => {
+      const propertyId = selectedPropertyId();
+      const label = document.getElementById("property-label").value;
+      if (!propertyId) return;
+      const res = await fetch("/api/settings/property-label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ property_id: propertyId, label }),
+      });
+      const payload = await res.json();
+      if (payload.settings) {
+        state.overview.settings = payload.settings;
+        await loadOverview();
+      }
+    });
     document.getElementById("utility").addEventListener("change", loadUsage);
     document.getElementById("granularity").addEventListener("change", loadUsage);
     document.getElementById("range").addEventListener("change", loadUsage);
@@ -544,16 +775,35 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/properties") {
+      sendJson(res, 200, { properties: await listProperties() });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/overview") {
-      sendJson(res, 200, await getOverview());
+      const settings = await loadSettings();
+      const properties = await listProperties();
+      const propertyId = resolvePropertyId(
+        url.searchParams.get("property"),
+        settings,
+        properties,
+      );
+      sendJson(res, 200, await getOverview(propertyId));
       return;
     }
 
     if (req.method === "GET" && pathname === "/api/usage") {
+      const settings = await loadSettings();
+      const properties = await listProperties();
+      const propertyId = resolvePropertyId(
+        url.searchParams.get("property"),
+        settings,
+        properties,
+      );
       const utility = parseUtility(url.searchParams.get("utility"));
       const granularity = parseGranularity(url.searchParams.get("granularity"));
       const days = parseDays(url.searchParams.get("days"));
-      sendJson(res, 200, await getUsageSummary(utility, granularity, days));
+      sendJson(res, 200, await getUsageSummary(propertyId, utility, granularity, days));
       return;
     }
 
@@ -565,6 +815,27 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && pathname === "/api/settings/rotate-token") {
       const settings = await rotateIngestToken();
+      sendJson(res, 200, { settings });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/settings/property") {
+      const body = JSON.parse((await readBody(req)).toString("utf8")) as { property_id?: string };
+      const settings = await setSelectedProperty(body.property_id ?? null);
+      sendJson(res, 200, { settings });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/settings/property-label") {
+      const body = JSON.parse((await readBody(req)).toString("utf8")) as {
+        property_id?: string;
+        label?: string;
+      };
+      if (!body.property_id) {
+        sendJson(res, 400, { error: "property_id is required" });
+        return;
+      }
+      const settings = await setPropertyLabel(body.property_id, body.label ?? "");
       sendJson(res, 200, { settings });
       return;
     }
