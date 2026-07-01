@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      font: 14px/1.4 system-ui, sans-serif;
+      margin: 0;
+      width: 320px;
+      color: #0f172a;
+    }
+    .wrap { padding: 14px; }
+    h1 { font-size: 16px; margin: 0 0 12px; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    input, button {
+      width: 100%;
+      box-sizing: border-box;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font: inherit;
+    }
+    button {
+      background: #1d4ed8;
+      color: white;
+      border-color: #1d4ed8;
+      cursor: pointer;
+    }
+    .status { color: #64748b; min-height: 1.2em; }
+    .ok { color: #16a34a; }
+    .err { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>NBU → Umbrel</h1>
+    <label for="baseUrl">Umbrel app URL</label>
+    <input id="baseUrl" placeholder="http://umbrel.local:4060">
+    <label for="token">Ingest token</label>
+    <input id="token" placeholder="from dashboard settings">
+    <button id="save">Save settings</button>
+    <button id="upload">Upload selected files</button>
+    <input id="files" type="file" multiple accept=".xml,.csv,text/xml,text/csv">
+    <div class="status" id="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

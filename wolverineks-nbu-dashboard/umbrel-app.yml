@@ -1,0 +1,27 @@
+manifestVersion: 1
+id: wolverineks-nbu-dashboard
+name: NBU Utilities
+tagline: Electricity and water usage dashboard for New Braunfels Utilities
+icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-nbu-dashboard/icon.svg
+category: files
+version: "1.0.0"
+port: 4060
+description: >-
+  Self-hosted dashboard for New Braunfels Utilities electric and water usage.
+
+
+  Import Green Button XML and CSV exports from the NBU Customer Connect portal
+  via the companion Chrome extension or the built-in upload page. View hourly,
+  daily, monthly, and annual usage trends on your Umbrel.
+developer: Wolverineks
+website: https://github.com/wolverineks
+repo: https://github.com/wolverineks/umbrel_store
+support: https://github.com/wolverineks/umbrel_store/issues
+gallery: []
+releaseNotes: >-
+  Initial release with Green Button XML and NBU CSV import, hourly and billing
+  history charts, and Chrome extension support.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

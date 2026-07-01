@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="NBU Utilities">
+  <rect width="128" height="128" rx="24" fill="#1d4ed8"/>
+  <path d="M64 24 L88 72 H40 Z" fill="#fbbf24"/>
+  <path d="M36 78 C36 78 48 92 64 92 C80 92 92 78 92 78" stroke="#38bdf8" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <rect x="44" y="96" width="40" height="10" rx="5" fill="#dbeafe"/>
+</svg>

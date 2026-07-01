@@ -17,3 +17,6 @@ wolverineks-roomba/data/*
 wolverineks-roomba/site/node_modules/
 wolverineks-roomba/site/dist/
 wolverineks-roomba/site/.local-data/
+wolverineks-nbu-dashboard/data/*
+!wolverineks-nbu-dashboard/data/.gitkeep
+wolverineks-nbu-dashboard/site/.local-data/

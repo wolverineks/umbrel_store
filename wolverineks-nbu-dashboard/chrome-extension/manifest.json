@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "NBU Utilities for Umbrel",
+  "version": "1.0.0",
+  "description": "Send New Braunfels Utilities Green Button and CSV exports to your Umbrel dashboard.",
+  "permissions": ["storage", "downloads"],
+  "host_permissions": [
+    "https://myinfo.nbutexas.com/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "NBU Utilities",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://myinfo.nbutexas.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
