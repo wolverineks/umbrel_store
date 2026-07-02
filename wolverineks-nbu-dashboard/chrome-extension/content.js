@@ -117,9 +117,10 @@
       <div class="nbu-body">
         <div class="nbu-progress"><span id="nbu-progress-bar"></span></div>
         <div class="nbu-status" id="nbu-sync-status">Ready to sync this page to Umbrel.</div>
-        <button class="nbu-primary" id="nbu-sync-all" type="button">Sync everything on this page</button>
+        <button class="nbu-primary" id="nbu-sync-recent" type="button">Sync last 30 days</button>
+        <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
-        <div class="nbu-mini">Full sync can take a while on Consumption Report pages.</div>
+        <div class="nbu-mini">Use recent sync for updates. Full history is mainly for the first backfill.</div>
       </div>
     `;
     document.documentElement.appendChild(panel);
@@ -129,14 +130,26 @@
       : "Consumption";
     panel.querySelector("#nbu-page-kind").textContent = pageKind;
 
-    panel.querySelector("#nbu-sync-all").addEventListener("click", () => {
-      setStatus("Starting full sync…");
+    panel.querySelector("#nbu-sync-recent").addEventListener("click", () => {
+      setStatus("Starting recent sync…");
       setProgress(0);
-      window.postMessage({ source: "nbu-umbrel-content", type: "START_SYNC" }, "*");
+      window.postMessage(
+        { source: "nbu-umbrel-content", type: "START_SYNC", options: { recentDays: 30 } },
+        "*",
+      );
+    });
+
+    panel.querySelector("#nbu-sync-all").addEventListener("click", () => {
+      setStatus("Starting full history sync…");
+      setProgress(0);
+      window.postMessage({ source: "nbu-umbrel-content", type: "START_SYNC", options: {} }, "*");
     });
 
     panel.querySelector("#nbu-sync-plan").addEventListener("click", () => {
-      window.postMessage({ source: "nbu-umbrel-content", type: "PLAN_SYNC" }, "*");
+      window.postMessage(
+        { source: "nbu-umbrel-content", type: "PLAN_SYNC", options: { recentDays: 30 } },
+        "*",
+      );
     });
 
     return panel;
@@ -209,9 +222,10 @@
 
     if (event.data.type === "SYNC_PLAN") {
       const preview = (event.data.jobs || []).join("\n");
+      const mode = event.data.mode ? `${event.data.mode} · ` : "";
       setStatus(
         event.data.total
-          ? `Plan: ${event.data.total} exports. Examples:\n${preview}`
+          ? `Plan: ${mode}${event.data.total} exports. Examples:\n${preview}`
           : "No exports found on this page.",
       );
       return;

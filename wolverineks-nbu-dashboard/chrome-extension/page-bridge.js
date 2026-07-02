@@ -180,10 +180,25 @@
     ];
   }
 
-  function buildConsumptionJobs(html) {
+  function recentCutoff(days) {
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - days);
+    return cutoff;
+  }
+
+  function rangeIsRecent(range, cutoff) {
+    return range.end > cutoff || range.start >= cutoff;
+  }
+
+  function buildConsumptionJobs(html, options = {}) {
     const utilType = getUtilType();
-    const firstDate = parseFirstDate(html) || new Date(Date.now() - 365 * 86_400_000);
+    const parsedFirst = parseFirstDate(html) || new Date(Date.now() - 365 * 86_400_000);
     const lastDate = new Date();
+    const recentDays = options.recentDays ?? null;
+    const cutoff = recentDays ? recentCutoff(recentDays) : null;
+    const firstDate =
+      cutoff && parsedFirst < cutoff ? new Date(cutoff.getTime()) : parsedFirst;
     const billingDates = parseBillingDates(html);
     const objectIds = getObjectIds();
     const jobs = [];
@@ -191,6 +206,7 @@
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
       for (const range of monthRanges(firstDate, lastDate)) {
+        if (cutoff && !rangeIsRecent(range, cutoff)) continue;
         jobs.push(...exportJobsForRange(range, objectId, utilType, "Month").map((job) => ({
           ...job,
           meterLabel,
@@ -198,6 +214,7 @@
         })));
       }
       for (const range of weekRanges(firstDate, lastDate)) {
+        if (cutoff && !rangeIsRecent(range, cutoff)) continue;
         jobs.push(...exportJobsForRange(range, objectId, utilType, "Week").map((job) => ({
           ...job,
           meterLabel,
@@ -212,6 +229,7 @@
         })));
       }
       for (const billing of billingDates) {
+        if (cutoff && billing.end < cutoff) continue;
         const range = {
           start: billing.start,
           end: billing.end,
@@ -258,13 +276,13 @@
     return jobs;
   }
 
-  function pageJobs() {
+  function pageJobs(options = {}) {
     const html = document.documentElement.innerHTML;
     if (/MeterReadingHistory\.xml/i.test(window.location.href)) {
       return buildHistoryJobs();
     }
     if (/Reports\.xml/i.test(window.location.href)) {
-      return buildConsumptionJobs(html);
+      return buildConsumptionJobs(html, options);
     }
     return [];
   }
@@ -316,14 +334,18 @@
     throw new Error(lastError);
   }
 
-  async function runSync() {
-    const jobs = pageJobs();
+  async function runSync(options = {}) {
+    const jobs = pageJobs(options);
     if (!jobs.length) {
       post("SYNC_ERROR", { error: "Open the Consumption Report or Meter Reading History page first." });
       return;
     }
 
-    post("SYNC_START", { total: jobs.length, page: window.location.href });
+    post("SYNC_START", {
+      total: jobs.length,
+      page: window.location.href,
+      mode: options.recentDays ? `recent-${options.recentDays}` : "full",
+    });
     let uploaded = 0;
     let skipped = 0;
     const errors = [];
@@ -376,11 +398,15 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.data?.source !== "nbu-umbrel-content") return;
     if (event.data.type === "START_SYNC") {
-      void runSync();
+      void runSync(event.data.options || {});
     }
     if (event.data.type === "PLAN_SYNC") {
-      const jobs = pageJobs();
-      post("SYNC_PLAN", { total: jobs.length, jobs: jobs.slice(0, 5).map((job) => job.label) });
+      const jobs = pageJobs(event.data.options || {});
+      post("SYNC_PLAN", {
+        total: jobs.length,
+        mode: event.data.options?.recentDays ? `last ${event.data.options.recentDays} days` : "full history",
+        jobs: jobs.slice(0, 5).map((job) => job.label),
+      });
     }
   });
 })();
