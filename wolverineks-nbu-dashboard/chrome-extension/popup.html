@@ -10,7 +10,8 @@
       color: #0f172a;
     }
     .wrap { padding: 14px; }
-    h1 { font-size: 16px; margin: 0 0 12px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    p { margin: 0 0 12px; color: #64748b; font-size: 12px; }
     label { display: block; font-weight: 600; margin-bottom: 4px; }
     input, button {
       width: 100%;
@@ -27,21 +28,34 @@
       border-color: #1d4ed8;
       cursor: pointer;
     }
-    .status { color: #64748b; min-height: 1.2em; }
+    button.secondary {
+      background: #fff;
+      color: #0f172a;
+    }
+    .status { color: #64748b; min-height: 1.2em; font-size: 12px; }
     .ok { color: #16a34a; }
     .err { color: #dc2626; }
+    ol { margin: 0; padding-left: 18px; color: #64748b; font-size: 12px; }
+    li { margin-bottom: 6px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>NBU → Umbrel</h1>
+    <p>On Customer Connect, use the floating sync panel on report pages to pull all exports automatically.</p>
     <label for="baseUrl">Umbrel app URL</label>
     <input id="baseUrl" placeholder="http://umbrel.local:4060">
     <label for="token">Ingest token</label>
     <input id="token" placeholder="from dashboard settings">
     <button id="save">Save settings</button>
-    <button id="upload">Upload selected files</button>
+    <button id="upload" class="secondary">Upload files manually</button>
     <input id="files" type="file" multiple accept=".xml,.csv,text/xml,text/csv">
+    <ol>
+      <li>Electric Consumption Report</li>
+      <li>Electric Meter Reading History</li>
+      <li>Repeat for Water pages if needed</li>
+      <li>Switch accounts for your second house</li>
+    </ol>
     <div class="status" id="status"></div>
   </div>
   <script src="popup.js"></script>
