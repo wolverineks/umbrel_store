@@ -11,6 +11,7 @@
     }
     .wrap { padding: 14px; }
     h1 { font-size: 16px; margin: 0 0 8px; }
+    .version { font-size: 12px; font-weight: 600; color: #64748b; }
     p { margin: 0 0 12px; color: #64748b; font-size: 12px; }
     label { display: block; font-weight: 600; margin-bottom: 4px; }
     input, button {
@@ -41,7 +42,7 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>NBU → Umbrel</h1>
+    <h1>NBU → Umbrel <span id="version" class="version"></span></h1>
     <p>On Customer Connect, use the floating sync panel on report pages to pull all exports automatically.</p>
     <label for="baseUrl">Umbrel app URL</label>
     <input id="baseUrl" placeholder="http://umbrel.local:4060">

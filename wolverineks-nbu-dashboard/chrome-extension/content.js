@@ -32,8 +32,14 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 8px;
         padding: 12px 14px 8px;
         font-weight: 700;
+      }
+      #${PANEL_ID} .nbu-version {
+        font-size: 11px;
+        font-weight: 600;
+        color: #64748b;
       }
       #${PANEL_ID} .nbu-body {
         padding: 0 14px 12px;
@@ -97,12 +103,16 @@
     let panel = document.getElementById(PANEL_ID);
     if (panel) return panel;
 
+    const version = chrome.runtime.getManifest().version;
     panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.innerHTML = `
       <div class="nbu-head">
         <span>NBU → Umbrel</span>
-        <span class="nbu-mini" id="nbu-page-kind"></span>
+        <span>
+          <span class="nbu-mini" id="nbu-page-kind"></span>
+          <span class="nbu-version">v${version}</span>
+        </span>
       </div>
       <div class="nbu-body">
         <div class="nbu-progress"><span id="nbu-progress-bar"></span></div>

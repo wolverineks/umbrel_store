@@ -57,4 +57,6 @@ document.getElementById("upload").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("version").textContent = "v" + chrome.runtime.getManifest().version;
+
 loadSettings();
