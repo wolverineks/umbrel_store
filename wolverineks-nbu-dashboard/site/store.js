@@ -3,6 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.centralLocalDateKey = centralLocalDateKey;
+exports.parseDateParam = parseDateParam;
 exports.resetStoreCaches = resetStoreCaches;
 exports.buildPropertyId = buildPropertyId;
 exports.loadSettings = loadSettings;
@@ -12,6 +14,8 @@ exports.setSelectedProperty = setSelectedProperty;
 exports.setPropertyLabel = setPropertyLabel;
 exports.listProperties = listProperties;
 exports.importParsed = importParsed;
+exports.listImports = listImports;
+exports.getStoredImportFile = getStoredImportFile;
 exports.getUsageSummary = getUsageSummary;
 exports.getOverview = getOverview;
 exports.resolvePropertyId = resolvePropertyId;
@@ -20,9 +24,26 @@ const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const node_crypto_1 = require("node:crypto");
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
+const UPLOADS_ROOT = node_path_1.default.join(DATA_ROOT, "uploads");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = node_path_1.default.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
+const CENTRAL_TZ = "America/Chicago";
+function centralLocalDateKey(iso) {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
+}
+function parseDateParam(value) {
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+        return null;
+    const [year, month, day] = value.split("-").map(Number);
+    const probe = new Date(Date.UTC(year, month - 1, day));
+    if (probe.getUTCFullYear() !== year ||
+        probe.getUTCMonth() !== month - 1 ||
+        probe.getUTCDate() !== day) {
+        return null;
+    }
+    return value;
+}
 let settingsCache = null;
 let importsCache = null;
 let readingsCache = null;
@@ -140,6 +161,7 @@ async function loadImports() {
     const raw = JSON.parse(await (0, promises_1.readFile)(IMPORTS_PATH, "utf8"));
     importsCache = raw.map((item) => ({
         ...item,
+        stored_filename: item.stored_filename ?? null,
         property_id: item.property_id ?? buildPropertyId(item.account_id, item.usage_point),
     }));
     return importsCache;
@@ -214,7 +236,26 @@ async function listProperties() {
     }
     return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
-async function importParsed(result) {
+function sanitizeFilename(filename) {
+    const base = node_path_1.default.basename(filename).replace(/[^\w.\-() ]+/g, "_").trim();
+    return base || "upload.dat";
+}
+function contentTypeForFilename(filename) {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith(".xml"))
+        return "application/xml; charset=utf-8";
+    if (lower.endsWith(".csv"))
+        return "text/csv; charset=utf-8";
+    return "application/octet-stream";
+}
+async function saveUploadedFile(importId, filename, rawContent) {
+    const storedFilename = sanitizeFilename(filename);
+    const importDir = node_path_1.default.join(UPLOADS_ROOT, importId);
+    await (0, promises_1.mkdir)(importDir, { recursive: true });
+    await (0, promises_1.writeFile)(node_path_1.default.join(importDir, storedFilename), rawContent, "utf8");
+    return storedFilename;
+}
+async function importParsed(result, rawContent) {
     const settings = await loadSettings();
     const imports = await loadImports();
     const readings = await loadReadings();
@@ -227,9 +268,11 @@ async function importParsed(result) {
     }
     await saveSettings(settings);
     const importId = (0, node_crypto_1.randomBytes)(8).toString("hex");
+    const storedFilename = await saveUploadedFile(importId, result.filename, rawContent);
     const importRecord = {
         id: importId,
         filename: result.filename,
+        stored_filename: storedFilename,
         format: result.format,
         utility: result.utility,
         imported_at: new Date().toISOString(),
@@ -250,28 +293,50 @@ async function importParsed(result) {
     }
     importRecord.reading_count = inserted;
     imports.unshift(importRecord);
-    await saveImports(imports.slice(0, 200));
+    await saveImports(imports);
     await saveReadings(readings);
     return importRecord;
 }
-async function listImports(limit = 20, propertyId = null) {
+async function listImports(propertyId = null, limit = 500, offset = 0) {
     const imports = await loadImports();
-    return imports
-        .filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point))
-        .slice(0, limit);
+    const filtered = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
+    return {
+        imports: filtered.slice(offset, offset + limit),
+        total: filtered.length,
+    };
 }
-function filterReadings(readings, propertyId, utility, granularity, days) {
-    const cutoff = days ? Date.now() - days * 86_400_000 : null;
+async function getStoredImportFile(importId) {
+    const imports = await loadImports();
+    const record = imports.find((item) => item.id === importId);
+    if (!record?.stored_filename)
+        return null;
+    const filePath = node_path_1.default.join(UPLOADS_ROOT, importId, record.stored_filename);
+    if (!(0, node_fs_1.existsSync)(filePath))
+        return null;
+    const content = await (0, promises_1.readFile)(filePath);
+    return {
+        content,
+        filename: record.filename,
+        contentType: contentTypeForFilename(record.filename),
+    };
+}
+function filterReadings(readings, propertyId, utility, granularity, days, date) {
+    const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
     return readings
         .filter((r) => matchesProperty(propertyId, r.account_id, r.usage_point))
-        .filter((r) => r.utility === utility && r.granularity === granularity)
+        .filter((r) => r.utility === utility)
+        .filter((r) => {
+        if (date)
+            return r.granularity === "hour" && centralLocalDateKey(r.period_start) === date;
+        return r.granularity === granularity;
+    })
         .filter((r) => !cutoff || new Date(r.period_start).getTime() >= cutoff)
         .sort((a, b) => a.period_start.localeCompare(b.period_start));
 }
-async function getUsageSummary(propertyId, utility, granularity, days) {
+async function getUsageSummary(propertyId, utility, granularity, days, date = null) {
     const readings = await loadReadings();
     const imports = await loadImports();
-    const filtered = filterReadings(readings, propertyId, utility, granularity, days);
+    const filtered = filterReadings(readings, propertyId, utility, granularity, days, date);
     const points = filtered.map((r) => ({
         period_start: r.period_start,
         value: Math.round(r.value * 1000) / 1000,
@@ -287,7 +352,8 @@ async function getUsageSummary(propertyId, utility, granularity, days) {
     return {
         property_id: propertyId,
         utility,
-        granularity,
+        granularity: date ? "hour" : granularity,
+        date,
         unit,
         total: Math.round(total * 1000) / 1000,
         average: points.length ? Math.round((total / points.length) * 1000) / 1000 : 0,
@@ -304,11 +370,12 @@ async function getOverview(propertyId = null) {
     const readings = await loadReadings();
     const scoped = readings.filter((r) => matchesProperty(effectivePropertyId, r.account_id, r.usage_point));
     const count = (utility, granularity) => scoped.filter((r) => r.utility === utility && r.granularity === granularity).length;
+    const { total: import_count } = await listImports(effectivePropertyId);
     return {
         settings,
         properties,
         selected_property,
-        imports: await listImports(10, effectivePropertyId),
+        import_count,
         electric_hours: count("electric", "hour"),
         electric_days: count("electric", "day"),
         electric_billing_periods: count("electric", "billing_period"),

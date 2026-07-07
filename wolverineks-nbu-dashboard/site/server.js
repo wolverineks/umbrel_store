@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.3.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -33,6 +33,14 @@ function sendText(res, statusCode, contentType, body) {
         "Content-Length": encoded.length,
     });
     res.end(encoded);
+}
+function sendFile(res, statusCode, contentType, body, filename) {
+    res.writeHead(statusCode, {
+        "Content-Type": contentType,
+        "Content-Length": body.length,
+        "Content-Disposition": `inline; filename="${filename.replace(/"/g, "")}"`,
+    });
+    res.end(body);
 }
 function readBody(req) {
     return new Promise((resolve, reject) => {
@@ -110,7 +118,7 @@ async function handleIngest(req, res) {
                 return;
             }
             const parsed = (0, parsers_1.parseNbuExport)(payload.filename, payload.content);
-            const record = await (0, store_1.importParsed)(parsed);
+            const record = await (0, store_1.importParsed)(parsed, payload.content);
             sendJson(res, 200, { ok: true, import: record, parsed_readings: parsed.readings.length });
             return;
         }
@@ -126,7 +134,7 @@ async function handleIngest(req, res) {
                 if (!part.filename)
                     continue;
                 const parsed = (0, parsers_1.parseNbuExport)(part.filename, part.content);
-                results.push(await (0, store_1.importParsed)(parsed));
+                results.push(await (0, store_1.importParsed)(parsed, part.content));
             }
             if (!results.length) {
                 sendJson(res, 400, { error: "no files found in upload" });
@@ -137,8 +145,9 @@ async function handleIngest(req, res) {
         }
         const filenameHeader = req.headers["x-filename"];
         const filename = typeof filenameHeader === "string" ? filenameHeader : "upload.xml";
-        const parsed = (0, parsers_1.parseNbuExport)(filename, body.toString("utf8"));
-        const record = await (0, store_1.importParsed)(parsed);
+        const rawContent = body.toString("utf8");
+        const parsed = (0, parsers_1.parseNbuExport)(filename, rawContent);
+        const record = await (0, store_1.importParsed)(parsed, rawContent);
         sendJson(res, 200, { ok: true, import: record, parsed_readings: parsed.readings.length });
     }
     catch (error) {
@@ -224,7 +233,7 @@ function pageStyles() {
       min-width: 220px;
       flex: 1 1 220px;
     }
-    input[type="text"] {
+    input[type="text"], input[type="date"] {
       font: inherit;
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -232,7 +241,19 @@ function pageStyles() {
       background: var(--panel);
       color: var(--text);
     }
-    select, button, input[type="file"] {
+    input[type="date"]:disabled, select:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .day-view-label {
+      margin: 0 0 0.75rem;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+    .day-view-label strong {
+      color: var(--text);
+    }
+    select, button {
       font: inherit;
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -290,30 +311,6 @@ function pageStyles() {
     .chart-bar {
       cursor: crosshair;
     }
-    .drop-zone {
-      margin-top: 0.8rem;
-      border: 2px dashed var(--border);
-      border-radius: 14px;
-      padding: 1.5rem 1rem;
-      text-align: center;
-      color: var(--muted);
-      background: var(--bg);
-      transition: border-color 0.15s ease, background 0.15s ease;
-      cursor: pointer;
-    }
-    .drop-zone strong {
-      display: block;
-      color: var(--text);
-      margin-bottom: 0.25rem;
-    }
-    .drop-zone.dragover {
-      border-color: var(--accent);
-      background: var(--accent-soft);
-      color: var(--accent);
-    }
-    .drop-zone input[type="file"] {
-      display: none;
-    }
     .imports {
       display: grid;
       gap: 0.6rem;
@@ -327,6 +324,23 @@ function pageStyles() {
       font-size: 0.92rem;
     }
     .import-row:last-child { border-bottom: 0; }
+    .import-row a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .import-row a:hover { text-decoration: underline; }
+    .import-history {
+      max-height: 28rem;
+      overflow-y: auto;
+    }
+    .import-history-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.75rem;
+    }
     .muted { color: var(--muted); }
     .token-box {
       display: flex;
@@ -406,45 +420,40 @@ function dashboardPage() {
           <option value="365">Last year</option>
           <option value="">All data</option>
         </select>
+        <input id="day" type="date" title="View hourly usage for a specific day">
+        <button id="clear-day" class="secondary" hidden>Clear day</button>
         <button id="refresh" class="secondary">Refresh</button>
       </div>
+      <p class="day-view-label" id="day-view-label" hidden></p>
       <div class="chart-shell">
         <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
         <div class="chart-tooltip" id="chart-tooltip" hidden></div>
       </div>
-      <div class="empty" id="chart-empty" hidden>No readings for this view yet. Import NBU exports below.</div>
+      <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
     </div>
 
-    <div class="grid">
-      <div class="card">
-        <h2>Import files</h2>
-        <p class="muted">Upload Green Button XML, hourly CSV, or reading history CSV from Customer Connect.</p>
-        <label class="drop-zone" id="drop-zone" for="upload">
-          <input type="file" id="upload" multiple accept=".xml,.csv,text/xml,text/csv">
-          <strong>Drop NBU exports here</strong>
-          or click to browse
-        </label>
-        <p class="muted" id="upload-status" style="margin-top:0.8rem"></p>
-      </div>
-      <div class="card">
-        <h2>Chrome extension</h2>
-        <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
-        <div class="token-box" style="margin-top:0.8rem">
-          <code id="token"></code>
-          <button id="rotate-token" class="secondary">Rotate token</button>
-        </div>
+    <div class="card" style="margin-top:1rem">
+      <h2>Chrome extension</h2>
+      <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
+      <div class="token-box" style="margin-top:0.8rem">
+        <code id="token"></code>
+        <button id="copy-token" class="secondary">Copy token</button>
+        <button id="rotate-token" class="secondary">Rotate token</button>
       </div>
     </div>
 
     <div class="card" style="margin-top:1rem">
-      <h2>Recent imports</h2>
-      <div class="imports" id="imports"></div>
+      <div class="import-history-header">
+        <h2 style="margin:0">Upload history</h2>
+        <span class="muted" id="import-count"></span>
+      </div>
+      <div class="imports import-history" id="imports"></div>
     </div>
 
     <div class="card" style="margin-top:1rem">
       <h2>Backup &amp; restore</h2>
       <p class="muted">
-        Copy all usage data, settings, and property names to
+        Copy all usage data, upload files, settings, and property names to
         <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel.
       </p>
       <div class="grid" style="margin-top:0.8rem">
@@ -465,7 +474,7 @@ function dashboardPage() {
     </div>
   </div>
   <script>
-    const state = { overview: null, usage: null };
+    const state = { overview: null, usage: null, imports: null };
 
     function selectedPropertyId() {
       return document.getElementById("property").value || null;
@@ -513,6 +522,48 @@ function dashboardPage() {
       return years.size > 1;
     }
 
+    function centralLocalDateKey(iso) {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(iso));
+    }
+
+    function fmtHourLabel(iso) {
+      return new Date(iso).toLocaleTimeString(undefined, {
+        timeZone: "America/Chicago",
+        hour: "numeric",
+      });
+    }
+
+    function fmtDayHeading(dateKey) {
+      const [year, month, day] = dateKey.split("-").map(Number);
+      const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      return date.toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "America/Chicago",
+      });
+    }
+
+    function syncDayControls() {
+      const dayInput = document.getElementById("day");
+      const rangeSelect = document.getElementById("range");
+      const clearBtn = document.getElementById("clear-day");
+      const dayLabel = document.getElementById("day-view-label");
+      const hasDay = Boolean(dayInput?.value);
+      if (rangeSelect) rangeSelect.disabled = hasDay;
+      if (clearBtn) clearBtn.hidden = !hasDay;
+      if (dayLabel) {
+        if (hasDay) {
+          dayLabel.innerHTML = "Showing hourly usage for <strong>" + fmtDayHeading(dayInput.value) + "</strong>";
+          dayLabel.hidden = false;
+        } else {
+          dayLabel.hidden = true;
+          dayLabel.textContent = "";
+        }
+      }
+    }
+
     function fmtShortDate(iso, withYear = false) {
       const opts = withYear
         ? { month: "short", day: "numeric", year: "numeric" }
@@ -558,7 +609,7 @@ function dashboardPage() {
 
     function bindChartHover(usage) {
       const tooltip = document.getElementById("chart-tooltip");
-      const granularity = document.getElementById("granularity").value;
+      const granularity = usage.granularity;
       const bars = document.querySelectorAll(".chart-bar");
       bars.forEach((bar) => {
         bar.addEventListener("mouseenter", (event) => {
@@ -573,6 +624,19 @@ function dashboardPage() {
         bar.addEventListener("mouseleave", () => {
           tooltip.hidden = true;
         });
+        if (granularity === "day" && !usage.date) {
+          bar.style.cursor = "pointer";
+          bar.addEventListener("click", () => {
+            const index = Number(bar.dataset.index);
+            const point = usage.points[index];
+            if (!point) return;
+            const dayInput = document.getElementById("day");
+            if (!dayInput) return;
+            dayInput.value = centralLocalDateKey(point.period_start);
+            syncDayControls();
+            loadUsage();
+          });
+        }
       });
     }
 
@@ -593,21 +657,37 @@ function dashboardPage() {
           <div class="metric">\${value} <small>\${suffix}</small></div>
         </div>
       \`).join("");
+      const countEl = document.getElementById("import-count");
+      if (countEl) {
+        const total = state.imports?.total ?? o.import_count ?? 0;
+        countEl.textContent = total ? total + " upload" + (total === 1 ? "" : "s") : "";
+      }
+      renderImports();
+    }
+
+    function renderImports() {
       const importsEl = document.getElementById("imports");
-      if (!o.imports.length) {
-        importsEl.innerHTML = '<div class="empty">No imports yet.</div>';
+      const items = state.imports?.imports ?? [];
+      if (!importsEl) return;
+      if (!items.length) {
+        importsEl.innerHTML = '<div class="empty">No uploads yet.</div>';
         return;
       }
-      importsEl.innerHTML = o.imports.map(item => \`
-        <div class="import-row">
-          <div>
-            <span class="pill \${item.utility}">\${item.utility}</span>
-            \${item.filename}
-            <div class="muted">\${item.format} · \${item.reading_count} readings</div>
+      importsEl.innerHTML = items.map((item) => {
+        const fileLink = item.stored_filename
+          ? \`<a href="/api/imports/\${item.id}/file" target="_blank" rel="noopener">\${item.filename}</a>\`
+          : item.filename;
+        return \`
+          <div class="import-row">
+            <div>
+              <span class="pill \${item.utility}">\${item.utility}</span>
+              \${fileLink}
+              <div class="muted">\${item.format} · \${item.reading_count} readings</div>
+            </div>
+            <div class="muted">\${fmtDate(item.imported_at)}</div>
           </div>
-          <div class="muted">\${fmtDate(item.imported_at)}</div>
-        </div>
-      \`).join("");
+        \`;
+      }).join("");
     }
 
     function renderChart() {
@@ -659,20 +739,31 @@ function dashboardPage() {
         \`;
       }).join("");
 
-      const tickIndexes = new Set(
-        [0, Math.floor(usage.points.length / 2), usage.points.length - 1]
-          .concat(yearMarkers.map((marker) => marker.index))
-      );
+      let tickIndexes;
+      let labelForIndex;
+      if (usage.date) {
+        tickIndexes = new Set(
+          [0, 6, 12, 18, usage.points.length - 1].filter((index) => index < usage.points.length)
+        );
+        labelForIndex = (index) => fmtHourLabel(usage.points[index].period_start);
+      } else {
+        tickIndexes = new Set(
+          [0, Math.floor(usage.points.length / 2), usage.points.length - 1]
+            .concat(yearMarkers.map((marker) => marker.index))
+        );
+        labelForIndex = (index) => {
+          const point = usage.points[index];
+          const isYearStart = yearMarkers.some((marker) => marker.index === index);
+          return isYearStart
+            ? fmtShortDate(point.period_start, true)
+            : fmtShortDate(point.period_start, showYears);
+        };
+      }
       const labels = [...tickIndexes]
         .sort((a, b) => a - b)
         .map((index) => {
-          const point = usage.points[index];
           const x = pad.left + index * step;
-          const year = new Date(point.period_start).getFullYear();
-          const isYearStart = yearMarkers.some((marker) => marker.index === index);
-          const label = isYearStart
-            ? fmtShortDate(point.period_start, true)
-            : fmtShortDate(point.period_start, showYears);
+          const label = labelForIndex(index);
           return \`<text x="\${x}" y="\${height - 28}" fill="#64748b" font-size="11">\${label}</text>\`;
         }).join("");
 
@@ -693,14 +784,30 @@ function dashboardPage() {
       renderStats();
     }
 
+    async function loadImports() {
+      const params = propertyParams();
+      params.set("limit", "1000");
+      const res = await fetch("/api/imports?" + params.toString());
+      state.imports = await res.json();
+      renderImports();
+      const countEl = document.getElementById("import-count");
+      if (countEl && state.imports?.total) {
+        const total = state.imports.total;
+        countEl.textContent = total + " upload" + (total === 1 ? "" : "s");
+      }
+    }
+
     async function loadUsage() {
       const utility = document.getElementById("utility").value;
       const granularity = document.getElementById("granularity").value;
       const days = document.getElementById("range").value;
+      const day = document.getElementById("day").value;
       const params = propertyParams();
       params.set("utility", utility);
       params.set("granularity", granularity);
-      if (days) params.set("days", days);
+      if (day) params.set("date", day);
+      else if (days) params.set("days", days);
+      syncDayControls();
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
       renderChart();
@@ -714,31 +821,6 @@ function dashboardPage() {
       });
     }
 
-    async function uploadFiles(fileList) {
-      const status = document.getElementById("upload-status");
-      const token = state.overview?.settings?.ingest_token;
-      if (!token) {
-        status.textContent = "Missing ingest token.";
-        return;
-      }
-      const form = new FormData();
-      for (const file of fileList) form.append("files", file, file.name);
-      status.textContent = "Uploading...";
-      const res = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "X-Ingest-Token": token },
-        body: form,
-      });
-      const payload = await res.json();
-      if (!res.ok) {
-        status.textContent = payload.error || "Upload failed";
-        return;
-      }
-      status.textContent = "Imported " + (payload.imports?.length || 1) + " file(s).";
-      await loadOverview();
-      await loadUsage();
-    }
-
     document.getElementById("property").addEventListener("change", async (event) => {
       const propertyId = event.target.value;
       const property = state.overview?.properties.find((item) => item.id === propertyId);
@@ -748,6 +830,7 @@ function dashboardPage() {
       }
       await savePropertySelection(propertyId);
       await loadOverview();
+      await loadImports();
       await loadUsage();
     });
     document.getElementById("save-label").addEventListener("click", async () => {
@@ -768,67 +851,37 @@ function dashboardPage() {
     document.getElementById("utility").addEventListener("change", loadUsage);
     document.getElementById("granularity").addEventListener("change", loadUsage);
     document.getElementById("range").addEventListener("change", loadUsage);
+    document.getElementById("day").addEventListener("change", loadUsage);
+    document.getElementById("clear-day").addEventListener("click", () => {
+      const dayInput = document.getElementById("day");
+      if (!dayInput) return;
+      dayInput.value = "";
+      syncDayControls();
+      loadUsage();
+    });
     document.getElementById("refresh").addEventListener("click", async () => {
       await loadOverview();
+      await loadImports();
       await loadUsage();
     });
-    function acceptedUploadFiles(fileList) {
-      return [...fileList].filter((file) => /\.(xml|csv)$/i.test(file.name));
-    }
-
-    function bindDropZone() {
-      const dropZone = document.getElementById("drop-zone");
-      const input = document.getElementById("upload");
-      if (!dropZone || !input) return;
-
-      const setDragState = (active) => {
-        dropZone.classList.toggle("dragover", active);
-      };
-
-      ["dragenter", "dragover"].forEach((eventName) => {
-        dropZone.addEventListener(eventName, (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setDragState(true);
-        });
-      });
-
-      ["dragleave", "drop"].forEach((eventName) => {
-        dropZone.addEventListener(eventName, (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (eventName === "dragleave" && dropZone.contains(event.relatedTarget)) return;
-          setDragState(false);
-        });
-      });
-
-      dropZone.addEventListener("drop", async (event) => {
-        const files = acceptedUploadFiles(event.dataTransfer?.files ?? []);
-        if (!files.length) {
-          const status = document.getElementById("upload-status");
-          if (status) status.textContent = "Drop XML or CSV files only.";
-          return;
-        }
-        await uploadFiles(files);
-        input.value = "";
-      });
-
-      input.addEventListener("change", async (event) => {
-        const target = event.target;
-        if (!target.files?.length) return;
-        const files = acceptedUploadFiles(target.files);
-        if (!files.length) {
-          const status = document.getElementById("upload-status");
-          if (status) status.textContent = "Choose XML or CSV files only.";
-          target.value = "";
-          return;
-        }
-        await uploadFiles(files);
-        target.value = "";
-      });
-    }
-
-    bindDropZone();
+    document.getElementById("copy-token").addEventListener("click", async () => {
+      const token = state.overview?.settings?.ingest_token;
+      const button = document.getElementById("copy-token");
+      if (!token || !button) return;
+      try {
+        await navigator.clipboard.writeText(token);
+        const original = button.textContent;
+        button.textContent = "Copied!";
+        setTimeout(() => {
+          button.textContent = original;
+        }, 1500);
+      } catch {
+        button.textContent = "Copy failed";
+        setTimeout(() => {
+          button.textContent = "Copy token";
+        }, 1500);
+      }
+    });
     document.getElementById("rotate-token").addEventListener("click", async () => {
       const res = await fetch("/api/settings/rotate-token", { method: "POST" });
       const payload = await res.json();
@@ -928,6 +981,7 @@ function dashboardPage() {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Restore failed.");
         await loadOverview();
+        await loadImports();
         await loadUsage();
         await refreshBackupStatus("Restore completed.");
       } catch (error) {
@@ -937,7 +991,7 @@ function dashboardPage() {
       }
     });
 
-    loadOverview().then(loadUsage).then(() => refreshBackupStatus());
+    loadOverview().then(loadImports).then(loadUsage).then(() => refreshBackupStatus());
   </script>
 </body>
 </html>`;
@@ -967,14 +1021,41 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             sendJson(res, 200, await (0, store_1.getOverview)(propertyId));
             return;
         }
+        if (req.method === "GET" && pathname === "/api/imports") {
+            const settings = await (0, store_1.loadSettings)();
+            const properties = await (0, store_1.listProperties)();
+            const propertyId = (0, store_1.resolvePropertyId)(url.searchParams.get("property"), settings, properties);
+            const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 500) || 500, 1), 5000);
+            const offset = Math.max(Number(url.searchParams.get("offset") ?? 0) || 0, 0);
+            const result = await (0, store_1.listImports)(propertyId, limit, offset);
+            sendJson(res, 200, {
+                ...result,
+                imports: result.imports.map((item) => ({
+                    ...item,
+                    file_url: item.stored_filename ? `/api/imports/${item.id}/file` : null,
+                })),
+            });
+            return;
+        }
+        const importFileMatch = pathname.match(/^\/api\/imports\/([a-f0-9]+)\/file$/);
+        if (req.method === "GET" && importFileMatch) {
+            const stored = await (0, store_1.getStoredImportFile)(importFileMatch[1]);
+            if (!stored) {
+                sendJson(res, 404, { error: "file not found" });
+                return;
+            }
+            sendFile(res, 200, stored.contentType, stored.content, stored.filename);
+            return;
+        }
         if (req.method === "GET" && pathname === "/api/usage") {
             const settings = await (0, store_1.loadSettings)();
             const properties = await (0, store_1.listProperties)();
             const propertyId = (0, store_1.resolvePropertyId)(url.searchParams.get("property"), settings, properties);
             const utility = parseUtility(url.searchParams.get("utility"));
             const granularity = parseGranularity(url.searchParams.get("granularity"));
-            const days = parseDays(url.searchParams.get("days"));
-            sendJson(res, 200, await (0, store_1.getUsageSummary)(propertyId, utility, granularity, days));
+            const date = (0, store_1.parseDateParam)(url.searchParams.get("date"));
+            const days = date ? null : parseDays(url.searchParams.get("days"));
+            sendJson(res, 200, await (0, store_1.getUsageSummary)(propertyId, utility, granularity, days, date));
             return;
         }
         if (req.method === "GET" && pathname === "/api/settings") {
