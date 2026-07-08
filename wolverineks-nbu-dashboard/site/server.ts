@@ -4,6 +4,7 @@ import path from "node:path";
 import { exportNbuData, getBackupStatus, importNbuData } from "./backup-restore";
 import { parseNbuExport, type Granularity, type Utility } from "./parsers";
 import {
+  getCoverageSummary,
   getOverview,
   getStoredImportFile,
   getUsageSummary,
@@ -19,7 +20,7 @@ import {
   setSelectedProperty,
 } from "./store";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -281,6 +282,74 @@ function pageStyles(): string {
     .day-view-label strong {
       color: var(--text);
     }
+    .coverage-summary {
+      font-size: 0.92rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .coverage-legend {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      font-size: 0.8rem;
+      margin-bottom: 0.75rem;
+      color: var(--muted);
+    }
+    .coverage-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .coverage-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .coverage-swatch.complete { background: #16a34a; }
+    .coverage-swatch.partial { background: #f59e0b; }
+    .coverage-swatch.missing { background: #e2e8f0; }
+    .coverage-timeline-wrap {
+      overflow-x: auto;
+      padding-bottom: 0.35rem;
+    }
+    .coverage-timeline {
+      display: flex;
+      align-items: stretch;
+      height: 28px;
+      min-width: min-content;
+    }
+    .coverage-segment {
+      width: 4px;
+      min-width: 4px;
+      height: 100%;
+      cursor: pointer;
+      flex-shrink: 0;
+      border: 0;
+      padding: 0;
+    }
+    .coverage-segment.complete { background: #16a34a; }
+    .coverage-segment.partial { background: #f59e0b; }
+    .coverage-segment.missing { background: #e2e8f0; }
+    .coverage-segment:hover { opacity: 0.75; }
+    .coverage-gaps {
+      margin: 0.75rem 0 0;
+      padding-left: 1.1rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .coverage-tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.82rem;
+      box-shadow: var(--shadow);
+      z-index: 2;
+      white-space: nowrap;
+    }
     select, button {
       font: inherit;
       border: 1px solid var(--border);
@@ -462,6 +531,14 @@ function dashboardPage(): string {
     </div>
 
     <div class="card" style="margin-top:1rem">
+      <h2>Data coverage</h2>
+      <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to inspect that day.</p>
+      <div id="coverage-content">
+        <p class="muted">Loading coverage…</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
       <h2>Chrome extension</h2>
       <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
       <div class="token-box" style="margin-top:0.8rem">
@@ -503,7 +580,7 @@ function dashboardPage(): string {
     </div>
   </div>
   <script>
-    const state = { overview: null, usage: null, imports: null };
+    const state = { overview: null, usage: null, imports: null, coverage: null };
 
     function selectedPropertyId() {
       return document.getElementById("property").value || null;
@@ -806,6 +883,98 @@ function dashboardPage(): string {
       bindChartHover(usage);
     }
 
+    function fmtCoverageDate(dateKey) {
+      const [year, month, day] = dateKey.split("-").map(Number);
+      const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      return date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "America/Chicago",
+      });
+    }
+
+    function fmtCoverageRange(start, end) {
+      if (!start || !end) return "";
+      if (start === end) return fmtCoverageDate(start);
+      return fmtCoverageDate(start) + " – " + fmtCoverageDate(end);
+    }
+
+    function fmtGapLabel(gap, daysByDate) {
+      const range = gap.start === gap.end
+        ? fmtCoverageDate(gap.start)
+        : fmtCoverageDate(gap.start) + "–" + fmtCoverageDate(gap.end);
+      const label = gap.status === "missing" ? "Missing" : "Partial";
+      if (gap.days === 1 && gap.status === "partial") {
+        const day = daysByDate.get(gap.start);
+        const hours = day?.hours_present ?? 0;
+        return label + ": " + range + " (" + hours + "/24 hours)";
+      }
+      return label + ": " + range + " (" + gap.days + " day" + (gap.days === 1 ? "" : "s") + ")";
+    }
+
+    function openCoverageDay(dateKey) {
+      const dayInput = document.getElementById("day");
+      const granularity = document.getElementById("granularity");
+      if (!dayInput || !granularity) return;
+      dayInput.value = dateKey;
+      granularity.value = "hour";
+      syncDayControls();
+      loadUsage();
+      document.querySelector(".chart-wrap")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function renderCoverage() {
+      const el = document.getElementById("coverage-content");
+      const coverage = state.coverage;
+      if (!el) return;
+
+      if (!coverage || !coverage.days?.length) {
+        el.innerHTML = '<div class="empty">No hourly records yet. Run a Chrome extension sync on the Consumption Report page.</div>';
+        return;
+      }
+
+      const summary = coverage.coverage_pct + "% coverage · " +
+        coverage.complete_days + " complete · " +
+        coverage.partial_days + " partial · " +
+        coverage.missing_days + " missing";
+
+      const daysByDate = new Map(coverage.days.map((day) => [day.date, day]));
+      const segments = coverage.days.map((day) =>
+        '<button type="button" class="coverage-segment ' + day.status + '" data-date="' + day.date + '" title="' +
+        fmtCoverageDate(day.date) + " · " + day.hours_present + "/24 hours" + '"></button>'
+      ).join("");
+
+      const gaps = coverage.gaps.slice(0, 8);
+      const gapHtml = gaps.length
+        ? '<ul class="coverage-gaps">' + gaps.map((gap) => "<li>" + fmtGapLabel(gap, daysByDate) + "</li>").join("") +
+          (coverage.gaps.length > 8 ? "<li>…and " + (coverage.gaps.length - 8) + " more</li>" : "") + "</ul>"
+        : '<p class="muted" style="margin:0.75rem 0 0">No gaps detected in this range.</p>';
+
+      el.innerHTML =
+        '<p class="coverage-summary"><strong>' + summary + '</strong> · ' + fmtCoverageRange(coverage.range_start, coverage.range_end) + '</p>' +
+        '<div class="coverage-legend">' +
+          '<span><i class="coverage-swatch complete"></i>Complete (24h)</span>' +
+          '<span><i class="coverage-swatch partial"></i>Partial</span>' +
+          '<span><i class="coverage-swatch missing"></i>Missing</span>' +
+        '</div>' +
+        '<div class="coverage-timeline-wrap"><div class="coverage-timeline" id="coverage-timeline">' + segments + '</div></div>' +
+        gapHtml;
+
+      document.querySelectorAll(".coverage-segment").forEach((segment) => {
+        segment.addEventListener("click", () => openCoverageDay(segment.dataset.date));
+      });
+    }
+
+    async function loadCoverage() {
+      const utility = document.getElementById("utility").value;
+      const params = propertyParams();
+      params.set("utility", utility);
+      const res = await fetch("/api/coverage?" + params.toString());
+      state.coverage = await res.json();
+      renderCoverage();
+    }
+
     async function loadOverview() {
       const params = propertyParams();
       const res = await fetch("/api/overview?" + params.toString());
@@ -861,6 +1030,7 @@ function dashboardPage(): string {
       await loadOverview();
       await loadImports();
       await loadUsage();
+      await loadCoverage();
     });
     document.getElementById("save-label").addEventListener("click", async () => {
       const propertyId = selectedPropertyId();
@@ -877,7 +1047,10 @@ function dashboardPage(): string {
         await loadOverview();
       }
     });
-    document.getElementById("utility").addEventListener("change", loadUsage);
+    document.getElementById("utility").addEventListener("change", async () => {
+      await loadUsage();
+      await loadCoverage();
+    });
     document.getElementById("granularity").addEventListener("change", loadUsage);
     document.getElementById("range").addEventListener("change", loadUsage);
     document.getElementById("day").addEventListener("change", loadUsage);
@@ -892,6 +1065,7 @@ function dashboardPage(): string {
       await loadOverview();
       await loadImports();
       await loadUsage();
+      await loadCoverage();
     });
     document.getElementById("copy-token").addEventListener("click", async () => {
       const token = state.overview?.settings?.ingest_token;
@@ -1012,6 +1186,7 @@ function dashboardPage(): string {
         await loadOverview();
         await loadImports();
         await loadUsage();
+        await loadCoverage();
         await refreshBackupStatus("Restore completed.");
       } catch (error) {
         const statusEl = document.getElementById("backup-status");
@@ -1020,7 +1195,7 @@ function dashboardPage(): string {
       }
     });
 
-    loadOverview().then(loadImports).then(loadUsage).then(() => refreshBackupStatus());
+    loadOverview().then(loadImports).then(loadUsage).then(loadCoverage).then(() => refreshBackupStatus());
   </script>
 </body>
 </html>`;
@@ -1089,6 +1264,19 @@ const server = createServer(async (req, res) => {
         return;
       }
       sendFile(res, 200, stored.contentType, stored.content, stored.filename);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/coverage") {
+      const settings = await loadSettings();
+      const properties = await listProperties();
+      const propertyId = resolvePropertyId(
+        url.searchParams.get("property"),
+        settings,
+        properties,
+      );
+      const utility = parseUtility(url.searchParams.get("utility"));
+      sendJson(res, 200, await getCoverageSummary(propertyId, utility));
       return;
     }
 

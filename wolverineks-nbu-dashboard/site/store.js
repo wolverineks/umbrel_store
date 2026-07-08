@@ -4,6 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.centralLocalDateKey = centralLocalDateKey;
+exports.centralTodayKey = centralTodayKey;
+exports.addDaysToDateKey = addDaysToDateKey;
+exports.getCoverageSummary = getCoverageSummary;
 exports.parseDateParam = parseDateParam;
 exports.resetStoreCaches = resetStoreCaches;
 exports.buildPropertyId = buildPropertyId;
@@ -31,6 +34,127 @@ const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
     return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
+}
+function centralTodayKey() {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date());
+}
+function addDaysToDateKey(dateKey, days) {
+    const [year, month, day] = dateKey.split("-").map(Number);
+    const next = new Date(Date.UTC(year, month - 1, day + days));
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "UTC" }).format(next);
+}
+function compareDateKeys(a, b) {
+    return a.localeCompare(b);
+}
+function dayStatus(dateKey, hoursPresent, todayKey) {
+    if (dateKey === todayKey) {
+        return hoursPresent >= 24 ? "complete" : "partial";
+    }
+    if (hoursPresent >= 24)
+        return "complete";
+    if (hoursPresent > 0)
+        return "partial";
+    return "missing";
+}
+function buildCoverageGaps(days) {
+    const gaps = [];
+    let current = null;
+    for (const day of days) {
+        if (day.status === "complete") {
+            if (current) {
+                gaps.push(current);
+                current = null;
+            }
+            continue;
+        }
+        const gapStatus = day.status === "missing" ? "missing" : "partial";
+        if (current && current.status === gapStatus && addDaysToDateKey(current.end, 1) === day.date) {
+            current.end = day.date;
+            current.days += 1;
+            continue;
+        }
+        if (current)
+            gaps.push(current);
+        current = { start: day.date, end: day.date, days: 1, status: gapStatus };
+    }
+    if (current)
+        gaps.push(current);
+    return gaps;
+}
+async function getCoverageSummary(propertyId, utility) {
+    const readings = await loadReadings();
+    const hourReadings = readings.filter((r) => matchesProperty(propertyId, r.account_id, r.usage_point) &&
+        r.utility === utility &&
+        r.granularity === "hour");
+    const empty = {
+        property_id: propertyId,
+        utility,
+        range_start: null,
+        range_end: null,
+        total_days: 0,
+        complete_days: 0,
+        partial_days: 0,
+        missing_days: 0,
+        coverage_pct: 0,
+        days: [],
+        gaps: [],
+    };
+    if (!hourReadings.length)
+        return empty;
+    const hoursByDate = new Map();
+    for (const reading of hourReadings) {
+        const dateKey = centralLocalDateKey(reading.period_start);
+        hoursByDate.set(dateKey, (hoursByDate.get(dateKey) ?? 0) + 1);
+    }
+    const sortedDates = [...hoursByDate.keys()].sort();
+    const rangeStart = sortedDates[0];
+    const todayKey = centralTodayKey();
+    const yesterdayKey = addDaysToDateKey(todayKey, -1);
+    let rangeEnd = yesterdayKey;
+    if (compareDateKeys(rangeStart, rangeEnd) > 0) {
+        rangeEnd = rangeStart;
+    }
+    const days = [];
+    let cursor = rangeStart;
+    while (compareDateKeys(cursor, rangeEnd) <= 0) {
+        const hoursPresent = hoursByDate.get(cursor) ?? 0;
+        days.push({
+            date: cursor,
+            hours_present: hoursPresent,
+            hours_expected: 24,
+            status: dayStatus(cursor, hoursPresent, todayKey),
+        });
+        cursor = addDaysToDateKey(cursor, 1);
+    }
+    if (compareDateKeys(todayKey, rangeStart) >= 0 &&
+        compareDateKeys(todayKey, rangeEnd) > 0 &&
+        (hoursByDate.get(todayKey) ?? 0) > 0) {
+        const hoursPresent = hoursByDate.get(todayKey) ?? 0;
+        days.push({
+            date: todayKey,
+            hours_present: hoursPresent,
+            hours_expected: 24,
+            status: dayStatus(todayKey, hoursPresent, todayKey),
+        });
+        rangeEnd = todayKey;
+    }
+    const complete_days = days.filter((day) => day.status === "complete").length;
+    const partial_days = days.filter((day) => day.status === "partial").length;
+    const missing_days = days.filter((day) => day.status === "missing").length;
+    const total_days = days.length;
+    return {
+        property_id: propertyId,
+        utility,
+        range_start: rangeStart,
+        range_end: rangeEnd,
+        total_days,
+        complete_days,
+        partial_days,
+        missing_days,
+        coverage_pct: total_days ? Math.round((complete_days / total_days) * 1000) / 10 : 0,
+        days,
+        gaps: buildCoverageGaps(days),
+    };
 }
 function parseDateParam(value) {
     if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value))
