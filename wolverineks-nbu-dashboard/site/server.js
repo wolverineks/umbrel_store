@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -468,6 +468,37 @@ function pageStyles() {
     }
     .chart-sources a:hover { text-decoration: underline; }
     .chart-sources .none { color: var(--muted); list-style: none; padding-left: 0; }
+    .source-detail {
+      margin-top: 0.35rem;
+      padding-left: 0;
+      list-style: none;
+      font-size: 0.8rem;
+    }
+    .source-detail li {
+      margin: 0.2rem 0;
+    }
+    .source-snippet {
+      display: block;
+      margin: 0.2rem 0 0.35rem;
+      padding: 0.35rem 0.5rem;
+      background: var(--accent-soft);
+      border-radius: 6px;
+      font-size: 0.72rem;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .copy-snippet {
+      font-size: 0.72rem;
+      padding: 0.15rem 0.4rem;
+      margin-left: 0.25rem;
+      vertical-align: middle;
+    }
+    .object-id-hint {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin: 0 0 0.75rem;
+    }
     .empty {
       text-align: center;
       color: var(--muted);
@@ -504,7 +535,12 @@ function dashboardPage() {
         <select id="property"></select>
         <input id="property-label" type="text" placeholder="House name">
         <button id="save-label" class="secondary">Save name</button>
+        <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs">
+        <button id="save-object-id" class="secondary">Save Object ID</button>
       </div>
+      <p class="object-id-hint" id="object-id-hint" hidden>
+        Set the NBU Object ID to show portal export URLs and console fetch snippets for missing periods.
+      </p>
       <div class="toolbar">
         <select id="utility">
           <option value="electric">Electric</option>
@@ -601,12 +637,16 @@ function dashboardPage() {
     function renderPropertySelector() {
       const select = document.getElementById("property");
       const labelInput = document.getElementById("property-label");
+      const objectIdInput = document.getElementById("property-object-id");
+      const objectIdHint = document.getElementById("object-id-hint");
       const o = state.overview;
       if (!select || !o) return;
 
       if (!o.properties.length) {
         select.innerHTML = '<option value="">No properties yet</option>';
         if (labelInput) labelInput.value = "";
+        if (objectIdInput) objectIdInput.value = "";
+        if (objectIdHint) objectIdHint.hidden = true;
         return;
       }
 
@@ -618,9 +658,51 @@ function dashboardPage() {
       if (labelInput && o.selected_property) {
         labelInput.value = o.settings.property_labels[o.selected_property.id] ?? o.selected_property.label ?? "";
       }
+      if (objectIdInput && o.selected_property) {
+        objectIdInput.value = o.settings.property_object_ids?.[o.selected_property.id] ?? "";
+      }
+      if (objectIdHint) {
+        const hasObjectId = Boolean(o.settings.property_object_ids?.[selectedId]);
+        objectIdHint.hidden = hasObjectId;
+      }
       if (o.selected_property) {
         document.getElementById("address").textContent = o.selected_property.label;
       }
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function copySnippet(button, text) {
+      if (!button || !text) return;
+      const original = button.textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        button.textContent = "Copied!";
+      } catch {
+        button.textContent = "Copy failed";
+      }
+      setTimeout(() => {
+        button.textContent = original;
+      }, 1500);
+    }
+
+    function renderLinkRow(label, url, fetchSnippet, copyKind, copyIndex) {
+      if (!url) return "";
+      let html = '<li><span class="muted">' + label + ':</span> ';
+      html += '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a>';
+      if (fetchSnippet) {
+        html += ' <button type="button" class="secondary copy-snippet" data-kind="' + copyKind +
+          '" data-index="' + copyIndex + '">Copy fetch</button>';
+        html += '<code class="source-snippet">' + escapeHtml(fetchSnippet) + '</code>';
+      }
+      html += '</li>';
+      return html;
     }
 
     function fmtDate(iso) {
@@ -785,8 +867,9 @@ function dashboardPage() {
         return;
       }
       importsEl.innerHTML = items.map((item) => {
-        const fileLink = item.stored_filename
-          ? \`<a href="/api/imports/\${item.id}/file" target="_blank" rel="noopener">\${item.filename}</a>\`
+        const viewUrl = item.file_view_url ?? (item.stored_filename ? "/api/imports/" + item.id + "/view" : null);
+        const fileLink = viewUrl
+          ? \`<a href="\${viewUrl}" target="_blank" rel="noopener">\${item.filename}</a>\`
           : item.filename;
         return \`
           <div class="import-row">
@@ -816,20 +899,39 @@ function dashboardPage() {
       }
 
       const sourceItems = sources.length
-        ? sources.map((source) => {
+        ? sources.map((source, index) => {
             const meta = source.readings_in_view + " readings · " + source.format;
-            const name = source.file_url
-              ? '<a href="' + source.file_url + '" target="_blank" rel="noopener">' + source.filename + '</a>'
-              : source.filename;
-            return '<li>' + name + '<div class="muted">' + meta + '</div></li>';
+            const viewUrl = source.file_view_url ?? source.file_url;
+            const name = viewUrl
+              ? '<a href="' + escapeHtml(viewUrl) + '" target="_blank" rel="noopener">' + escapeHtml(source.filename) + '</a>'
+              : escapeHtml(source.filename);
+            let html = '<li>' + name + '<div class="muted">' + meta + '</div>';
+            html += '<ul class="source-detail">';
+            if (viewUrl) {
+              html += renderLinkRow("View", viewUrl, source.file_fetch, "source-file", index);
+            }
+            if (source.nbu_url) {
+              html += renderLinkRow("NBU export", source.nbu_url, source.nbu_fetch, "source-nbu", index);
+            }
+            html += '</ul></li>';
+            return html;
           }).join("")
         : '<li class="none">No source files for this view.</li>';
 
       const missingItems = missing.length
-        ? missing.slice(0, 12).map((gap) => {
+        ? missing.slice(0, 12).map((gap, index) => {
             const clickable = usage.granularity === "hour" && gap.start === gap.end;
-            if (!clickable) return '<li>' + gap.label + '</li>';
-            return '<li><button type="button" data-date="' + gap.start + '" style="width:auto;height:auto;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;text-decoration:underline;color:var(--accent)">' + gap.label + '</button></li>';
+            let labelHtml = escapeHtml(gap.label);
+            if (clickable) {
+              labelHtml = '<button type="button" data-date="' + gap.start + '" style="width:auto;height:auto;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;text-decoration:underline;color:var(--accent)">' + escapeHtml(gap.label) + '</button>';
+            }
+            let html = '<li>' + labelHtml;
+            if (gap.nbu_url) {
+              html += '<ul class="source-detail">' +
+                renderLinkRow("NBU export", gap.nbu_url, gap.nbu_fetch, "missing-nbu", index) + '</ul>';
+            }
+            html += '</li>';
+            return html;
           }).join("") + (missing.length > 12 ? '<li class="muted">…and ' + (missing.length - 12) + ' more</li>' : "")
         : '<li class="none">No gaps in this view.</li>';
 
@@ -842,6 +944,15 @@ function dashboardPage() {
 
       el.querySelectorAll("button[data-date]").forEach((button) => {
         button.addEventListener("click", () => openCoverageDay(button.dataset.date));
+      });
+      el.querySelectorAll(".copy-snippet").forEach((button) => {
+        const kind = button.dataset.kind;
+        const index = Number(button.dataset.index);
+        let text = null;
+        if (kind === "source-file") text = usage.sources[index]?.file_fetch ?? null;
+        else if (kind === "source-nbu") text = usage.sources[index]?.nbu_fetch ?? null;
+        else if (kind === "missing-nbu") text = usage.missing[index]?.nbu_fetch ?? null;
+        button.addEventListener("click", () => copySnippet(button, text));
       });
     }
 
@@ -1074,8 +1185,16 @@ function dashboardPage() {
       const propertyId = event.target.value;
       const property = state.overview?.properties.find((item) => item.id === propertyId);
       const labelInput = document.getElementById("property-label");
+      const objectIdInput = document.getElementById("property-object-id");
       if (labelInput && property) {
         labelInput.value = state.overview.settings.property_labels[property.id] ?? property.label ?? "";
+      }
+      if (objectIdInput && property) {
+        objectIdInput.value = state.overview.settings.property_object_ids?.[property.id] ?? "";
+      }
+      const objectIdHint = document.getElementById("object-id-hint");
+      if (objectIdHint) {
+        objectIdHint.hidden = Boolean(state.overview.settings.property_object_ids?.[propertyId]);
       }
       await savePropertySelection(propertyId);
       await loadOverview();
@@ -1096,6 +1215,23 @@ function dashboardPage() {
       if (payload.settings) {
         state.overview.settings = payload.settings;
         await loadOverview();
+      }
+    });
+    document.getElementById("save-object-id").addEventListener("click", async () => {
+      const propertyId = selectedPropertyId();
+      const objectId = document.getElementById("property-object-id").value;
+      if (!propertyId) return;
+      const res = await fetch("/api/settings/property-object-id", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ property_id: propertyId, object_id: objectId }),
+      });
+      const payload = await res.json();
+      if (payload.settings) {
+        state.overview.settings = payload.settings;
+        const objectIdHint = document.getElementById("object-id-hint");
+        if (objectIdHint) objectIdHint.hidden = Boolean(objectId.trim());
+        await loadUsage();
       }
     });
     document.getElementById("utility").addEventListener("change", async () => {
@@ -1251,6 +1387,41 @@ function dashboardPage() {
 </body>
 </html>`;
 }
+function escapeHtmlText(text) {
+    return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+function importViewPage(importId, filename, format, content) {
+    const escaped = escapeHtmlText(content);
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtmlText(filename)}</title>
+  <style>
+    body { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0f172a; color: #e2e8f0; }
+    header { padding: 1rem 1.25rem; background: #1e293b; border-bottom: 1px solid #334155; }
+    header a { color: #93c5fd; text-decoration: none; }
+    header a:hover { text-decoration: underline; }
+    h1 { margin: 0.35rem 0 0; font-size: 1rem; font-weight: 600; word-break: break-all; }
+    .meta { margin: 0.25rem 0 0; font-size: 0.85rem; color: #94a3b8; }
+    pre { margin: 0; padding: 1rem 1.25rem 2rem; white-space: pre-wrap; word-break: break-word; font-size: 0.82rem; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">← Dashboard</a>
+    <h1>${escapeHtmlText(filename)}</h1>
+    <p class="meta">${escapeHtmlText(format)} · <a href="/api/imports/${importId}/file">Raw file</a></p>
+  </header>
+  <pre>${escaped}</pre>
+</body>
+</html>`;
+}
 const server = (0, node_http_1.createServer)(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
@@ -1288,8 +1459,21 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
                 imports: result.imports.map((item) => ({
                     ...item,
                     file_url: item.stored_filename ? `/api/imports/${item.id}/file` : null,
+                    file_view_url: item.stored_filename ? `/api/imports/${item.id}/view` : null,
                 })),
             });
+            return;
+        }
+        const importViewMatch = pathname.match(/^\/api\/imports\/([a-f0-9]+)\/view$/);
+        if (req.method === "GET" && importViewMatch) {
+            const imports = await (0, store_1.listImports)(null, 5000, 0);
+            const record = imports.imports.find((item) => item.id === importViewMatch[1]);
+            const stored = await (0, store_1.getStoredImportFile)(importViewMatch[1]);
+            if (!stored || !record) {
+                sendJson(res, 404, { error: "file not found" });
+                return;
+            }
+            sendText(res, 200, "text/html; charset=utf-8", importViewPage(importViewMatch[1], stored.filename, record.format, stored.content.toString("utf8")));
             return;
         }
         const importFileMatch = pathname.match(/^\/api\/imports\/([a-f0-9]+)\/file$/);
@@ -1344,6 +1528,16 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
                 return;
             }
             const settings = await (0, store_1.setPropertyLabel)(body.property_id, body.label ?? "");
+            sendJson(res, 200, { settings });
+            return;
+        }
+        if (req.method === "POST" && pathname === "/api/settings/property-object-id") {
+            const body = JSON.parse((await readBody(req)).toString("utf8"));
+            if (!body.property_id) {
+                sendJson(res, 400, { error: "property_id is required" });
+                return;
+            }
+            const settings = await (0, store_1.setPropertyObjectId)(body.property_id, body.object_id ?? "");
             sendJson(res, 200, { settings });
             return;
         }

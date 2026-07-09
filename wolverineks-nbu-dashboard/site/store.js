@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.NBU_GREEN_BUTTON_BASE = void 0;
 exports.centralLocalDateKey = centralLocalDateKey;
 exports.centralTodayKey = centralTodayKey;
 exports.addDaysToDateKey = addDaysToDateKey;
@@ -15,6 +16,9 @@ exports.saveSettings = saveSettings;
 exports.rotateIngestToken = rotateIngestToken;
 exports.setSelectedProperty = setSelectedProperty;
 exports.setPropertyLabel = setPropertyLabel;
+exports.setPropertyObjectId = setPropertyObjectId;
+exports.buildNbuExportUrl = buildNbuExportUrl;
+exports.jsFetchSnippet = jsFetchSnippet;
 exports.listProperties = listProperties;
 exports.importParsed = importParsed;
 exports.listImports = listImports;
@@ -31,6 +35,7 @@ const UPLOADS_ROOT = node_path_1.default.join(DATA_ROOT, "uploads");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = node_path_1.default.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
+exports.NBU_GREEN_BUTTON_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportGreenButtonData.xml";
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
     return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
@@ -191,6 +196,9 @@ function normalizeSettings(raw) {
             property_labels: raw.property_labels && typeof raw.property_labels === "object"
                 ? raw.property_labels
                 : {},
+            property_object_ids: raw.property_object_ids && typeof raw.property_object_ids === "object"
+                ? raw.property_object_ids
+                : {},
         };
     }
     const accountId = typeof raw.account_id === "string" ? raw.account_id : null;
@@ -204,6 +212,7 @@ function normalizeSettings(raw) {
         ingest_token: String(raw.ingest_token ?? newToken()),
         selected_property_id: propertyId,
         property_labels,
+        property_object_ids: {},
     };
 }
 async function ensureDataRoot() {
@@ -223,6 +232,7 @@ async function loadSettings() {
             ingest_token: newToken(),
             selected_property_id: null,
             property_labels: {},
+            property_object_ids: {},
         };
         await saveSettings(settingsCache);
         return settingsCache;
@@ -261,6 +271,34 @@ async function setPropertyLabel(propertyId, label) {
         delete settings.property_labels[propertyId];
     await saveSettings(settings);
     return settings;
+}
+async function setPropertyObjectId(propertyId, objectId) {
+    const settings = await loadSettings();
+    const trimmed = objectId.trim();
+    if (trimmed)
+        settings.property_object_ids[propertyId] = trimmed;
+    else
+        delete settings.property_object_ids[propertyId];
+    await saveSettings(settings);
+    return settings;
+}
+function buildNbuExportUrl(start, end, objectId, utility) {
+    const params = new URLSearchParams({
+        StartDateTime: `${start}T00:00:00`,
+        EndDateTime: `${addDaysToDateKey(end, 1)}T00:00:00`,
+        ObjectId: objectId,
+        Type: "Tier",
+        utilType: utility === "water" ? "W" : "E",
+        View: "usage",
+    });
+    return `${exports.NBU_GREEN_BUTTON_BASE}?${params.toString()}`;
+}
+function jsFetchSnippet(url, withCredentials = false) {
+    const escaped = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    if (withCredentials) {
+        return `fetch("${escaped}", { credentials: "include" }).then(async (r) => console.log(r.status, (await r.text()).slice(0, 300))).catch(console.error);`;
+    }
+    return `fetch("${escaped}").then(async (r) => console.log(r.status, (await r.text()).slice(0, 300))).catch(console.error);`;
 }
 function propertyLabel(propertyId, address, settings, accountId, usagePoint) {
     const custom = settings.property_labels[propertyId]?.trim();
@@ -510,27 +548,58 @@ function mergeMissingPeriods(items) {
     merged.push(current);
     return merged;
 }
-function buildUsageSources(filtered, imports) {
+function attachNbuLinks(period, objectId, utility) {
+    if (!objectId)
+        return { nbu_url: null, nbu_fetch: null };
+    const nbu_url = buildNbuExportUrl(period.start, period.end, objectId, utility);
+    return { nbu_url, nbu_fetch: jsFetchSnippet(nbu_url, true) };
+}
+function withNbuLinks(periods, objectId, utility) {
+    return periods.map((period) => ({
+        ...period,
+        ...attachNbuLinks(period, objectId, utility),
+    }));
+}
+function buildUsageSources(filtered, imports, objectId, utility) {
     const importMap = new Map(imports.map((item) => [item.id, item]));
     const counts = new Map();
+    const dateRanges = new Map();
     for (const reading of filtered) {
         counts.set(reading.import_id, (counts.get(reading.import_id) ?? 0) + 1);
+        const dateKey = centralLocalDateKey(reading.period_start);
+        const existing = dateRanges.get(reading.import_id);
+        if (!existing) {
+            dateRanges.set(reading.import_id, { start: dateKey, end: dateKey });
+            continue;
+        }
+        if (compareDateKeys(dateKey, existing.start) < 0)
+            existing.start = dateKey;
+        if (compareDateKeys(dateKey, existing.end) > 0)
+            existing.end = dateKey;
     }
     return [...counts.entries()]
         .map(([id, readings_in_view]) => {
         const record = importMap.get(id);
+        const file_url = record?.stored_filename ? `/api/imports/${id}/file` : null;
+        const file_view_url = record?.stored_filename ? `/api/imports/${id}/view` : null;
+        const file_fetch = file_view_url ? jsFetchSnippet(file_view_url) : null;
+        const range = dateRanges.get(id);
+        const nbuLinks = range ? attachNbuLinks(range, objectId, utility) : { nbu_url: null, nbu_fetch: null };
         return {
             id,
             filename: record?.filename ?? "Unknown file",
             format: record?.format ?? "greenbutton_xml",
             imported_at: record?.imported_at ?? "",
             readings_in_view,
-            file_url: record?.stored_filename ? `/api/imports/${id}/file` : null,
+            file_url,
+            file_view_url,
+            file_fetch,
+            ...nbuLinks,
         };
     })
         .sort((a, b) => b.readings_in_view - a.readings_in_view || a.filename.localeCompare(b.filename));
 }
-function buildUsageMissing(readings, propertyId, utility, granularity, days, date) {
+function buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId) {
     const effectiveGranularity = date ? "hour" : granularity;
     const filtered = filterReadings(readings, propertyId, utility, effectiveGranularity, days, date);
     const range = viewRangeKeys(days, date, filtered, effectiveGranularity);
@@ -559,7 +628,7 @@ function buildUsageMissing(readings, propertyId, utility, granularity, days, dat
                 },
             ];
         });
-        return mergeMissingPeriods(items);
+        return withNbuLinks(mergeMissingPeriods(items), objectId, utility);
     }
     if (effectiveGranularity === "day") {
         const dayDates = new Set(filtered.map((reading) => centralLocalDateKey(reading.period_start)));
@@ -570,17 +639,17 @@ function buildUsageMissing(readings, propertyId, utility, granularity, days, dat
             end: dateKey,
             label: `${formatDateLabel(dateKey)} (no daily data)`,
         }));
-        return mergeMissingPeriods(items);
+        return withNbuLinks(mergeMissingPeriods(items), objectId, utility);
     }
     const billing = [...filtered].sort((a, b) => a.period_start.localeCompare(b.period_start));
     if (!billing.length) {
-        return [
+        return withNbuLinks([
             {
                 start: range.start,
                 end: range.end,
                 label: `${formatRangeLabel(range.start, range.end)} (no billing periods)`,
             },
-        ];
+        ], objectId, utility);
     }
     const missing = [];
     for (let index = 1; index < billing.length; index++) {
@@ -598,7 +667,7 @@ function buildUsageMissing(readings, propertyId, utility, granularity, days, dat
             });
         }
     }
-    return missing;
+    return withNbuLinks(missing, objectId, utility);
 }
 function filterReadings(readings, propertyId, utility, granularity, days, date) {
     const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
@@ -614,6 +683,8 @@ function filterReadings(readings, propertyId, utility, granularity, days, date) 
         .sort((a, b) => a.period_start.localeCompare(b.period_start));
 }
 async function getUsageSummary(propertyId, utility, granularity, days, date = null) {
+    const settings = await loadSettings();
+    const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
     const readings = await loadReadings();
     const imports = await loadImports();
     const filtered = filterReadings(readings, propertyId, utility, granularity, days, date);
@@ -640,8 +711,8 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
         average: points.length ? Math.round((total / points.length) * 1000) / 1000 : 0,
         peak,
         points,
-        sources: buildUsageSources(filtered, propertyImports),
-        missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date),
+        sources: buildUsageSources(filtered, propertyImports, objectId, utility),
+        missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
         last_import_at: utilityImports[0]?.imported_at ?? null,
     };
 }

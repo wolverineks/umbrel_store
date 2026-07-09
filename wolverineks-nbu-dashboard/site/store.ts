@@ -14,7 +14,11 @@ export type Settings = {
   ingest_token: string;
   selected_property_id: string | null;
   property_labels: Record<string, string>;
+  property_object_ids: Record<string, string>;
 };
+
+export const NBU_GREEN_BUTTON_BASE =
+  "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportGreenButtonData.xml";
 
 export type Property = {
   id: string;
@@ -63,12 +67,18 @@ export type UsageSourceFile = {
   imported_at: string;
   readings_in_view: number;
   file_url: string | null;
+  file_view_url: string | null;
+  file_fetch: string | null;
+  nbu_url: string | null;
+  nbu_fetch: string | null;
 };
 
 export type UsageMissingPeriod = {
   start: string;
   end: string;
   label: string;
+  nbu_url: string | null;
+  nbu_fetch: string | null;
 };
 
 export type UsageSummary = {
@@ -304,6 +314,10 @@ function normalizeSettings(raw: Record<string, unknown>): Settings {
         raw.property_labels && typeof raw.property_labels === "object"
           ? (raw.property_labels as Record<string, string>)
           : {},
+      property_object_ids:
+        raw.property_object_ids && typeof raw.property_object_ids === "object"
+          ? (raw.property_object_ids as Record<string, string>)
+          : {},
     };
   }
 
@@ -318,6 +332,7 @@ function normalizeSettings(raw: Record<string, unknown>): Settings {
     ingest_token: String(raw.ingest_token ?? newToken()),
     selected_property_id: propertyId,
     property_labels,
+    property_object_ids: {},
   };
 }
 
@@ -339,6 +354,7 @@ export async function loadSettings(): Promise<Settings> {
       ingest_token: newToken(),
       selected_property_id: null,
       property_labels: {},
+      property_object_ids: {},
     };
     await saveSettings(settingsCache);
     return settingsCache;
@@ -379,6 +395,40 @@ export async function setPropertyLabel(propertyId: string, label: string): Promi
   else delete settings.property_labels[propertyId];
   await saveSettings(settings);
   return settings;
+}
+
+export async function setPropertyObjectId(propertyId: string, objectId: string): Promise<Settings> {
+  const settings = await loadSettings();
+  const trimmed = objectId.trim();
+  if (trimmed) settings.property_object_ids[propertyId] = trimmed;
+  else delete settings.property_object_ids[propertyId];
+  await saveSettings(settings);
+  return settings;
+}
+
+export function buildNbuExportUrl(
+  start: string,
+  end: string,
+  objectId: string,
+  utility: Utility,
+): string {
+  const params = new URLSearchParams({
+    StartDateTime: `${start}T00:00:00`,
+    EndDateTime: `${addDaysToDateKey(end, 1)}T00:00:00`,
+    ObjectId: objectId,
+    Type: "Tier",
+    utilType: utility === "water" ? "W" : "E",
+    View: "usage",
+  });
+  return `${NBU_GREEN_BUTTON_BASE}?${params.toString()}`;
+}
+
+export function jsFetchSnippet(url: string, withCredentials = false): string {
+  const escaped = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  if (withCredentials) {
+    return `fetch("${escaped}", { credentials: "include" }).then(async (r) => console.log(r.status, (await r.text()).slice(0, 300))).catch(console.error);`;
+  }
+  return `fetch("${escaped}").then(async (r) => console.log(r.status, (await r.text()).slice(0, 300))).catch(console.error);`;
 }
 
 function propertyLabel(
@@ -654,10 +704,10 @@ function missingDetail(label: string): string {
 
 function mergeMissingPeriods(
   items: Array<{ start: string; end: string; label: string }>,
-): UsageMissingPeriod[] {
+): Array<{ start: string; end: string; label: string }> {
   if (!items.length) return [];
 
-  const merged: UsageMissingPeriod[] = [];
+  const merged: Array<{ start: string; end: string; label: string }> = [];
   let current = { ...items[0] };
   let currentDetail = missingDetail(items[0].label);
 
@@ -678,26 +728,68 @@ function mergeMissingPeriods(
   return merged;
 }
 
+function attachNbuLinks(
+  period: { start: string; end: string },
+  objectId: string | null,
+  utility: Utility,
+): { nbu_url: string | null; nbu_fetch: string | null } {
+  if (!objectId) return { nbu_url: null, nbu_fetch: null };
+  const nbu_url = buildNbuExportUrl(period.start, period.end, objectId, utility);
+  return { nbu_url, nbu_fetch: jsFetchSnippet(nbu_url, true) };
+}
+
+function withNbuLinks(
+  periods: Array<{ start: string; end: string; label: string }>,
+  objectId: string | null,
+  utility: Utility,
+): UsageMissingPeriod[] {
+  return periods.map((period) => ({
+    ...period,
+    ...attachNbuLinks(period, objectId, utility),
+  }));
+}
+
 function buildUsageSources(
   filtered: StoredReading[],
   imports: ImportRecord[],
+  objectId: string | null,
+  utility: Utility,
 ): UsageSourceFile[] {
   const importMap = new Map(imports.map((item) => [item.id, item]));
   const counts = new Map<string, number>();
+  const dateRanges = new Map<string, { start: string; end: string }>();
+
   for (const reading of filtered) {
     counts.set(reading.import_id, (counts.get(reading.import_id) ?? 0) + 1);
+    const dateKey = centralLocalDateKey(reading.period_start);
+    const existing = dateRanges.get(reading.import_id);
+    if (!existing) {
+      dateRanges.set(reading.import_id, { start: dateKey, end: dateKey });
+      continue;
+    }
+    if (compareDateKeys(dateKey, existing.start) < 0) existing.start = dateKey;
+    if (compareDateKeys(dateKey, existing.end) > 0) existing.end = dateKey;
   }
 
   return [...counts.entries()]
     .map(([id, readings_in_view]) => {
       const record = importMap.get(id);
+      const file_url = record?.stored_filename ? `/api/imports/${id}/file` : null;
+      const file_view_url = record?.stored_filename ? `/api/imports/${id}/view` : null;
+      const file_fetch = file_view_url ? jsFetchSnippet(file_view_url) : null;
+      const range = dateRanges.get(id);
+      const nbuLinks = range ? attachNbuLinks(range, objectId, utility) : { nbu_url: null, nbu_fetch: null };
+
       return {
         id,
         filename: record?.filename ?? "Unknown file",
         format: record?.format ?? "greenbutton_xml",
         imported_at: record?.imported_at ?? "",
         readings_in_view,
-        file_url: record?.stored_filename ? `/api/imports/${id}/file` : null,
+        file_url,
+        file_view_url,
+        file_fetch,
+        ...nbuLinks,
       };
     })
     .sort(
@@ -713,6 +805,7 @@ function buildUsageMissing(
   granularity: Granularity,
   days: number | null,
   date: string | null,
+  objectId: string | null,
 ): UsageMissingPeriod[] {
   const effectiveGranularity = date ? "hour" : granularity;
   const filtered = filterReadings(
@@ -750,7 +843,7 @@ function buildUsageMissing(
       ];
     });
 
-    return mergeMissingPeriods(items);
+    return withNbuLinks(mergeMissingPeriods(items), objectId, utility);
   }
 
   if (effectiveGranularity === "day") {
@@ -762,21 +855,25 @@ function buildUsageMissing(
         end: dateKey,
         label: `${formatDateLabel(dateKey)} (no daily data)`,
       }));
-    return mergeMissingPeriods(items);
+    return withNbuLinks(mergeMissingPeriods(items), objectId, utility);
   }
 
   const billing = [...filtered].sort((a, b) => a.period_start.localeCompare(b.period_start));
   if (!billing.length) {
-    return [
-      {
-        start: range.start,
-        end: range.end,
-        label: `${formatRangeLabel(range.start, range.end)} (no billing periods)`,
-      },
-    ];
+    return withNbuLinks(
+      [
+        {
+          start: range.start,
+          end: range.end,
+          label: `${formatRangeLabel(range.start, range.end)} (no billing periods)`,
+        },
+      ],
+      objectId,
+      utility,
+    );
   }
 
-  const missing: UsageMissingPeriod[] = [];
+  const missing: Array<{ start: string; end: string; label: string }> = [];
   for (let index = 1; index < billing.length; index++) {
     const previous = billing[index - 1];
     const current = billing[index];
@@ -794,7 +891,7 @@ function buildUsageMissing(
       });
     }
   }
-  return missing;
+  return withNbuLinks(missing, objectId, utility);
 }
 
 function filterReadings(
@@ -824,6 +921,8 @@ export async function getUsageSummary(
   days: number | null,
   date: string | null = null,
 ): Promise<UsageSummary> {
+  const settings = await loadSettings();
+  const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
   const readings = await loadReadings();
   const imports = await loadImports();
   const filtered = filterReadings(readings, propertyId, utility, granularity, days, date);
@@ -856,8 +955,8 @@ export async function getUsageSummary(
     average: points.length ? Math.round((total / points.length) * 1000) / 1000 : 0,
     peak,
     points,
-    sources: buildUsageSources(filtered, propertyImports),
-    missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date),
+    sources: buildUsageSources(filtered, propertyImports, objectId, utility),
+    missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
     last_import_at: utilityImports[0]?.imported_at ?? null,
   };
 }
