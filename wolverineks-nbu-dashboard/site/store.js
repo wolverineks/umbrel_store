@@ -26,6 +26,11 @@ exports.getStoredImportFile = getStoredImportFile;
 exports.getUsageSummary = getUsageSummary;
 exports.getOverview = getOverview;
 exports.resolvePropertyId = resolvePropertyId;
+exports.parseNbuUrlRange = parseNbuUrlRange;
+exports.buildBulkProbeScript = buildBulkProbeScript;
+exports.recordFetchProbes = recordFetchProbes;
+exports.recordSyncFetchErrors = recordSyncFetchErrors;
+exports.getMissingSources = getMissingSources;
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
@@ -35,6 +40,7 @@ const UPLOADS_ROOT = node_path_1.default.join(DATA_ROOT, "uploads");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = node_path_1.default.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
+const SOURCE_ERRORS_PATH = node_path_1.default.join(DATA_ROOT, "source-errors.json");
 exports.NBU_GREEN_BUTTON_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportGreenButtonData.xml";
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
@@ -180,6 +186,7 @@ function resetStoreCaches() {
     settingsCache = null;
     importsCache = null;
     readingsCache = null;
+    sourceErrorsCache = null;
 }
 function buildPropertyId(accountId, usagePoint) {
     if (accountId && usagePoint)
@@ -744,4 +751,218 @@ function resolvePropertyId(requested, settings, properties) {
     if (settings.selected_property_id)
         return settings.selected_property_id;
     return properties[0]?.id ?? null;
+}
+let sourceErrorsCache = null;
+function propertyIdFromObjectId(settings, objectId) {
+    for (const [propertyId, stored] of Object.entries(settings.property_object_ids)) {
+        if (stored === objectId)
+            return propertyId;
+    }
+    return null;
+}
+function parseNbuUrlRange(url) {
+    try {
+        const parsed = new URL(url);
+        const startRaw = parsed.searchParams.get("StartDateTime");
+        const endRaw = parsed.searchParams.get("EndDateTime");
+        if (!startRaw || !endRaw)
+            return null;
+        const start = startRaw.slice(0, 10);
+        const endExclusive = endRaw.slice(0, 10);
+        return { start, end: addDaysToDateKey(endExclusive, -1) };
+    }
+    catch {
+        return null;
+    }
+}
+async function loadSourceErrors() {
+    if (sourceErrorsCache)
+        return sourceErrorsCache;
+    await ensureDataRoot();
+    if (!(0, node_fs_1.existsSync)(SOURCE_ERRORS_PATH)) {
+        sourceErrorsCache = [];
+        return sourceErrorsCache;
+    }
+    const parsed = JSON.parse(await (0, promises_1.readFile)(SOURCE_ERRORS_PATH, "utf8"));
+    sourceErrorsCache = parsed.errors ?? [];
+    return sourceErrorsCache;
+}
+async function saveSourceErrors(errors) {
+    sourceErrorsCache = errors;
+    await (0, promises_1.writeFile)(SOURCE_ERRORS_PATH, JSON.stringify({ errors }, null, 2));
+}
+function errorKey(propertyId, utility, start, end) {
+    return [propertyId ?? "", utility, start, end].join("|");
+}
+function upsertSourceError(errors, entry) {
+    const key = errorKey(entry.property_id, entry.utility, entry.start, entry.end);
+    const filtered = errors.filter((item) => errorKey(item.property_id, item.utility, item.start, item.end) !== key);
+    return [{ ...entry, recorded_at: new Date().toISOString() }, ...filtered].slice(0, 20_000);
+}
+function findSourceFetchError(errors, propertyId, utility, start, end) {
+    const key = errorKey(propertyId, utility, start, end);
+    return (errors.find((item) => errorKey(item.property_id, item.utility, item.start, item.end) === key) ??
+        null);
+}
+function formatMissingGapLabel(gap, hoursPresent) {
+    const range = gap.start === gap.end ? formatDateLabel(gap.start) : formatRangeLabel(gap.start, gap.end);
+    const kind = gap.status === "missing" ? "Missing" : "Partial";
+    if (gap.days === 1 && gap.status === "partial" && hoursPresent !== null) {
+        return `${kind}: ${range} (${hoursPresent}/24 hours)`;
+    }
+    return `${kind}: ${range} (${gap.days} day${gap.days === 1 ? "" : "s"})`;
+}
+function buildBulkProbeScript(baseUrl, token, propertyId, utility, items) {
+    const trimmedBase = baseUrl.replace(/\/$/, "");
+    const payload = JSON.stringify({
+        property_id: propertyId,
+        utility,
+        probes: items.map((item) => ({
+            start: item.start,
+            end: item.end,
+            nbu_url: item.nbu_url,
+        })),
+    });
+    return `(async () => {
+  const baseUrl = ${JSON.stringify(trimmedBase)};
+  const token = ${JSON.stringify(token)};
+  const batch = ${payload};
+  const results = [];
+  for (const probe of batch.probes) {
+    try {
+      const response = await fetch(probe.nbu_url, { credentials: "include", cache: "no-store" });
+      const text = await response.text();
+      const preview = text.slice(0, 300);
+      const valid = /xmlns="http:\\/\\/naesb.org\\/espi"/i.test(text) || /^Date\\/Time,/i.test(text.trim());
+      results.push({
+        start: probe.start,
+        end: probe.end,
+        nbu_url: probe.nbu_url,
+        status: response.status,
+        error: response.ok && valid ? null : (response.ok ? "empty or unsupported response" : "HTTP " + response.status),
+        response_preview: preview,
+      });
+    } catch (error) {
+      results.push({
+        start: probe.start,
+        end: probe.end,
+        nbu_url: probe.nbu_url,
+        status: null,
+        error: error?.message || String(error),
+        response_preview: null,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  const report = await fetch(baseUrl + "/api/missing-sources/probes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Ingest-Token": token },
+    body: JSON.stringify({ property_id: batch.property_id, utility: batch.utility, probes: results }),
+  });
+  const payload = await report.json().catch(() => ({}));
+  console.log("Probe report:", report.status, payload);
+  console.table(results.map((item) => ({ start: item.start, end: item.end, status: item.status, error: item.error })));
+})();`;
+}
+async function recordFetchProbes(propertyId, utility, probes) {
+    let errors = await loadSourceErrors();
+    let recorded = 0;
+    for (const probe of probes) {
+        if (!probe.start || !probe.end)
+            continue;
+        const message = probe.error?.trim();
+        if (!message)
+            continue;
+        errors = upsertSourceError(errors, {
+            property_id: propertyId,
+            utility,
+            start: probe.start,
+            end: probe.end,
+            nbu_url: probe.nbu_url ?? null,
+            status: probe.status ?? null,
+            error: message,
+            response_preview: probe.response_preview ?? null,
+            source: "probe",
+        });
+        recorded += 1;
+    }
+    if (recorded)
+        await saveSourceErrors(errors);
+    return recorded;
+}
+async function recordSyncFetchErrors(input) {
+    const settings = await loadSettings();
+    const utility = input.utility === "water" ? "water" : "electric";
+    const propertyId = input.property_id ??
+        (input.object_id ? propertyIdFromObjectId(settings, input.object_id) : null) ??
+        settings.selected_property_id;
+    let errors = await loadSourceErrors();
+    let recorded = 0;
+    for (const item of input.errors) {
+        const message = item.error?.trim();
+        if (!message)
+            continue;
+        const range = item.url ? parseNbuUrlRange(item.url) : null;
+        if (!range)
+            continue;
+        errors = upsertSourceError(errors, {
+            property_id: propertyId,
+            utility,
+            start: range.start,
+            end: range.end,
+            nbu_url: item.url ?? null,
+            status: item.status ?? null,
+            error: message,
+            response_preview: null,
+            source: "sync",
+        });
+        recorded += 1;
+    }
+    if (recorded)
+        await saveSourceErrors(errors);
+    return recorded;
+}
+async function getMissingSources(propertyId, utility, baseUrl) {
+    const settings = await loadSettings();
+    const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
+    const coverage = await getCoverageSummary(propertyId, utility);
+    const storedErrors = await loadSourceErrors();
+    const daysByDate = new Map(coverage.days.map((day) => [day.date, day]));
+    const probeLimit = 500;
+    const items = coverage.gaps.map((gap) => {
+        const hoursPresent = gap.days === 1 ? (daysByDate.get(gap.start)?.hours_present ?? null) : null;
+        const nbuLinks = attachNbuLinks({ start: gap.start, end: gap.end }, objectId, utility);
+        const matched = findSourceFetchError(storedErrors, propertyId, utility, gap.start, gap.end);
+        return {
+            start: gap.start,
+            end: gap.end,
+            days: gap.days,
+            status: gap.status,
+            label: formatMissingGapLabel(gap, hoursPresent),
+            hours_present: hoursPresent,
+            ...nbuLinks,
+            fetch_status: matched?.status ?? null,
+            fetch_error: matched?.error ?? null,
+            fetch_preview: matched?.response_preview ?? null,
+            fetch_probed_at: matched?.recorded_at ?? null,
+            fetch_source: matched?.source ?? null,
+        };
+    });
+    const probeCandidates = items
+        .filter((item) => item.nbu_url)
+        .slice(0, probeLimit)
+        .map((item) => ({ start: item.start, end: item.end, nbu_url: item.nbu_url }));
+    return {
+        property_id: propertyId,
+        utility,
+        object_id: objectId,
+        range_start: coverage.range_start,
+        range_end: coverage.range_end,
+        total: items.length,
+        with_errors: items.filter((item) => item.fetch_error).length,
+        items,
+        probe_script: objectId && probeCandidates.length
+            ? buildBulkProbeScript(baseUrl, settings.ingest_token, propertyId, utility, probeCandidates)
+            : null,
+    };
 }

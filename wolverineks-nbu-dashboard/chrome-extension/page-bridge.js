@@ -309,9 +309,13 @@
   async function fetchJob(job) {
     const urls = job.urls || [job.url];
     let lastError = "empty or unsupported response";
+    let lastStatus = null;
+    let lastUrl = urls[0] || null;
     for (const url of urls) {
+      lastUrl = url;
       try {
         const response = await fetch(url, { credentials: "include", cache: "no-store" });
+        lastStatus = response.status;
         if (!response.ok) {
           lastError = `HTTP ${response.status}`;
           continue;
@@ -320,6 +324,7 @@
         const text = await response.text();
         const content = normalizeContent(text, contentType);
         if (!content) {
+          lastError = "empty or unsupported response";
           continue;
         }
         const filename = filenameFromDisposition(
@@ -331,7 +336,10 @@
         lastError = error.message || String(error);
       }
     }
-    throw new Error(lastError);
+    const failure = new Error(lastError);
+    failure.status = lastStatus;
+    failure.url = lastUrl;
+    throw failure;
   }
 
   async function runSync(options = {}) {
@@ -349,6 +357,7 @@
     let uploaded = 0;
     let skipped = 0;
     const errors = [];
+    const utilType = getUtilType();
 
     for (let index = 0; index < jobs.length; index++) {
       const job = jobs[index];
@@ -364,13 +373,28 @@
         if (upload?.skipped) skipped += 1;
         else uploaded += 1;
       } catch (error) {
-        errors.push(`${job.label}: ${error.message || String(error)}`);
+        const message = error.message || String(error);
+        errors.push({
+          label: `${job.meterLabel}: ${job.label}`,
+          url: error.url || job.url || job.urls?.[0] || null,
+          error: message,
+          status: error.status ?? null,
+          objectId: job.objectId || null,
+        });
       }
 
       await sleep(DELAY_MS);
     }
 
-    post("SYNC_DONE", { uploaded, skipped, failed: errors.length, errors: errors.slice(0, 20) });
+    post("SYNC_DONE", {
+      uploaded,
+      skipped,
+      failed: errors.length,
+      errors: errors.map((item) => `${item.label}: ${item.error}`),
+      errorDetails: errors,
+      utility: utilType === "W" ? "water" : "electric",
+      objectId: jobs[0]?.objectId || null,
+    });
   }
 
   function requestUpload(filename, content) {

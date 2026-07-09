@@ -5,6 +5,7 @@ import { exportNbuData, getBackupStatus, importNbuData } from "./backup-restore"
 import { parseNbuExport, type Granularity, type Utility } from "./parsers";
 import {
   getCoverageSummary,
+  getMissingSources,
   getOverview,
   getStoredImportFile,
   getUsageSummary,
@@ -13,6 +14,8 @@ import {
   listProperties,
   loadSettings,
   parseDateParam,
+  recordFetchProbes,
+  recordSyncFetchErrors,
   resetStoreCaches,
   resolvePropertyId,
   rotateIngestToken,
@@ -21,7 +24,7 @@ import {
   setSelectedProperty,
 } from "./store";
 
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -529,6 +532,58 @@ function pageStyles(): string {
       color: var(--muted);
       margin: 0 0 0.75rem;
     }
+    .missing-sources-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+    .missing-sources-list {
+      max-height: 28rem;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    .missing-source-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 1fr) minmax(180px, 1.2fr);
+      gap: 0.75rem;
+      padding: 0.7rem 0.85rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.84rem;
+      align-items: start;
+    }
+    .missing-source-row:last-child { border-bottom: 0; }
+    .missing-source-row.has-error { background: #fef2f2; }
+    .fetch-error {
+      color: #b91c1c;
+      font-weight: 600;
+      word-break: break-word;
+    }
+    .fetch-ok {
+      color: var(--success);
+      font-weight: 600;
+    }
+    .fetch-unknown {
+      color: var(--muted);
+    }
+    .missing-source-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: 0.25rem;
+    }
+    .missing-source-actions button {
+      font-size: 0.72rem;
+      padding: 0.15rem 0.4rem;
+    }
+    @media (max-width: 860px) {
+      .missing-source-row {
+        grid-template-columns: 1fr;
+      }
+    }
     .empty {
       text-align: center;
       color: var(--muted);
@@ -610,6 +665,23 @@ function dashboardPage(): string {
       </div>
     </div>
 
+    <div class="card" style="margin-top:1rem" id="missing-sources-card">
+      <div class="missing-sources-header">
+        <div>
+          <h2 style="margin:0">Missing sources</h2>
+          <p class="muted" style="margin:0.35rem 0 0">All hourly gaps with NBU export URLs and fetch errors from extension syncs or the probe script (run in Customer Connect console).</p>
+        </div>
+        <div class="toolbar" style="margin:0">
+          <button id="copy-probe-script" class="secondary" hidden>Copy probe script</button>
+          <button id="refresh-missing-sources" class="secondary">Refresh</button>
+        </div>
+      </div>
+      <p class="muted" id="missing-sources-summary">Loading…</p>
+      <div id="missing-sources-content">
+        <p class="muted">Loading missing sources…</p>
+      </div>
+    </div>
+
     <div class="card" style="margin-top:1rem">
       <h2>Chrome extension</h2>
       <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
@@ -652,7 +724,7 @@ function dashboardPage(): string {
     </div>
   </div>
   <script>
-    const state = { overview: null, usage: null, imports: null, coverage: null };
+    const state = { overview: null, usage: null, imports: null, coverage: null, missingSources: null };
 
     function selectedPropertyId() {
       return document.getElementById("property").value || null;
@@ -963,7 +1035,9 @@ function dashboardPage(): string {
             }
             html += '</li>';
             return html;
-          }).join("") + (missing.length > 12 ? '<li class="muted">…and ' + (missing.length - 12) + ' more</li>' : "")
+          }).join("") + (missing.length > 12
+            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="#missing-sources-card">View all ' + missing.length + '</a></li>'
+            : "")
         : '<li class="none">No gaps in this view.</li>';
 
       el.innerHTML =
@@ -1167,6 +1241,96 @@ function dashboardPage(): string {
       renderCoverage();
     }
 
+    function renderMissingSources() {
+      const summaryEl = document.getElementById("missing-sources-summary");
+      const contentEl = document.getElementById("missing-sources-content");
+      const probeBtn = document.getElementById("copy-probe-script");
+      const data = state.missingSources;
+      if (!summaryEl || !contentEl) return;
+
+      if (!data?.items?.length) {
+        summaryEl.textContent = data?.object_id
+          ? "No missing hourly gaps in the current range."
+          : "No missing gaps yet, or set the NBU Object ID to generate export URLs.";
+        contentEl.innerHTML = '<div class="empty">No missing sources to list.</div>';
+        if (probeBtn) probeBtn.hidden = true;
+        return;
+      }
+
+      summaryEl.textContent =
+        data.total + " gap" + (data.total === 1 ? "" : "s") +
+        (data.with_errors ? " · " + data.with_errors + " with fetch errors" : "") +
+        (data.range_start && data.range_end ? " · " + fmtCoverageRange(data.range_start, data.range_end) : "");
+
+      if (probeBtn) {
+        probeBtn.hidden = !data.probe_script;
+        probeBtn.dataset.script = data.probe_script || "";
+      }
+
+      const rows = data.items.map((item, index) => {
+        const rowClass = "missing-source-row" + (item.fetch_error ? " has-error" : "");
+        let fetchHtml = '<span class="fetch-unknown">Not checked</span>';
+        if (item.fetch_error) {
+          fetchHtml = '<span class="fetch-error">' + escapeHtml(item.fetch_error) + '</span>';
+          if (item.fetch_status !== null && item.fetch_status !== undefined) {
+            fetchHtml += '<div class="muted">HTTP ' + item.fetch_status + '</div>';
+          }
+          if (item.fetch_preview) {
+            fetchHtml += '<code class="source-snippet">' + escapeHtml(item.fetch_preview) + '</code>';
+          }
+          if (item.fetch_probed_at) {
+            fetchHtml += '<div class="muted">' + escapeHtml(item.fetch_source || "probe") +
+              " · " + fmtDate(item.fetch_probed_at) + '</div>';
+          }
+        }
+
+        let linksHtml = "";
+        if (item.nbu_url) {
+          linksHtml += '<div class="missing-source-actions">';
+          linksHtml += '<a href="' + escapeHtml(item.nbu_url) + '" target="_blank" rel="noopener">NBU URL</a>';
+          if (item.nbu_fetch) {
+            linksHtml += '<button type="button" class="secondary copy-snippet" data-kind="missing-list-nbu" data-index="' + index + '">Copy fetch</button>';
+          }
+          if (item.start === item.end) {
+            linksHtml += '<button type="button" class="secondary" data-date="' + item.start + '">View day</button>';
+          }
+          linksHtml += '</div>';
+          if (item.nbu_fetch) {
+            linksHtml += '<code class="source-snippet">' + escapeHtml(item.nbu_fetch) + '</code>';
+          }
+        } else {
+          linksHtml = '<span class="muted">Set Object ID for NBU URL</span>';
+        }
+
+        return '<div class="' + rowClass + '">' +
+          '<div><strong>' + escapeHtml(item.label) + '</strong><div class="muted">' + escapeHtml(item.start) +
+          (item.end !== item.start ? " – " + escapeHtml(item.end) : "") + '</div></div>' +
+          '<div>' + fetchHtml + '</div>' +
+          '<div>' + linksHtml + '</div>' +
+        '</div>';
+      }).join("");
+
+      contentEl.innerHTML = '<div class="missing-sources-list">' + rows + '</div>';
+
+      contentEl.querySelectorAll(".copy-snippet").forEach((button) => {
+        const index = Number(button.dataset.index);
+        const text = data.items[index]?.nbu_fetch ?? null;
+        button.addEventListener("click", () => copySnippet(button, text));
+      });
+      contentEl.querySelectorAll("button[data-date]").forEach((button) => {
+        button.addEventListener("click", () => openCoverageDay(button.dataset.date));
+      });
+    }
+
+    async function loadMissingSources() {
+      const utility = document.getElementById("utility").value;
+      const params = propertyParams();
+      params.set("utility", utility);
+      const res = await fetch("/api/missing-sources?" + params.toString());
+      state.missingSources = await res.json();
+      renderMissingSources();
+    }
+
     async function loadOverview() {
       const params = propertyParams();
       const res = await fetch("/api/overview?" + params.toString());
@@ -1232,6 +1396,7 @@ function dashboardPage(): string {
       await loadImports();
       await loadUsage();
       await loadCoverage();
+      await loadMissingSources();
     });
     document.getElementById("save-label").addEventListener("click", async () => {
       const propertyId = selectedPropertyId();
@@ -1263,11 +1428,13 @@ function dashboardPage(): string {
         const objectIdHint = document.getElementById("object-id-hint");
         if (objectIdHint) objectIdHint.hidden = Boolean(objectId.trim());
         await loadUsage();
+        await loadMissingSources();
       }
     });
     document.getElementById("utility").addEventListener("change", async () => {
       await loadUsage();
       await loadCoverage();
+      await loadMissingSources();
     });
     document.getElementById("granularity").addEventListener("change", loadUsage);
     document.getElementById("range").addEventListener("change", loadUsage);
@@ -1284,6 +1451,14 @@ function dashboardPage(): string {
       await loadImports();
       await loadUsage();
       await loadCoverage();
+      await loadMissingSources();
+    });
+    document.getElementById("refresh-missing-sources").addEventListener("click", loadMissingSources);
+    document.getElementById("copy-probe-script").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const script = button?.dataset?.script;
+      if (!script) return;
+      await copySnippet(button, script);
     });
     document.getElementById("copy-token").addEventListener("click", async () => {
       const token = state.overview?.settings?.ingest_token;
@@ -1405,6 +1580,7 @@ function dashboardPage(): string {
         await loadImports();
         await loadUsage();
         await loadCoverage();
+        await loadMissingSources();
         await refreshBackupStatus("Restore completed.");
       } catch (error) {
         const statusEl = document.getElementById("backup-status");
@@ -1413,7 +1589,12 @@ function dashboardPage(): string {
       }
     });
 
-    loadOverview().then(loadImports).then(loadUsage).then(loadCoverage).then(() => refreshBackupStatus());
+    loadOverview()
+      .then(loadImports)
+      .then(loadUsage)
+      .then(loadCoverage)
+      .then(loadMissingSources)
+      .then(() => refreshBackupStatus());
   </script>
 </body>
 </html>`;
@@ -1556,6 +1737,72 @@ const server = createServer(async (req, res) => {
       );
       const utility = parseUtility(url.searchParams.get("utility"));
       sendJson(res, 200, await getCoverageSummary(propertyId, utility));
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/missing-sources") {
+      const settings = await loadSettings();
+      const properties = await listProperties();
+      const propertyId = resolvePropertyId(
+        url.searchParams.get("property"),
+        settings,
+        properties,
+      );
+      const utility = parseUtility(url.searchParams.get("utility"));
+      const baseUrl = `http://${req.headers.host ?? "localhost"}`;
+      sendJson(res, 200, await getMissingSources(propertyId, utility, baseUrl));
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/missing-sources/probes") {
+      if (!(await authorizeIngest(req))) {
+        sendJson(res, 401, { error: "invalid ingest token" });
+        return;
+      }
+      const body = JSON.parse((await readBody(req)).toString("utf8")) as {
+        property_id?: string | null;
+        utility?: Utility;
+        probes?: Array<{
+          start: string;
+          end: string;
+          nbu_url?: string | null;
+          status?: number | null;
+          error?: string | null;
+          response_preview?: string | null;
+        }>;
+      };
+      const recorded = await recordFetchProbes(
+        body.property_id ?? null,
+        parseUtility(body.utility ?? null),
+        body.probes ?? [],
+      );
+      sendJson(res, 200, { ok: true, recorded });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/sync-errors") {
+      if (!(await authorizeIngest(req))) {
+        sendJson(res, 401, { error: "invalid ingest token" });
+        return;
+      }
+      const body = JSON.parse((await readBody(req)).toString("utf8")) as {
+        utility?: Utility;
+        object_id?: string;
+        property_id?: string | null;
+        errors?: Array<{
+          label?: string;
+          url?: string;
+          error?: string;
+          status?: number | null;
+        }>;
+      };
+      const recorded = await recordSyncFetchErrors({
+        utility: body.utility,
+        object_id: body.object_id,
+        property_id: body.property_id ?? null,
+        errors: body.errors ?? [],
+      });
+      sendJson(res, 200, { ok: true, recorded });
       return;
     }
 

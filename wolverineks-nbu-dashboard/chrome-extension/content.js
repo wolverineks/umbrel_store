@@ -235,6 +235,14 @@
       setProgress(1);
       const msg = `Done. Uploaded ${event.data.uploaded}, skipped ${event.data.skipped}, failed ${event.data.failed}.`;
       setStatus(msg, event.data.failed ? "err" : "ok");
+      if (event.data.errorDetails?.length) {
+        void chrome.runtime.sendMessage({
+          type: "report-sync-errors",
+          utility: event.data.utility,
+          object_id: event.data.objectId,
+          errors: event.data.errorDetails,
+        });
+      }
       return;
     }
 
