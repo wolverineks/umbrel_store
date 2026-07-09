@@ -20,7 +20,7 @@ import {
   setSelectedProperty,
 } from "./store";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -463,6 +463,40 @@ function pageStyles(): string {
     }
     .pill.electric { background: #fef3c7; color: #b45309; }
     .pill.water { background: #e0f2fe; color: #0369a1; }
+    .chart-sources {
+      margin-top: 0.9rem;
+      padding-top: 0.9rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.88rem;
+    }
+    .chart-sources h3 {
+      margin: 0 0 0.45rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .chart-sources-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+    .chart-sources ul {
+      margin: 0;
+      padding-left: 1.1rem;
+    }
+    .chart-sources li {
+      margin: 0.3rem 0;
+      word-break: break-word;
+    }
+    .chart-sources a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .chart-sources a:hover { text-decoration: underline; }
+    .chart-sources .none { color: var(--muted); list-style: none; padding-left: 0; }
     .empty {
       text-align: center;
       color: var(--muted);
@@ -528,6 +562,7 @@ function dashboardPage(): string {
         <div class="chart-tooltip" id="chart-tooltip" hidden></div>
       </div>
       <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
+      <div class="chart-sources" id="chart-sources" hidden></div>
     </div>
 
     <div class="card" style="margin-top:1rem">
@@ -796,6 +831,50 @@ function dashboardPage(): string {
       }).join("");
     }
 
+    function renderChartSources() {
+      const el = document.getElementById("chart-sources");
+      const usage = state.usage;
+      if (!el || !usage) return;
+
+      const sources = usage.sources ?? [];
+      const missing = usage.missing ?? [];
+
+      if (!sources.length && !missing.length) {
+        el.hidden = true;
+        el.innerHTML = "";
+        return;
+      }
+
+      const sourceItems = sources.length
+        ? sources.map((source) => {
+            const meta = source.readings_in_view + " readings · " + source.format;
+            const name = source.file_url
+              ? '<a href="' + source.file_url + '" target="_blank" rel="noopener">' + source.filename + '</a>'
+              : source.filename;
+            return '<li>' + name + '<div class="muted">' + meta + '</div></li>';
+          }).join("")
+        : '<li class="none">No source files for this view.</li>';
+
+      const missingItems = missing.length
+        ? missing.slice(0, 12).map((gap) => {
+            const clickable = usage.granularity === "hour" && gap.start === gap.end;
+            if (!clickable) return '<li>' + gap.label + '</li>';
+            return '<li><button type="button" data-date="' + gap.start + '" style="width:auto;height:auto;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;text-decoration:underline;color:var(--accent)">' + gap.label + '</button></li>';
+          }).join("") + (missing.length > 12 ? '<li class="muted">…and ' + (missing.length - 12) + ' more</li>' : "")
+        : '<li class="none">No gaps in this view.</li>';
+
+      el.innerHTML =
+        '<div class="chart-sources-grid">' +
+          '<div><h3>Source files (' + sources.length + ')</h3><ul>' + sourceItems + '</ul></div>' +
+          '<div><h3>Missing (' + missing.length + ')</h3><ul>' + missingItems + '</ul></div>' +
+        '</div>';
+      el.hidden = false;
+
+      el.querySelectorAll("button[data-date]").forEach((button) => {
+        button.addEventListener("click", () => openCoverageDay(button.dataset.date));
+      });
+    }
+
     function renderChart() {
       const usage = state.usage;
       const svg = document.getElementById("chart");
@@ -805,6 +884,7 @@ function dashboardPage(): string {
         svg.innerHTML = "";
         if (tooltip) tooltip.hidden = true;
         empty.hidden = false;
+        renderChartSources();
         return;
       }
       empty.hidden = true;
@@ -1009,6 +1089,7 @@ function dashboardPage(): string {
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
       renderChart();
+      renderChartSources();
     }
 
     async function savePropertySelection(propertyId) {

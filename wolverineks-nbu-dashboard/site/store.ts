@@ -56,6 +56,21 @@ export type UsagePoint = {
   value: number;
 };
 
+export type UsageSourceFile = {
+  id: string;
+  filename: string;
+  format: ImportRecord["format"];
+  imported_at: string;
+  readings_in_view: number;
+  file_url: string | null;
+};
+
+export type UsageMissingPeriod = {
+  start: string;
+  end: string;
+  label: string;
+};
+
 export type UsageSummary = {
   property_id: string | null;
   utility: Utility;
@@ -66,6 +81,8 @@ export type UsageSummary = {
   average: number;
   peak: UsagePoint | null;
   points: UsagePoint[];
+  sources: UsageSourceFile[];
+  missing: UsageMissingPeriod[];
   last_import_at: string | null;
 };
 
@@ -580,6 +597,206 @@ export async function getStoredImportFile(importId: string): Promise<StoredImpor
   };
 }
 
+function formatDateLabel(dateKey: string): string {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: CENTRAL_TZ,
+  });
+}
+
+function formatRangeLabel(start: string, end: string): string {
+  if (start === end) return formatDateLabel(start);
+  return `${formatDateLabel(start)} – ${formatDateLabel(end)}`;
+}
+
+function viewRangeKeys(
+  days: number | null,
+  date: string | null,
+  filtered: StoredReading[],
+  granularity: Granularity,
+): { start: string; end: string } | null {
+  if (date) return { start: date, end: date };
+
+  const todayKey = centralTodayKey();
+  const yesterdayKey = addDaysToDateKey(todayKey, -1);
+  if (days) {
+    return { start: addDaysToDateKey(todayKey, -days), end: yesterdayKey };
+  }
+
+  if (!filtered.length) return null;
+  if (granularity === "billing_period") {
+    const starts = filtered.map((reading) => reading.period_start.slice(0, 10)).sort();
+    return { start: starts[0], end: starts[starts.length - 1] };
+  }
+
+  const dates = filtered.map((reading) => centralLocalDateKey(reading.period_start)).sort();
+  return { start: dates[0], end: dates[dates.length - 1] };
+}
+
+function iterateDateKeys(start: string, end: string): string[] {
+  const keys: string[] = [];
+  let cursor = start;
+  while (compareDateKeys(cursor, end) <= 0) {
+    keys.push(cursor);
+    cursor = addDaysToDateKey(cursor, 1);
+  }
+  return keys;
+}
+
+function missingDetail(label: string): string {
+  const index = label.indexOf("(");
+  return index >= 0 ? label.slice(index) : "";
+}
+
+function mergeMissingPeriods(
+  items: Array<{ start: string; end: string; label: string }>,
+): UsageMissingPeriod[] {
+  if (!items.length) return [];
+
+  const merged: UsageMissingPeriod[] = [];
+  let current = { ...items[0] };
+  let currentDetail = missingDetail(items[0].label);
+
+  for (let index = 1; index < items.length; index++) {
+    const item = items[index];
+    const detail = missingDetail(item.label);
+    if (addDaysToDateKey(current.end, 1) === item.start && detail === currentDetail) {
+      current.end = item.end;
+      current.label = `${formatRangeLabel(current.start, current.end)} ${detail}`.trim();
+      continue;
+    }
+    merged.push(current);
+    current = { ...item };
+    currentDetail = detail;
+  }
+
+  merged.push(current);
+  return merged;
+}
+
+function buildUsageSources(
+  filtered: StoredReading[],
+  imports: ImportRecord[],
+): UsageSourceFile[] {
+  const importMap = new Map(imports.map((item) => [item.id, item]));
+  const counts = new Map<string, number>();
+  for (const reading of filtered) {
+    counts.set(reading.import_id, (counts.get(reading.import_id) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .map(([id, readings_in_view]) => {
+      const record = importMap.get(id);
+      return {
+        id,
+        filename: record?.filename ?? "Unknown file",
+        format: record?.format ?? "greenbutton_xml",
+        imported_at: record?.imported_at ?? "",
+        readings_in_view,
+        file_url: record?.stored_filename ? `/api/imports/${id}/file` : null,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.readings_in_view - a.readings_in_view || a.filename.localeCompare(b.filename),
+    );
+}
+
+function buildUsageMissing(
+  readings: StoredReading[],
+  propertyId: string | null,
+  utility: Utility,
+  granularity: Granularity,
+  days: number | null,
+  date: string | null,
+): UsageMissingPeriod[] {
+  const effectiveGranularity = date ? "hour" : granularity;
+  const filtered = filterReadings(
+    readings,
+    propertyId,
+    utility,
+    effectiveGranularity,
+    days,
+    date,
+  );
+  const range = viewRangeKeys(days, date, filtered, effectiveGranularity);
+  if (!range) return [];
+
+  if (effectiveGranularity === "hour") {
+    const hourReadings = filterReadings(readings, propertyId, utility, "hour", days, date);
+    const hoursByDate = new Map<string, number>();
+    for (const reading of hourReadings) {
+      const dateKey = centralLocalDateKey(reading.period_start);
+      hoursByDate.set(dateKey, (hoursByDate.get(dateKey) ?? 0) + 1);
+    }
+
+    const items = iterateDateKeys(range.start, range.end).flatMap((dateKey) => {
+      const hoursPresent = hoursByDate.get(dateKey) ?? 0;
+      if (hoursPresent >= 24) return [];
+      const rangeLabel = formatDateLabel(dateKey);
+      if (hoursPresent === 0) {
+        return [{ start: dateKey, end: dateKey, label: `${rangeLabel} (no hourly data)` }];
+      }
+      return [
+        {
+          start: dateKey,
+          end: dateKey,
+          label: `${rangeLabel} (${hoursPresent}/24 hours)`,
+        },
+      ];
+    });
+
+    return mergeMissingPeriods(items);
+  }
+
+  if (effectiveGranularity === "day") {
+    const dayDates = new Set(filtered.map((reading) => centralLocalDateKey(reading.period_start)));
+    const items = iterateDateKeys(range.start, range.end)
+      .filter((dateKey) => !dayDates.has(dateKey))
+      .map((dateKey) => ({
+        start: dateKey,
+        end: dateKey,
+        label: `${formatDateLabel(dateKey)} (no daily data)`,
+      }));
+    return mergeMissingPeriods(items);
+  }
+
+  const billing = [...filtered].sort((a, b) => a.period_start.localeCompare(b.period_start));
+  if (!billing.length) {
+    return [
+      {
+        start: range.start,
+        end: range.end,
+        label: `${formatRangeLabel(range.start, range.end)} (no billing periods)`,
+      },
+    ];
+  }
+
+  const missing: UsageMissingPeriod[] = [];
+  for (let index = 1; index < billing.length; index++) {
+    const previous = billing[index - 1];
+    const current = billing[index];
+    const previousEnd = previous.period_end ?? previous.period_start;
+    const gapDays = Math.round(
+      (new Date(current.period_start).getTime() - new Date(previousEnd).getTime()) / 86_400_000,
+    );
+    if (gapDays > 45) {
+      const gapStart = centralLocalDateKey(previousEnd);
+      const gapEnd = centralLocalDateKey(current.period_start);
+      missing.push({
+        start: gapStart,
+        end: gapEnd,
+        label: `${formatRangeLabel(gapStart, gapEnd)} (gap between billing periods)`,
+      });
+    }
+  }
+  return missing;
+}
+
 function filterReadings(
   readings: StoredReading[],
   propertyId: string | null,
@@ -625,6 +842,10 @@ export async function getUsageSummary(
       matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility,
   );
 
+  const propertyImports = imports.filter((item) =>
+    matchesProperty(propertyId, item.account_id, item.usage_point),
+  );
+
   return {
     property_id: propertyId,
     utility,
@@ -635,6 +856,8 @@ export async function getUsageSummary(
     average: points.length ? Math.round((total / points.length) * 1000) / 1000 : 0,
     peak,
     points,
+    sources: buildUsageSources(filtered, propertyImports),
+    missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date),
     last_import_at: utilityImports[0]?.imported_at ?? null,
   };
 }
