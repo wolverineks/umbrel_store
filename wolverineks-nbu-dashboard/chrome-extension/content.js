@@ -117,11 +117,13 @@
       <div class="nbu-body">
         <div class="nbu-progress"><span id="nbu-progress-bar"></span></div>
         <div class="nbu-status" id="nbu-sync-status">Ready to sync this page to Umbrel.</div>
-        <button class="nbu-primary" id="nbu-sync-recent" type="button">Sync last 30 days</button>
+        <button class="nbu-primary" id="nbu-sync-view" type="button">Sync current view</button>
+        <button class="nbu-secondary" id="nbu-sync-recent" type="button">Sync last 30 days</button>
         <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
         <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
-        <div class="nbu-mini">Use recent sync for updates. Full history is mainly for the first backfill.</div>
+        <div class="nbu-mini" id="nbu-pending-view">Queue a day on Umbrel, then sync it here.</div>
+        <div class="nbu-mini">Sync current view uses the queued Umbrel day/range, or the date shown on this NBU chart.</div>
         <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
     `;
@@ -131,6 +133,23 @@
       ? "History"
       : "Consumption";
     panel.querySelector("#nbu-page-kind").textContent = pageKind;
+
+    refreshPendingViewLabel();
+
+    panel.querySelector("#nbu-sync-view").addEventListener("click", () => {
+      setStatus("Starting current view sync…");
+      setProgress(0);
+      void chrome.storage.local.get(["pendingSyncView"]).then(({ pendingSyncView }) => {
+        const options = {};
+        if (pendingSyncView?.start && pendingSyncView?.end) {
+          options.viewStart = pendingSyncView.start;
+          options.viewEnd = pendingSyncView.end;
+        } else {
+          options.detectPortalView = true;
+        }
+        window.postMessage({ source: "nbu-umbrel-content", type: "START_SYNC", options }, "*");
+      });
+    });
 
     panel.querySelector("#nbu-sync-recent").addEventListener("click", () => {
       setStatus("Starting recent sync…");
@@ -159,6 +178,22 @@
     });
 
     return panel;
+  }
+
+  function refreshPendingViewLabel() {
+    const el = document.getElementById("nbu-pending-view");
+    if (!el) return;
+    void chrome.storage.local.get(["pendingSyncView"]).then(({ pendingSyncView }) => {
+      if (!pendingSyncView?.start || !pendingSyncView?.end) {
+        el.textContent = "No Umbrel view queued. Pick a day there → Queue for extension.";
+        return;
+      }
+      const range =
+        pendingSyncView.start === pendingSyncView.end
+          ? pendingSyncView.start
+          : `${pendingSyncView.start}–${pendingSyncView.end}`;
+      el.textContent = `Queued from Umbrel: ${range}`;
+    });
   }
 
   function setStatus(text, kind = "") {
@@ -241,7 +276,11 @@
     }
 
     if (event.data.type === "SYNC_START") {
-      setStatus(`Syncing ${event.data.total} exports…`);
+      const viewHint =
+        event.data.viewStart && event.data.viewEnd
+          ? ` (${event.data.viewStart}${event.data.viewEnd !== event.data.viewStart ? `–${event.data.viewEnd}` : ""})`
+          : "";
+      setStatus(`Syncing ${event.data.total} export${event.data.total === 1 ? "" : "s"}${viewHint}…`);
       setProgress(0);
       return;
     }
@@ -267,6 +306,7 @@
       setProgress(1);
       const msg = `Done. Uploaded ${event.data.uploaded}, skipped ${event.data.skipped}, failed ${event.data.failed}.`;
       setStatus(msg, event.data.failed ? "err" : "ok");
+      refreshPendingViewLabel();
       if (event.data.errorDetails?.length) {
         void chrome.runtime.sendMessage({
           type: "report-sync-errors",
@@ -300,6 +340,7 @@
   function boot() {
     injectPageBridge();
     ensurePanel();
+    refreshPendingViewLabel();
   }
 
   if (document.readyState === "loading") {

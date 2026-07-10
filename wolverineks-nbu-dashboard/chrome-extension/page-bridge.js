@@ -117,6 +117,91 @@
     };
   }
 
+  function parseYmd(value) {
+    const parts = String(value).split("-").map(Number);
+    if (parts.length !== 3) return null;
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+
+  function formatViewLabel(startDate, endDate) {
+    const start = formatYmd(startDate);
+    const end = formatYmd(endDate);
+    return start === end ? `Day ${start}` : `View ${start}–${end}`;
+  }
+
+  function detectPortalViewRange() {
+    const html = document.documentElement.innerHTML;
+    const patterns = [
+      /(?:var|let|const)\s+startDate\s*=\s*parseDate\("([^"]+)"\)/i,
+      /(?:var|let|const)\s+chartStartDate\s*=\s*parseDate\("([^"]+)"\)/i,
+    ];
+    const endPatterns = [
+      /(?:var|let|const)\s+endDate\s*=\s*parseDate\("([^"]+)"\)/i,
+      /(?:var|let|const)\s+chartEndDate\s*=\s*parseDate\("([^"]+)"\)/i,
+    ];
+
+    let startValue = null;
+    let endValue = null;
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        startValue = match[1];
+        break;
+      }
+    }
+    for (const pattern of endPatterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        endValue = match[1];
+        break;
+      }
+    }
+
+    if (startValue && endValue) {
+      return { start: startValue, end: endValue, source: "portal" };
+    }
+
+    const dateInput = document.querySelector(
+      'input[type="date"], input[name*="date" i], input[id*="date" i]',
+    );
+    if (dateInput?.value) {
+      return { start: dateInput.value, end: dateInput.value, source: "portal-input" };
+    }
+
+    return null;
+  }
+
+  function buildViewJobs(viewStart, viewEnd) {
+    const start = parseYmd(viewStart);
+    const end = parseYmd(viewEnd);
+    if (!start || !end) return [];
+
+    const utilType = getUtilType();
+    const objectIds = getObjectIds();
+    const range = {
+      start,
+      end: end < start ? start : end,
+      label: formatViewLabel(start, end < start ? start : end),
+    };
+    const jobs = [];
+
+    for (const objectId of objectIds) {
+      const meterLabel = getMeterLabel(objectId);
+      const exports = exportJobsForRange(range, objectId, utilType, "View").filter(
+        (job) => job.kind === "greenbutton",
+      );
+      jobs.push(
+        ...exports.map((job) => ({
+          ...job,
+          meterLabel,
+          objectId,
+        })),
+      );
+    }
+
+    return jobs;
+  }
+
   function monthRanges(firstDate, lastDate) {
     const ranges = [];
     let cursor = new Date(firstDate.getFullYear(), firstDate.getMonth(), 1);
@@ -159,7 +244,7 @@
       View: "usage",
       Type: "Tier",
     };
-    const times = isoRange(range.start, range.end, rangeKind === "Bill");
+    const times = isoRange(range.start, range.end, rangeKind === "Bill" || rangeKind === "View");
     const util = utilityLabel(utilType);
     const stamp = formatYmd(range.start).replace(/-/g, "");
     const meterSuffix = objectId.slice(0, 8);
@@ -286,6 +371,18 @@
   }
 
   function pageJobs(options = {}) {
+    if (options.viewStart && options.viewEnd) {
+      return buildViewJobs(options.viewStart, options.viewEnd);
+    }
+
+    if (options.detectPortalView) {
+      const detected = detectPortalViewRange();
+      if (detected) {
+        return buildViewJobs(detected.start, detected.end);
+      }
+      return [];
+    }
+
     const html = document.documentElement.innerHTML;
     if (/MeterReadingHistory\.xml/i.test(window.location.href)) {
       return buildHistoryJobs();
@@ -354,14 +451,32 @@
   async function runSync(options = {}) {
     const jobs = pageJobs(options);
     if (!jobs.length) {
-      post("SYNC_ERROR", { error: "Open the Consumption Report or Meter Reading History page first." });
+      if (options.viewStart || options.detectPortalView) {
+        post("SYNC_ERROR", {
+          error:
+            "No view to sync. Queue a day/range on the Umbrel dashboard, or open a dated chart on Customer Connect.",
+        });
+      } else {
+        post("SYNC_ERROR", { error: "Open the Consumption Report or Meter Reading History page first." });
+      }
       return;
+    }
+
+    let mode = "full";
+    if (options.viewStart && options.viewEnd) {
+      mode = `view:${options.viewStart}${options.viewEnd !== options.viewStart ? `–${options.viewEnd}` : ""}`;
+    } else if (options.detectPortalView) {
+      mode = "portal-view";
+    } else if (options.recentDays) {
+      mode = `recent-${options.recentDays}`;
     }
 
     post("SYNC_START", {
       total: jobs.length,
       page: window.location.href,
-      mode: options.recentDays ? `recent-${options.recentDays}` : "full",
+      mode,
+      viewStart: options.viewStart ?? null,
+      viewEnd: options.viewEnd ?? null,
     });
     let uploaded = 0;
     let skipped = 0;

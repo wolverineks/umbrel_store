@@ -1,4 +1,53 @@
+const DASHBOARD_BRIDGE_ID = "nbu-umbrel-dashboard-bridge";
+
+async function registerDashboardBridge(baseUrl) {
+  const trimmed = (baseUrl || "").trim().replace(/\/$/, "");
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: [DASHBOARD_BRIDGE_ID] });
+  } catch {
+    // Script may not exist yet.
+  }
+  if (!trimmed) return;
+  let origin;
+  try {
+    origin = new URL(trimmed).origin;
+  } catch {
+    return;
+  }
+  await chrome.scripting.registerContentScripts([
+    {
+      id: DASHBOARD_BRIDGE_ID,
+      js: ["dashboard-bridge.js"],
+      matches: [`${origin}/*`],
+      runAt: "document_idle",
+    },
+  ]);
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  void chrome.storage.sync.get(["baseUrl"]).then(({ baseUrl }) => registerDashboardBridge(baseUrl));
+});
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "set-sync-view") {
+    void chrome.storage.local
+      .set({
+        pendingSyncView: {
+          ...message.view,
+          queuedAt: new Date().toISOString(),
+        },
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === "register-dashboard-bridge") {
+    void registerDashboardBridge(message.baseUrl)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
   if (message?.type === "upload-export") {
     void uploadExport(message.filename, message.content)
       .then((result) => sendResponse({ ok: true, result }))

@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.8.1";
+const APP_VERSION = "1.8.2";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -621,7 +621,9 @@ function dashboardPage() {
         <input id="day" type="date" title="View hourly usage for a specific day">
         <button id="clear-day" class="secondary" hidden>Clear day</button>
         <button id="refresh" class="secondary">Refresh</button>
+        <button id="queue-extension-sync" class="secondary">Queue for extension</button>
       </div>
+      <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
       <p class="day-view-label" id="day-view-label" hidden></p>
       <div class="chart-shell">
         <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
@@ -1472,6 +1474,24 @@ function dashboardPage() {
       dayInput.value = "";
       syncDayControls();
       loadUsage();
+    });
+    document.addEventListener("nbu-queue-sync-result", (event) => {
+      const statusEl = document.getElementById("queue-extension-status");
+      if (!statusEl) return;
+      const detail = event.detail || {};
+      if (!detail.ok) {
+        statusEl.textContent = detail.error || "Could not queue view for extension.";
+        return;
+      }
+      const view = detail.view;
+      const range =
+        view.start === view.end ? view.start : view.start + " – " + view.end;
+      statusEl.textContent =
+        "Queued " + range + " for extension. Open Customer Connect → Sync current view.";
+    });
+    document.getElementById("queue-extension-sync").addEventListener("click", () => {
+      const statusEl = document.getElementById("queue-extension-status");
+      if (statusEl) statusEl.textContent = "Queueing for extension…";
     });
     document.getElementById("refresh").addEventListener("click", async () => {
       await loadOverview();

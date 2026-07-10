@@ -15,10 +15,16 @@ async function loadSettings() {
 }
 
 document.getElementById("save").addEventListener("click", async () => {
+  const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
   await chrome.storage.sync.set({
-    baseUrl: baseUrlInput.value.trim().replace(/\/$/, ""),
+    baseUrl,
     token: tokenInput.value.trim(),
   });
+  try {
+    await chrome.runtime.sendMessage({ type: "register-dashboard-bridge", baseUrl });
+  } catch {
+    // Bridge registration is best-effort.
+  }
   setStatus("Saved.", "ok");
 });
 
