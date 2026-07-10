@@ -68,54 +68,82 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
   }
+
+  if (message?.type === "get-sync-view-queue") {
+    void getSyncViewQueueFromUmbrel()
+      .then((queue) => sendResponse({ ok: true, queue }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error), queue: null }));
+    return true;
+  }
 });
 
-async function uploadExport(filename, content) {
+async function umbrelSettings() {
   const stored = await chrome.storage.sync.get(["baseUrl", "token"]);
-  if (!stored.baseUrl || !stored.token) {
+  const baseUrl = stored.baseUrl?.trim().replace(/\/$/, "") ?? "";
+  const token = stored.token?.trim() ?? "";
+  if (!baseUrl || !token) {
     throw new Error("Configure Umbrel URL and ingest token in the extension popup.");
   }
+  return { baseUrl, token };
+}
 
-  const res = await fetch(stored.baseUrl.replace(/\/$/, "") + "/api/ingest", {
-    method: "POST",
+async function umbrelFetch(path, init = {}) {
+  const { baseUrl, token } = await umbrelSettings();
+  const requestUrl = `${baseUrl}${path}`;
+  const response = await fetch(requestUrl, {
+    ...init,
     headers: {
-      "Content-Type": "application/json",
-      "X-Ingest-Token": stored.token,
+      ...(init.headers || {}),
+      "X-Ingest-Token": token,
     },
-    body: JSON.stringify({ filename, content }),
   });
 
-  const payload = await res.json();
-  if (!res.ok) {
-    throw new Error(payload.error || "Upload failed");
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") || "";
+    throw new Error(
+      `Umbrel redirected (${response.status})${location ? ` to ${location}` : ""}. ` +
+        "Use the exact dashboard URL copied from your browser address bar.",
+    );
   }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.error || `Umbrel request failed (${response.status}).`);
+  }
+
+  return payload;
+}
+
+async function getSyncViewQueueFromUmbrel() {
+  const payload = await umbrelFetch("/api/sync-view/queue", { cache: "no-store" });
+  return payload?.queue ?? null;
+}
+
+async function uploadExport(filename, content) {
+  const payload = await umbrelFetch("/api/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename, content }),
+  });
 
   const inserted = payload.import?.reading_count ?? payload.imports?.[0]?.reading_count ?? 0;
   return { ...payload, skipped: inserted === 0 };
 }
 
 async function reportSyncErrors(message) {
-  const stored = await chrome.storage.sync.get(["baseUrl", "token"]);
-  if (!stored.baseUrl || !stored.token) {
-    throw new Error("Configure Umbrel URL and ingest token in the extension popup.");
-  }
-
-  const res = await fetch(stored.baseUrl.replace(/\/$/, "") + "/api/sync-errors", {
+  return umbrelFetch("/api/sync-errors", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Ingest-Token": stored.token,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       utility: message.utility,
       object_id: message.object_id,
       errors: message.errors,
     }),
   });
-
-  const payload = await res.json();
-  if (!res.ok) {
-    throw new Error(payload.error || "Could not report sync errors.");
-  }
-  return payload;
 }

@@ -174,26 +174,24 @@
   }
 
   async function resolveSyncViewOptions() {
-    const { baseUrl, token } = await chrome.storage.sync.get(["baseUrl", "token"]);
-    if (baseUrl && token) {
-      try {
-        const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/sync-view/queue`, {
-          headers: { "X-Ingest-Token": token },
-          cache: "no-store",
-        });
-        if (response.ok) {
-          const payload = await response.json();
-          if (payload.queue?.start && payload.queue?.end) {
-            return {
-              viewStart: payload.queue.start,
-              viewEnd: payload.queue.end,
-              utilityHint: payload.queue.utility,
-            };
-          }
-        }
-      } catch {
-        // Fall back to local extension storage.
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "get-sync-view-queue" });
+      if (response?.ok && response.queue?.start && response.queue?.end) {
+        return {
+          viewStart: response.queue.start,
+          viewEnd: response.queue.end,
+          utilityHint: response.queue.utility,
+          queueError: null,
+        };
       }
+      if (response?.error) {
+        return { detectPortalView: true, queueError: response.error };
+      }
+    } catch (error) {
+      return {
+        detectPortalView: true,
+        queueError: error?.message || String(error),
+      };
     }
 
     const { pendingSyncView } = await chrome.storage.local.get(["pendingSyncView"]);
@@ -212,6 +210,10 @@
     const el = document.getElementById("nbu-pending-view");
     if (!el) return;
     void resolveSyncViewOptions().then((options) => {
+      if (options.queueError) {
+        el.textContent = "Queue fetch failed: " + options.queueError;
+        return;
+      }
       if (!options.viewStart || !options.viewEnd) {
         el.textContent = "No Umbrel view queued. Pick a day there → Queue for extension.";
         return;
