@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.8.4";
+const APP_VERSION = "1.8.5";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";

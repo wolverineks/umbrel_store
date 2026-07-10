@@ -318,17 +318,21 @@ function jsFetchSnippet(url, withCredentials = false) {
 function nbuVerifyLogicJs() {
     return `function analyzeNbuResponse(status, text) {
   const hasXml = /xmlns="http:\\/\\/naesb.org\\/espi"/i.test(text);
-  const intervalCount = (text.match(/<IntervalBlock/gi) || []).length;
+  const intervalBlockCount = (text.match(/<IntervalBlock/gi) || []).length;
+  const intervalReadingCount = (text.match(/<IntervalReading/gi) || []).length;
   const hasCsv = /^Date\\/Time,/im.test(text.trim());
   const csvRows = hasCsv ? Math.max(0, text.trim().split(/\\n/).length - 1) : 0;
   if (!status || status < 200 || status >= 300) {
     return { verdict: "NBU_ERROR", detail: status ? "HTTP " + status : "fetch failed", hasData: false };
   }
-  if (hasXml && intervalCount > 0) {
-    return { verdict: "NBU_HAS_DATA", detail: intervalCount + " IntervalBlock(s)", hasData: true };
+  if (hasXml && intervalReadingCount > 0) {
+    return { verdict: "NBU_HAS_DATA", detail: intervalReadingCount + " IntervalReading(s)", hasData: true };
   }
   if (hasCsv && csvRows > 0) {
     return { verdict: "NBU_HAS_DATA", detail: csvRows + " CSV row(s)", hasData: true };
+  }
+  if (hasXml && intervalBlockCount > 0) {
+    return { verdict: "NBU_MISSING", detail: intervalBlockCount + " empty IntervalBlock(s) — no readings", hasData: false };
   }
   if (hasXml || hasCsv) {
     return { verdict: "NBU_MISSING", detail: "feed returned with no readings", hasData: false };

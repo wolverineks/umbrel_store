@@ -66,9 +66,6 @@ function parseGreenButtonXml(content, filename) {
     }
     const readings = [];
     for (const block of parseXmlBlocks(content, "IntervalBlock")) {
-        const intervalStart = Number(parseXmlTag(block, "start") ?? "0");
-        const intervalDuration = Number(parseXmlTag(block, "duration") ?? "0");
-        const intervalEnd = intervalStart + intervalDuration;
         for (const readingBlock of parseXmlBlocks(block, "IntervalReading")) {
             const start = Number(parseXmlTag(readingBlock, "start") ?? "0");
             const duration = Number(parseXmlTag(readingBlock, "duration") ?? "3600");
@@ -80,20 +77,6 @@ function parseGreenButtonXml(content, filename) {
                 period_start: unixToIso(start),
                 period_end: unixToIso(start + duration),
                 value,
-                unit,
-                meter_id: null,
-                account_id,
-                usage_point,
-                address,
-            });
-        }
-        if (readings.length === 0 && intervalStart > 0) {
-            readings.push({
-                utility,
-                granularity: "day",
-                period_start: unixToIso(intervalStart),
-                period_end: unixToIso(intervalEnd),
-                value: 0,
                 unit,
                 meter_id: null,
                 account_id,
