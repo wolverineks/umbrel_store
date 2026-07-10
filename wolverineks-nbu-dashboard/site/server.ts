@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.8.6";
+const APP_VERSION = "1.8.7";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -212,26 +212,159 @@ function pageStyles(): string {
       background: var(--bg);
       color: var(--text);
     }
-    .layout {
-      width: 100%;
+    .app-shell {
+      display: flex;
       min-height: 100vh;
-      padding: 1.25rem 1.5rem 2rem;
     }
-    header {
+    .side-nav {
+      width: 232px;
+      flex-shrink: 0;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      align-self: flex-start;
+      height: 100vh;
+      overflow-y: auto;
+      z-index: 30;
+    }
+    .side-nav-inner {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+      padding: 1rem 0.85rem 1.25rem;
+    }
+    .side-nav-label {
+      margin: 0 0 0.65rem;
+      padding: 0 0.4rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .side-nav-links {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      flex: 1;
+    }
+    .side-nav-link {
+      display: block;
+      padding: 0.52rem 0.7rem;
+      border-radius: 10px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      line-height: 1.25;
+    }
+    .side-nav-link:hover {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .side-nav-link.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .side-nav-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.35);
+      z-index: 25;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+    }
+    .side-nav-toggle {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 2.5rem;
+      height: 2.5rem;
+      padding: 0;
+      flex-shrink: 0;
+      font-size: 1.15rem;
+      line-height: 1;
+    }
+    .app-main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    .app-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 1rem;
-      margin-bottom: 1.5rem;
+      padding: 0.8rem 1.5rem;
+      background: rgba(255, 255, 255, 0.92);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(10px);
     }
-    .brand {
+    .app-header-start {
       display: flex;
       align-items: center;
-      gap: 0.9rem;
+      gap: 0.85rem;
+      min-width: 0;
     }
-    .brand img { width: 44px; height: 44px; border-radius: 12px; }
-    h1 { margin: 0; font-size: 1.5rem; }
-    .subtitle { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.95rem; }
+    .app-header-brand img {
+      width: 38px;
+      height: 38px;
+      border-radius: 11px;
+      flex-shrink: 0;
+    }
+    .app-header-text { min-width: 0; }
+    .app-header-end {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-shrink: 0;
+    }
+    .header-section-label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-weight: 600;
+      padding-right: 0.35rem;
+      border-right: 1px solid var(--border);
+      margin-right: 0.15rem;
+      white-space: nowrap;
+    }
+    .header-version {
+      font-size: 0.75rem;
+      color: var(--muted);
+      padding: 0.22rem 0.55rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .header-refresh {
+      padding: 0.45rem 0.75rem;
+      font-size: 0.85rem;
+    }
+    .main-content {
+      flex: 1;
+      min-width: 0;
+      padding: 1.25rem 1.5rem 2rem;
+    }
+    h1 { margin: 0; font-size: 1.2rem; line-height: 1.2; }
+    .subtitle {
+      margin: 0.15rem 0 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .section-anchor { scroll-margin-top: 5.5rem; }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -639,6 +772,24 @@ function pageStyles(): string {
         grid-template-columns: 1fr;
       }
     }
+    @media (max-width: 960px) {
+      .side-nav {
+        position: fixed;
+        left: 0;
+        top: 0;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: var(--shadow);
+      }
+      .side-nav.open { transform: translateX(0); }
+      .side-nav-toggle { display: inline-flex; }
+      .app-header { padding: 0.75rem 1rem; }
+      .header-section-label { display: none; }
+      .main-content { padding: 1rem 1rem 1.75rem; }
+    }
+    @media (min-width: 961px) {
+      .side-nav-backdrop { display: none !important; }
+    }
     .empty {
       text-align: center;
       color: var(--muted);
@@ -657,21 +808,45 @@ function dashboardPage(): string {
   <style>${pageStyles()}</style>
 </head>
 <body>
-  <div class="layout">
-    <header>
-      <div class="brand">
-        <img src="/icon.svg" alt="">
-        <div>
-          <h1>NBU Utilities</h1>
-          <p class="subtitle" id="address">New Braunfels Utilities usage dashboard</p>
-        </div>
+  <div class="app-shell">
+    <aside class="side-nav" id="side-nav" aria-label="Dashboard sections">
+      <div class="side-nav-inner">
+        <p class="side-nav-label">Menu</p>
+        <nav class="side-nav-links">
+          <a class="side-nav-link" href="#overview" data-section="overview">Overview</a>
+          <a class="side-nav-link" href="#usage" data-section="usage">Usage</a>
+          <a class="side-nav-link" href="#coverage" data-section="coverage">Coverage</a>
+          <a class="side-nav-link" href="#missing-sources-card" data-section="missing-sources-card">Missing sources</a>
+          <a class="side-nav-link" href="#extension" data-section="extension">Extension</a>
+          <a class="side-nav-link" href="#upload-history" data-section="upload-history">Upload history</a>
+          <a class="side-nav-link" href="#backup" data-section="backup">Backup</a>
+        </nav>
       </div>
-      <div class="muted">v${APP_VERSION}</div>
-    </header>
+    </aside>
+    <button class="side-nav-backdrop" id="side-nav-backdrop" type="button" aria-label="Close menu" hidden></button>
+    <div class="app-main">
+      <header class="app-header">
+        <div class="app-header-start">
+          <button type="button" class="side-nav-toggle secondary" id="side-nav-toggle" aria-controls="side-nav" aria-expanded="false" aria-label="Open menu">☰</button>
+          <div class="app-header-brand">
+            <img src="/icon.svg" alt="">
+          </div>
+          <div class="app-header-text">
+            <h1>NBU Utilities</h1>
+            <p class="subtitle" id="address">New Braunfels Utilities usage dashboard</p>
+          </div>
+        </div>
+        <div class="app-header-end">
+          <span class="header-section-label" id="header-section">Overview</span>
+          <span class="header-version">v${APP_VERSION}</span>
+          <button type="button" class="secondary header-refresh" id="header-refresh">Refresh</button>
+        </div>
+      </header>
+      <main class="main-content" id="main-content">
 
-    <div class="grid" id="stats"></div>
+    <div class="grid section-anchor" id="overview"></div>
 
-    <div class="chart-wrap">
+    <div class="chart-wrap section-anchor" id="usage">
       <div class="property-bar">
         <select id="property"></select>
         <input id="property-label" type="text" placeholder="House name">
@@ -714,7 +889,7 @@ function dashboardPage(): string {
       <div class="chart-sources" id="chart-sources" hidden></div>
     </div>
 
-    <div class="card" style="margin-top:1rem">
+    <div class="card section-anchor" id="coverage" style="margin-top:1rem">
       <h2>Data coverage</h2>
       <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to inspect that day.</p>
       <div id="coverage-content">
@@ -722,7 +897,7 @@ function dashboardPage(): string {
       </div>
     </div>
 
-    <div class="card" style="margin-top:1rem" id="missing-sources-card">
+    <div class="card section-anchor" style="margin-top:1rem" id="missing-sources-card">
       <div class="collapse-card-header">
         <details class="collapse-panel" id="missing-sources-panel">
           <summary class="collapse-summary">
@@ -744,7 +919,7 @@ function dashboardPage(): string {
       </div>
     </div>
 
-    <div class="card" style="margin-top:1rem">
+    <div class="card section-anchor" id="extension" style="margin-top:1rem">
       <h2>Chrome extension</h2>
       <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
       <div class="token-box" style="margin-top:0.8rem">
@@ -754,7 +929,7 @@ function dashboardPage(): string {
       </div>
     </div>
 
-    <div class="card" style="margin-top:1rem">
+    <div class="card section-anchor" id="upload-history" style="margin-top:1rem">
       <div class="import-history-header">
         <h2 style="margin:0">Upload history</h2>
         <span class="muted" id="import-count"></span>
@@ -762,7 +937,7 @@ function dashboardPage(): string {
       <div class="imports import-history" id="imports"></div>
     </div>
 
-    <div class="card" style="margin-top:1rem">
+    <div class="card section-anchor" id="backup" style="margin-top:1rem">
       <h2>Backup &amp; restore</h2>
       <p class="muted">
         Copy all usage data, upload files, settings, and property names to
@@ -783,6 +958,8 @@ function dashboardPage(): string {
         <button id="backup-export-btn">Back up now</button>
         <button id="backup-import-btn" class="secondary">Restore from backup</button>
       </div>
+    </div>
+      </main>
     </div>
   </div>
   <script>
@@ -1318,7 +1495,85 @@ function dashboardPage(): string {
       granularity.value = "hour";
       syncDayControls();
       loadUsage();
-      document.querySelector(".chart-wrap")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById("usage")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    const SECTION_LABELS = {
+      overview: "Overview",
+      usage: "Usage",
+      coverage: "Coverage",
+      "missing-sources-card": "Missing sources",
+      extension: "Extension",
+      "upload-history": "Upload history",
+      backup: "Backup",
+    };
+
+    function setActiveSection(id) {
+      const label = SECTION_LABELS[id] || "Overview";
+      const headerSection = document.getElementById("header-section");
+      if (headerSection) headerSection.textContent = label;
+      document.querySelectorAll(".side-nav-link").forEach((link) => {
+        link.classList.toggle("active", link.dataset.section === id);
+      });
+    }
+
+    function initSideNav() {
+      const nav = document.getElementById("side-nav");
+      const toggle = document.getElementById("side-nav-toggle");
+      const backdrop = document.getElementById("side-nav-backdrop");
+      const links = [...document.querySelectorAll(".side-nav-link")];
+      const sections = links
+        .map((link) => document.getElementById(link.dataset.section || ""))
+        .filter(Boolean);
+
+      function setNavOpen(open) {
+        nav?.classList.toggle("open", open);
+        if (backdrop) backdrop.hidden = !open;
+        toggle?.setAttribute("aria-expanded", String(open));
+        toggle?.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+      }
+
+      toggle?.addEventListener("click", () => setNavOpen(!nav?.classList.contains("open")));
+      backdrop?.addEventListener("click", () => setNavOpen(false));
+
+      links.forEach((link) => {
+        link.addEventListener("click", () => {
+          setNavOpen(false);
+          if (link.dataset.section) setActiveSection(link.dataset.section);
+          if (link.dataset.section === "missing-sources-card") openMissingSourcesPanel();
+        });
+      });
+
+      if (!sections.length || !("IntersectionObserver" in window)) {
+        setActiveSection("overview");
+        return;
+      }
+
+      let activeId = null;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const visible = entries
+            .filter((entry) => entry.isIntersecting)
+            .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+          if (!visible.length) return;
+          const id = visible[0].target.id;
+          if (!id || id === activeId) return;
+          activeId = id;
+          setActiveSection(id);
+        },
+        { rootMargin: "-88px 0px -55% 0px", threshold: [0, 0.15, 0.4, 0.7] },
+      );
+
+      sections.forEach((section) => observer.observe(section));
+      setActiveSection("overview");
+    }
+
+    async function refreshDashboard() {
+      await loadOverview();
+      await loadImports();
+      await loadUsage();
+      await loadCoverage();
+      await loadMissingSources();
     }
 
     function renderCoverage() {
@@ -1672,12 +1927,11 @@ function dashboardPage(): string {
     document.getElementById("queue-extension-sync").addEventListener("click", () => {
       void queueExtensionSync(false);
     });
-    document.getElementById("refresh").addEventListener("click", async () => {
-      await loadOverview();
-      await loadImports();
-      await loadUsage();
-      await loadCoverage();
-      await loadMissingSources();
+    document.getElementById("refresh").addEventListener("click", () => {
+      void refreshDashboard();
+    });
+    document.getElementById("header-refresh").addEventListener("click", () => {
+      void refreshDashboard();
     });
     document.getElementById("refresh-missing-sources").addEventListener("click", loadMissingSources);
     document.getElementById("copy-verify-all-script").addEventListener("click", async (event) => {
@@ -1808,6 +2062,8 @@ function dashboardPage(): string {
         await refreshBackupStatus();
       }
     });
+
+    initSideNav();
 
     loadOverview()
       .then(loadImports)
