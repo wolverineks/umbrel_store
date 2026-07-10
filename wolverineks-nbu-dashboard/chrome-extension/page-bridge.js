@@ -27,20 +27,6 @@
     return new Date(parts[0], parts[1] - 1, parts[2]);
   }
 
-  function parseBillingDates(html) {
-    const ranges = [];
-    const re =
-      /billingDates\.push\(\{billing:billingDate, start:new Date\((\d+), (\d+), (\d+)\), end:new Date\((\d+), (\d+), (\d+)\) \}\)/g;
-    let match;
-    while ((match = re.exec(html)) !== null) {
-      ranges.push({
-        start: new Date(Number(match[1]), Number(match[2]), Number(match[3])),
-        end: new Date(Number(match[4]), Number(match[5]), Number(match[6])),
-      });
-    }
-    return ranges;
-  }
-
   function formatYmd(date) {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -141,12 +127,6 @@
     return new Date(parts[0], parts[1] - 1, parts[2]);
   }
 
-  function formatViewLabel(startDate, endDate) {
-    const start = formatYmd(startDate);
-    const end = formatYmd(endDate);
-    return start === end ? `Day ${start}` : `View ${start}–${end}`;
-  }
-
   function detectPortalViewRange() {
     const html = document.documentElement.innerHTML;
     const patterns = [
@@ -205,52 +185,18 @@
     const objectIds = meterObjectIds();
     if (!objectIds.length) return [];
 
-    const range = {
-      start,
-      end: end < start ? start : end,
-      label: formatViewLabel(start, end < start ? start : end),
-    };
+    const effectiveEnd = end < start ? start : end;
     const jobs = [];
 
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
-      const exports = exportJobsForRange(range, objectId, utilType, "View").filter(
-        (job) => job.kind === "greenbutton",
-      );
-      jobs.push(
-        ...exports.map((job) => ({
-          ...job,
-          meterLabel,
-          objectId,
-        })),
-      );
+      for (const range of dayRanges(start, effectiveEnd)) {
+        const job = greenButtonJobForRange(range, objectId, utilType, "View");
+        if (job) jobs.push({ ...job, meterLabel, objectId });
+      }
     }
 
     return jobs;
-  }
-
-  function monthRanges(firstDate, lastDate) {
-    const ranges = [];
-    let cursor = new Date(firstDate.getFullYear(), firstDate.getMonth(), 1);
-    while (cursor <= lastDate) {
-      const start = new Date(cursor);
-      const end = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
-      ranges.push({ start, end, label: `Month ${formatYmd(start)}` });
-      cursor = end;
-    }
-    return ranges;
-  }
-
-  function weekRanges(firstDate, lastDate) {
-    const ranges = [];
-    let start = new Date(firstDate.getTime());
-    start.setDate(start.getDate() - start.getDay());
-    while (start <= lastDate) {
-      const end = addDays(start, 7);
-      ranges.push({ start: new Date(start), end, label: `Week ${formatYmd(start)}` });
-      start = end;
-    }
-    return ranges;
   }
 
   function dayRanges(firstDate, lastDate) {
@@ -264,10 +210,10 @@
     return ranges;
   }
 
-  function exportJobsForRange(range, objectId, utilType, rangeKind) {
+  function greenButtonJobForRange(range, objectId, utilType, rangeKind) {
     const effectiveRange =
-      rangeKind === "View" || rangeKind === "Bill" ? range : clampRangeForExport(range);
-    if (!effectiveRange) return [];
+      rangeKind === "View" ? range : clampRangeForExport(range);
+    if (!effectiveRange) return null;
 
     const base = {
       ObjectId: objectId,
@@ -275,38 +221,24 @@
       View: "usage",
       Type: "Tier",
     };
-    const times = isoRange(
-      effectiveRange.start,
-      effectiveRange.end,
-      rangeKind === "Bill" || rangeKind === "View",
-    );
+    const times = isoRange(effectiveRange.start, effectiveRange.end, rangeKind === "View");
     const util = utilityLabel(utilType);
     const stamp = formatYmd(effectiveRange.start).replace(/-/g, "");
     const meterSuffix = objectId.slice(0, 8);
 
-    return [
-      {
-        kind: "greenbutton",
-        rangeKind,
-        label: `${effectiveRange.label} · Green Button`,
-        filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_GreenButton_${util}.xml`,
-        url: buildExportUrl("ExportGreenButtonData.xml", { ...base, ...times }),
-      },
-      {
-        kind: "csv-all",
-        rangeKind,
-        label: `${effectiveRange.label} · CSV all`,
-        filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_ALL_${util}.csv`,
-        url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times, Type: "all" }),
-      },
-      {
-        kind: "csv-tou",
-        rangeKind,
-        label: `${effectiveRange.label} · CSV TOU`,
-        filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_TOU_${util}.csv`,
-        url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times, Type: "Tier" }),
-      },
-    ];
+    return {
+      kind: "greenbutton",
+      rangeKind,
+      label: `${effectiveRange.label} · Green Button`,
+      filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_GreenButton_${util}.xml`,
+      url: buildExportUrl("ExportGreenButtonData.xml", { ...base, ...times }),
+    };
+  }
+
+  function historyCutoff(months, lastDate) {
+    const cutoff = new Date(lastDate.getTime());
+    cutoff.setMonth(cutoff.getMonth() - months);
+    return cutoff;
   }
 
   function recentCutoff(days) {
@@ -316,59 +248,28 @@
     return cutoff;
   }
 
-  function rangeIsRecent(range, cutoff) {
-    return range.end > cutoff || range.start >= cutoff;
-  }
-
   function buildConsumptionJobs(html, options = {}) {
     const utilType = getUtilType();
     const parsedFirst = parseFirstDate(html) || new Date(Date.now() - 365 * 86_400_000);
     const lastDate = yesterdayStart();
     const recentDays = options.recentDays ?? null;
-    const cutoff = recentDays ? recentCutoff(recentDays) : null;
-    const firstDate =
-      cutoff && parsedFirst < cutoff ? new Date(cutoff.getTime()) : parsedFirst;
-    const billingDates = parseBillingDates(html);
+    const maxHistoryMonths = options.maxHistoryMonths ?? 24;
+    const recentStart = recentDays ? recentCutoff(recentDays) : null;
+    const historyStart = historyCutoff(maxHistoryMonths, lastDate);
+    let firstDate = parsedFirst;
+    if (recentStart && parsedFirst < recentStart) {
+      firstDate = new Date(recentStart.getTime());
+    } else if (!recentStart && parsedFirst < historyStart) {
+      firstDate = new Date(historyStart.getTime());
+    }
     const objectIds = getObjectIds();
     const jobs = [];
 
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
-      for (const range of monthRanges(firstDate, lastDate)) {
-        if (cutoff && !rangeIsRecent(range, cutoff)) continue;
-        jobs.push(...exportJobsForRange(range, objectId, utilType, "Month").map((job) => ({
-          ...job,
-          meterLabel,
-          objectId,
-        })));
-      }
-      for (const range of weekRanges(firstDate, lastDate)) {
-        if (cutoff && !rangeIsRecent(range, cutoff)) continue;
-        jobs.push(...exportJobsForRange(range, objectId, utilType, "Week").map((job) => ({
-          ...job,
-          meterLabel,
-          objectId,
-        })));
-      }
       for (const range of dayRanges(firstDate, lastDate)) {
-        jobs.push(...exportJobsForRange(range, objectId, utilType, "Day").map((job) => ({
-          ...job,
-          meterLabel,
-          objectId,
-        })));
-      }
-      for (const billing of billingDates) {
-        if (cutoff && billing.end < cutoff) continue;
-        const range = {
-          start: billing.start,
-          end: billing.end,
-          label: `Bill ${formatYmd(billing.start)}`,
-        };
-        jobs.push(...exportJobsForRange(range, objectId, utilType, "Bill").map((job) => ({
-          ...job,
-          meterLabel,
-          objectId,
-        })));
+        const job = greenButtonJobForRange(range, objectId, utilType, "Day");
+        if (job) jobs.push({ ...job, meterLabel, objectId });
       }
     }
 
@@ -598,7 +499,9 @@
       const jobs = pageJobs(event.data.options || {});
       post("SYNC_PLAN", {
         total: jobs.length,
-        mode: event.data.options?.recentDays ? `last ${event.data.options.recentDays} days` : "full history",
+        mode: event.data.options?.recentDays
+          ? `last ${event.data.options.recentDays} days · Green Button · daily`
+          : "full history · Green Button · daily",
         jobs: jobs.slice(0, 5).map((job) => job.label),
       });
     }

@@ -123,7 +123,7 @@
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
         <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
         <div class="nbu-mini" id="nbu-pending-view">Queue a day on Umbrel, then sync it here.</div>
-        <div class="nbu-mini">Sync current view uses the queued Umbrel day/range, or the date shown on this NBU chart.</div>
+        <div class="nbu-mini">Consumption sync fetches one Green Button export per day. Sync current view uses the queued Umbrel day/range (one request per day).</div>
         <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
     `;
