@@ -137,10 +137,32 @@
     refreshPendingViewLabel();
 
     panel.querySelector("#nbu-sync-view").addEventListener("click", () => {
-      setStatus("Starting current view sync…");
       setProgress(0);
       void resolveSyncViewOptions().then((options) => {
-        window.postMessage({ source: "nbu-umbrel-content", type: "START_SYNC", options }, "*");
+        if (options.queueError && !options.viewStart) {
+          setStatus("Cannot read Umbrel queue: " + options.queueError, "err");
+          return;
+        }
+        if (!options.viewStart || !options.viewEnd) {
+          setStatus("No day queued on Umbrel. Pick a day there (auto-queues), then retry.", "err");
+          return;
+        }
+        const range =
+          options.viewStart === options.viewEnd
+            ? options.viewStart
+            : `${options.viewStart}–${options.viewEnd}`;
+        setStatus(`Syncing ${range}…`);
+        window.postMessage(
+          {
+            source: "nbu-umbrel-content",
+            type: "START_SYNC",
+            options: {
+              viewStart: options.viewStart,
+              viewEnd: options.viewEnd,
+            },
+          },
+          "*",
+        );
       });
     });
 
@@ -185,13 +207,10 @@
         };
       }
       if (response?.error) {
-        return { detectPortalView: true, queueError: response.error };
+        return { queueError: response.error };
       }
     } catch (error) {
-      return {
-        detectPortalView: true,
-        queueError: error?.message || String(error),
-      };
+      return { queueError: error?.message || String(error) };
     }
 
     const { pendingSyncView } = await chrome.storage.local.get(["pendingSyncView"]);
@@ -203,7 +222,7 @@
       };
     }
 
-    return { detectPortalView: true };
+    return {};
   }
 
   function refreshPendingViewLabel() {

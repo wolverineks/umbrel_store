@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.8.3";
+const APP_VERSION = "1.8.4";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -1476,8 +1476,14 @@ function dashboardPage() {
       await loadMissingSources();
     });
     document.getElementById("granularity").addEventListener("change", loadUsage);
-    document.getElementById("range").addEventListener("change", loadUsage);
-    document.getElementById("day").addEventListener("change", loadUsage);
+    document.getElementById("range").addEventListener("change", async () => {
+      await loadUsage();
+      await queueExtensionSync(true);
+    });
+    document.getElementById("day").addEventListener("change", async () => {
+      await loadUsage();
+      await queueExtensionSync(true);
+    });
     document.getElementById("clear-day").addEventListener("click", () => {
       const dayInput = document.getElementById("day");
       if (!dayInput) return;
@@ -1501,16 +1507,44 @@ function dashboardPage() {
       return null;
     }
 
-    async function queueExtensionSync() {
+    function formatQueuedRange(queue) {
+      if (!queue) return "";
+      return queue.start === queue.end ? queue.start : queue.start + " – " + queue.end;
+    }
+
+    async function loadQueuedSyncView() {
+      const statusEl = document.getElementById("queue-extension-status");
+      if (!statusEl) return;
+      try {
+        const res = await fetch("/api/sync-view/queue");
+        const payload = await res.json();
+        if (!res.ok || !payload.queue) {
+          statusEl.textContent = "";
+          return;
+        }
+        const queued = formatQueuedRange(payload.queue);
+        const pickerDay = document.getElementById("day")?.value;
+        if (pickerDay && payload.queue.start === payload.queue.end && pickerDay !== payload.queue.start) {
+          statusEl.textContent =
+            "Queued " + queued + " (date picker is " + pickerDay + " — pick that day or change picker and wait for auto-queue).";
+          return;
+        }
+        statusEl.textContent = "Queued " + queued + " for extension → Sync current view on Customer Connect.";
+      } catch {
+        statusEl.textContent = "";
+      }
+    }
+
+    async function queueExtensionSync(silent) {
       const statusEl = document.getElementById("queue-extension-status");
       const view = buildQueueView();
       if (!view) {
-        if (statusEl) {
+        if (!silent && statusEl) {
           statusEl.textContent = "Pick a specific day or a day range (not All data), then queue again.";
         }
         return;
       }
-      if (statusEl) statusEl.textContent = "Queueing for extension…";
+      if (!silent && statusEl) statusEl.textContent = "Queueing for extension…";
       try {
         const res = await fetch("/api/sync-view/queue", {
           method: "POST",
@@ -1525,10 +1559,11 @@ function dashboardPage() {
         });
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error || "Could not queue view.");
-        const range = view.start === view.end ? view.start : view.start + " – " + view.end;
+        const range = formatQueuedRange(view);
         if (statusEl) {
-          statusEl.textContent =
-            "Queued " + range + " for extension. Open Customer Connect → Sync current view.";
+          statusEl.textContent = silent
+            ? "Queued " + range + " for extension → Sync current view on Customer Connect."
+            : "Queued " + range + " for extension. Open Customer Connect → Sync current view.";
         }
       } catch (error) {
         if (statusEl) statusEl.textContent = error.message || "Could not queue view for extension.";
@@ -1536,7 +1571,7 @@ function dashboardPage() {
     }
 
     document.getElementById("queue-extension-sync").addEventListener("click", () => {
-      void queueExtensionSync();
+      void queueExtensionSync(false);
     });
     document.getElementById("refresh").addEventListener("click", async () => {
       await loadOverview();
@@ -1680,6 +1715,7 @@ function dashboardPage() {
       .then(loadUsage)
       .then(loadCoverage)
       .then(loadMissingSources)
+      .then(loadQueuedSyncView)
       .then(() => refreshBackupStatus());
   </script>
 </body>
@@ -1802,10 +1838,6 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             return;
         }
         if (req.method === "GET" && pathname === "/api/sync-view/queue") {
-            if (!(await authorizeIngest(req))) {
-                sendJson(res, 401, { error: "invalid ingest token" });
-                return;
-            }
             sendJson(res, 200, { queue: await (0, store_1.getSyncViewQueue)() });
             return;
         }
