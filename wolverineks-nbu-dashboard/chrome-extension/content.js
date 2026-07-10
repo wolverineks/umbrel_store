@@ -168,6 +168,32 @@
     el.className = "nbu-status" + (kind ? ` ${kind}` : "");
   }
 
+  async function copyText(text) {
+    if (!text) throw new Error("nothing to copy");
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Fall back below.
+      }
+    }
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    area.style.top = "0";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    area.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    if (!ok) throw new Error("copy failed");
+  }
+
   function setProgress(ratio) {
     const bar = document.getElementById("nbu-progress-bar");
     if (!bar) return;
@@ -263,8 +289,7 @@
         return;
       }
       const label = event.data.meterLabel ? ` (${event.data.meterLabel})` : "";
-      void navigator.clipboard
-        .writeText(objectId)
+      void copyText(objectId)
         .then(() => {
           setStatus(`Copied Object ID${label}. Paste into Umbrel dashboard → Save Object ID.`, "ok");
         })

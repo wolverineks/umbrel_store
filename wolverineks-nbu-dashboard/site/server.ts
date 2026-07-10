@@ -24,7 +24,7 @@ import {
   setSelectedProperty,
 } from "./store";
 
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.8.1";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -733,7 +733,14 @@ function dashboardPage(): string {
     </div>
   </div>
   <script>
-    const state = { overview: null, usage: null, imports: null, coverage: null, missingSources: null };
+    const state = {
+      overview: null,
+      usage: null,
+      imports: null,
+      coverage: null,
+      missingSources: null,
+      clipboardScripts: { verifyAll: null, probe: null },
+    };
 
     function selectedPropertyId() {
       return document.getElementById("property").value || null;
@@ -790,11 +797,37 @@ function dashboardPage(): string {
         .replace(/"/g, "&quot;");
     }
 
+    async function copyText(text) {
+      if (!text) throw new Error("nothing to copy");
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return;
+        } catch {
+          // Fall back for HTTP Umbrel URLs and restrictive browsers.
+        }
+      }
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      area.style.top = "0";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.focus();
+      area.select();
+      area.setSelectionRange(0, text.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(area);
+      if (!ok) throw new Error("copy failed");
+    }
+
     async function copySnippet(button, text) {
       if (!button || !text) return;
       const original = button.textContent;
       try {
-        await navigator.clipboard.writeText(text);
+        await copyText(text);
         button.textContent = "Copied!";
       } catch {
         button.textContent = "Copy failed";
@@ -1288,14 +1321,10 @@ function dashboardPage(): string {
       if (data.range_start && data.range_end) summaryParts.push(fmtCoverageRange(data.range_start, data.range_end));
       summaryEl.textContent = summaryParts.join(" · ");
 
-      if (verifyAllBtn) {
-        verifyAllBtn.hidden = !data.verify_all_script;
-        verifyAllBtn.dataset.script = data.verify_all_script || "";
-      }
-      if (probeBtn) {
-        probeBtn.hidden = !data.probe_script;
-        probeBtn.dataset.script = data.probe_script || "";
-      }
+      state.clipboardScripts.verifyAll = data.verify_all_script || null;
+      state.clipboardScripts.probe = data.probe_script || null;
+      if (verifyAllBtn) verifyAllBtn.hidden = !state.clipboardScripts.verifyAll;
+      if (probeBtn) probeBtn.hidden = !state.clipboardScripts.probe;
 
       const rows = data.items.map((item, index) => {
         const verdict = fmtNbuVerdict(item);
@@ -1488,13 +1517,13 @@ function dashboardPage(): string {
     document.getElementById("refresh-missing-sources").addEventListener("click", loadMissingSources);
     document.getElementById("copy-verify-all-script").addEventListener("click", async (event) => {
       const button = event.currentTarget;
-      const script = button?.dataset?.script;
+      const script = state.clipboardScripts.verifyAll;
       if (!script) return;
       await copySnippet(button, script);
     });
     document.getElementById("copy-probe-script").addEventListener("click", async (event) => {
       const button = event.currentTarget;
-      const script = button?.dataset?.script;
+      const script = state.clipboardScripts.probe;
       if (!script) return;
       await copySnippet(button, script);
     });
@@ -1502,19 +1531,7 @@ function dashboardPage(): string {
       const token = state.overview?.settings?.ingest_token;
       const button = document.getElementById("copy-token");
       if (!token || !button) return;
-      try {
-        await navigator.clipboard.writeText(token);
-        const original = button.textContent;
-        button.textContent = "Copied!";
-        setTimeout(() => {
-          button.textContent = original;
-        }, 1500);
-      } catch {
-        button.textContent = "Copy failed";
-        setTimeout(() => {
-          button.textContent = "Copy token";
-        }, 1500);
-      }
+      await copySnippet(button, token);
     });
     document.getElementById("rotate-token").addEventListener("click", async () => {
       const res = await fetch("/api/settings/rotate-token", { method: "POST" });
