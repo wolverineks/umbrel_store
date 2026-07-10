@@ -54,6 +54,24 @@
     return next;
   }
 
+  function yesterdayStart() {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - 1);
+    return date;
+  }
+
+  function clampRangeForExport(range) {
+    const yesterday = yesterdayStart();
+    const maxExclusiveEnd = addDays(yesterday, 1);
+    if (range.start > yesterday) return null;
+    const start = new Date(range.start.getTime());
+    let end = new Date(range.end.getTime());
+    if (end > maxExclusiveEnd) end = maxExclusiveEnd;
+    if (end <= start) return null;
+    return { start, end, label: range.label };
+  }
+
   function getUtilType() {
     const href = window.location.href;
     if (/utilType=W|utility=W/i.test(href)) return "W";
@@ -247,36 +265,44 @@
   }
 
   function exportJobsForRange(range, objectId, utilType, rangeKind) {
+    const effectiveRange =
+      rangeKind === "View" || rangeKind === "Bill" ? range : clampRangeForExport(range);
+    if (!effectiveRange) return [];
+
     const base = {
       ObjectId: objectId,
       utilType,
       View: "usage",
       Type: "Tier",
     };
-    const times = isoRange(range.start, range.end, rangeKind === "Bill" || rangeKind === "View");
+    const times = isoRange(
+      effectiveRange.start,
+      effectiveRange.end,
+      rangeKind === "Bill" || rangeKind === "View",
+    );
     const util = utilityLabel(utilType);
-    const stamp = formatYmd(range.start).replace(/-/g, "");
+    const stamp = formatYmd(effectiveRange.start).replace(/-/g, "");
     const meterSuffix = objectId.slice(0, 8);
 
     return [
       {
         kind: "greenbutton",
         rangeKind,
-        label: `${range.label} · Green Button`,
+        label: `${effectiveRange.label} · Green Button`,
         filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_GreenButton_${util}.xml`,
         url: buildExportUrl("ExportGreenButtonData.xml", { ...base, ...times }),
       },
       {
         kind: "csv-all",
         rangeKind,
-        label: `${range.label} · CSV all`,
+        label: `${effectiveRange.label} · CSV all`,
         filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_ALL_${util}.csv`,
         url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times, Type: "all" }),
       },
       {
         kind: "csv-tou",
         rangeKind,
-        label: `${range.label} · CSV TOU`,
+        label: `${effectiveRange.label} · CSV TOU`,
         filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_TOU_${util}.csv`,
         url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times, Type: "Tier" }),
       },
@@ -297,7 +323,7 @@
   function buildConsumptionJobs(html, options = {}) {
     const utilType = getUtilType();
     const parsedFirst = parseFirstDate(html) || new Date(Date.now() - 365 * 86_400_000);
-    const lastDate = new Date();
+    const lastDate = yesterdayStart();
     const recentDays = options.recentDays ?? null;
     const cutoff = recentDays ? recentCutoff(recentDays) : null;
     const firstDate =
