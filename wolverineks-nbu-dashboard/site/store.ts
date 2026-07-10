@@ -82,6 +82,8 @@ export type UsageMissingPeriod = {
   nbu_fetch: string | null;
 };
 
+export type NbuVerdict = "NBU_HAS_DATA" | "NBU_MISSING" | "NBU_ERROR" | "NBU_FETCH_FAILED";
+
 export type SourceFetchError = {
   property_id: string | null;
   utility: Utility;
@@ -89,7 +91,8 @@ export type SourceFetchError = {
   end: string;
   nbu_url: string | null;
   status: number | null;
-  error: string;
+  verdict: NbuVerdict | null;
+  error: string | null;
   response_preview: string | null;
   source: "sync" | "probe";
   recorded_at: string;
@@ -104,6 +107,8 @@ export type MissingSource = {
   hours_present: number | null;
   nbu_url: string | null;
   nbu_fetch: string | null;
+  nbu_verdict: NbuVerdict | null;
+  nbu_detail: string | null;
   fetch_status: number | null;
   fetch_error: string | null;
   fetch_preview: string | null;
@@ -118,8 +123,12 @@ export type MissingSourcesSummary = {
   range_start: string | null;
   range_end: string | null;
   total: number;
+  checked_on_nbu: number;
+  confirmed_missing_on_nbu: number;
+  has_data_on_nbu: number;
   with_errors: number;
   items: MissingSource[];
+  verify_all_script: string | null;
   probe_script: string | null;
 };
 
@@ -474,6 +483,43 @@ export function jsFetchSnippet(url: string, withCredentials = false): string {
   return `fetch("${escaped}").then(async (r) => console.log(r.status, (await r.text()).slice(0, 300))).catch(console.error);`;
 }
 
+export function nbuVerifyLogicJs(): string {
+  return `function analyzeNbuResponse(status, text) {
+  const hasXml = /xmlns="http:\\/\\/naesb.org\\/espi"/i.test(text);
+  const intervalCount = (text.match(/<IntervalBlock/gi) || []).length;
+  const hasCsv = /^Date\\/Time,/im.test(text.trim());
+  const csvRows = hasCsv ? Math.max(0, text.trim().split(/\\n/).length - 1) : 0;
+  if (!status || status < 200 || status >= 300) {
+    return { verdict: "NBU_ERROR", detail: status ? "HTTP " + status : "fetch failed", hasData: false };
+  }
+  if (hasXml && intervalCount > 0) {
+    return { verdict: "NBU_HAS_DATA", detail: intervalCount + " IntervalBlock(s)", hasData: true };
+  }
+  if (hasCsv && csvRows > 0) {
+    return { verdict: "NBU_HAS_DATA", detail: csvRows + " CSV row(s)", hasData: true };
+  }
+  if (hasXml || hasCsv) {
+    return { verdict: "NBU_MISSING", detail: "feed returned with no readings", hasData: false };
+  }
+  return { verdict: "NBU_MISSING", detail: "empty or unsupported response", hasData: false };
+}`;
+}
+
+export function nbuVerifyFetchSnippet(url: string, start: string, end: string): string {
+  const escaped = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const periodLabel = start === end ? start : `${start} – ${end}`;
+  return `${nbuVerifyLogicJs()}
+fetch("${escaped}", { credentials: "include", cache: "no-store" }).then(async (r) => {
+  const text = await r.text();
+  const result = analyzeNbuResponse(r.status, text);
+  console.log("[NBU verify ${periodLabel}]", result.verdict + " —", result.detail, { status: r.status, preview: text.slice(0, 200) });
+  return { start: ${JSON.stringify(start)}, end: ${JSON.stringify(end)}, ...result, status: r.status };
+}).catch((e) => {
+  console.error("[NBU verify ${periodLabel}]", "NBU_FETCH_FAILED —", e);
+  return { start: ${JSON.stringify(start)}, end: ${JSON.stringify(end)}, verdict: "NBU_FETCH_FAILED", detail: String(e), hasData: false };
+});`;
+}
+
 function propertyLabel(
   propertyId: string,
   address: string | null,
@@ -775,10 +821,14 @@ function attachNbuLinks(
   period: { start: string; end: string },
   objectId: string | null,
   utility: Utility,
+  verify = false,
 ): { nbu_url: string | null; nbu_fetch: string | null } {
   if (!objectId) return { nbu_url: null, nbu_fetch: null };
   const nbu_url = buildNbuExportUrl(period.start, period.end, objectId, utility);
-  return { nbu_url, nbu_fetch: jsFetchSnippet(nbu_url, true) };
+  const nbu_fetch = verify
+    ? nbuVerifyFetchSnippet(nbu_url, period.start, period.end)
+    : jsFetchSnippet(nbu_url, true);
+  return { nbu_url, nbu_fetch };
 }
 
 function withNbuLinks(
@@ -788,7 +838,7 @@ function withNbuLinks(
 ): UsageMissingPeriod[] {
   return periods.map((period) => ({
     ...period,
-    ...attachNbuLinks(period, objectId, utility),
+    ...attachNbuLinks(period, objectId, utility, true),
   }));
 }
 
@@ -1141,6 +1191,68 @@ function formatMissingGapLabel(gap: CoverageGap, hoursPresent: number | null): s
   return `${kind}: ${range} (${gap.days} day${gap.days === 1 ? "" : "s"})`;
 }
 
+function buildNbuVerifyRunnerScript(
+  items: Array<{ start: string; end: string; nbu_url: string }>,
+  footer: string,
+): string {
+  return `(async () => {
+  ${nbuVerifyLogicJs()}
+  const probes = ${JSON.stringify(items)};
+  const results = [];
+  for (const probe of probes) {
+    try {
+      const response = await fetch(probe.nbu_url, { credentials: "include", cache: "no-store" });
+      const text = await response.text();
+      const result = analyzeNbuResponse(response.status, text);
+      results.push({
+        start: probe.start,
+        end: probe.end,
+        nbu_url: probe.nbu_url,
+        status: response.status,
+        verdict: result.verdict,
+        detail: result.detail,
+        error: result.verdict === "NBU_HAS_DATA" ? null : result.detail,
+        response_preview: text.slice(0, 300),
+        hasData: result.hasData,
+      });
+      console.log("[NBU verify]", probe.start, probe.end, result.verdict, result.detail);
+    } catch (error) {
+      results.push({
+        start: probe.start,
+        end: probe.end,
+        nbu_url: probe.nbu_url,
+        status: null,
+        verdict: "NBU_FETCH_FAILED",
+        detail: error?.message || String(error),
+        error: error?.message || String(error),
+        response_preview: null,
+        hasData: false,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  console.table(results.map((item) => ({
+    start: item.start,
+    end: item.end,
+    verdict: item.verdict,
+    detail: item.detail,
+    status: item.status,
+  })));
+  const confirmedMissing = results.filter((item) => item.verdict === "NBU_MISSING").length;
+  const nbuErrors = results.filter((item) => item.verdict === "NBU_ERROR" || item.verdict === "NBU_FETCH_FAILED").length;
+  const onNbuOnly = results.filter((item) => item.verdict === "NBU_HAS_DATA").length;
+  console.log("Summary:", confirmedMissing, "confirmed missing on NBU ·", nbuErrors, "NBU errors ·", onNbuOnly, "have data on NBU (local sync gap)");
+  ${footer}
+  return results;
+})();`;
+}
+
+export function buildNbuVerifyAllScript(
+  items: Array<{ start: string; end: string; nbu_url: string }>,
+): string {
+  return buildNbuVerifyRunnerScript(items, "");
+}
+
 export function buildBulkProbeScript(
   baseUrl: string,
   token: string,
@@ -1149,55 +1261,33 @@ export function buildBulkProbeScript(
   items: Array<{ start: string; end: string; nbu_url: string }>,
 ): string {
   const trimmedBase = baseUrl.replace(/\/$/, "");
-  const payload = JSON.stringify({
-    property_id: propertyId,
-    utility,
-    probes: items.map((item) => ({
-      start: item.start,
-      end: item.end,
-      nbu_url: item.nbu_url,
-    })),
-  });
-  return `(async () => {
-  const baseUrl = ${JSON.stringify(trimmedBase)};
-  const token = ${JSON.stringify(token)};
-  const batch = ${payload};
-  const results = [];
-  for (const probe of batch.probes) {
-    try {
-      const response = await fetch(probe.nbu_url, { credentials: "include", cache: "no-store" });
-      const text = await response.text();
-      const preview = text.slice(0, 300);
-      const valid = /xmlns="http:\\/\\/naesb.org\\/espi"/i.test(text) || /^Date\\/Time,/i.test(text.trim());
-      results.push({
-        start: probe.start,
-        end: probe.end,
-        nbu_url: probe.nbu_url,
-        status: response.status,
-        error: response.ok && valid ? null : (response.ok ? "empty or unsupported response" : "HTTP " + response.status),
-        response_preview: preview,
-      });
-    } catch (error) {
-      results.push({
-        start: probe.start,
-        end: probe.end,
-        nbu_url: probe.nbu_url,
-        status: null,
-        error: error?.message || String(error),
-        response_preview: null,
-      });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 350));
-  }
-  const report = await fetch(baseUrl + "/api/missing-sources/probes", {
+  const footer = `const report = await fetch(${JSON.stringify(trimmedBase + "/api/missing-sources/probes")}, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Ingest-Token": token },
-    body: JSON.stringify({ property_id: batch.property_id, utility: batch.utility, probes: results }),
+    headers: { "Content-Type": "application/json", "X-Ingest-Token": ${JSON.stringify(token)} },
+    body: JSON.stringify({
+      property_id: ${JSON.stringify(propertyId)},
+      utility: ${JSON.stringify(utility)},
+      probes: results.map((item) => ({
+        start: item.start,
+        end: item.end,
+        nbu_url: item.nbu_url,
+        status: item.status,
+        verdict: item.verdict,
+        detail: item.detail,
+        error: item.error,
+        response_preview: item.response_preview,
+      })),
+    }),
   });
   const payload = await report.json().catch(() => ({}));
-  console.log("Probe report:", report.status, payload);
-  console.table(results.map((item) => ({ start: item.start, end: item.end, status: item.status, error: item.error })));
-})();`;
+  console.log("Saved probe results to dashboard:", report.status, payload);`;
+  return buildNbuVerifyRunnerScript(items, footer);
+}
+
+function syncErrorVerdict(message: string, status: number | null): NbuVerdict {
+  if (status && status >= 400) return "NBU_ERROR";
+  if (/empty|unsupported|no readings/i.test(message)) return "NBU_MISSING";
+  return "NBU_ERROR";
 }
 
 export async function recordFetchProbes(
@@ -1208,6 +1298,8 @@ export async function recordFetchProbes(
     end: string;
     nbu_url?: string | null;
     status?: number | null;
+    verdict?: NbuVerdict | null;
+    detail?: string | null;
     error?: string | null;
     response_preview?: string | null;
   }>,
@@ -1217,8 +1309,10 @@ export async function recordFetchProbes(
 
   for (const probe of probes) {
     if (!probe.start || !probe.end) continue;
-    const message = probe.error?.trim();
-    if (!message) continue;
+    const verdict =
+      probe.verdict ??
+      (probe.error?.trim() ? ("NBU_ERROR" as NbuVerdict) : ("NBU_HAS_DATA" as NbuVerdict));
+    const detail = probe.detail?.trim() || probe.error?.trim() || verdict;
     errors = upsertSourceError(errors, {
       property_id: propertyId,
       utility,
@@ -1226,7 +1320,8 @@ export async function recordFetchProbes(
       end: probe.end,
       nbu_url: probe.nbu_url ?? null,
       status: probe.status ?? null,
-      error: message,
+      verdict,
+      error: verdict === "NBU_HAS_DATA" ? detail : detail,
       response_preview: probe.response_preview ?? null,
       source: "probe",
     });
@@ -1271,6 +1366,7 @@ export async function recordSyncFetchErrors(input: {
       end: range.end,
       nbu_url: item.url ?? null,
       status: item.status ?? null,
+      verdict: syncErrorVerdict(message, item.status ?? null),
       error: message,
       response_preview: null,
       source: "sync",
@@ -1297,7 +1393,7 @@ export async function getMissingSources(
   const items: MissingSource[] = coverage.gaps.map((gap) => {
     const hoursPresent =
       gap.days === 1 ? (daysByDate.get(gap.start)?.hours_present ?? null) : null;
-    const nbuLinks = attachNbuLinks({ start: gap.start, end: gap.end }, objectId, utility);
+    const nbuLinks = attachNbuLinks({ start: gap.start, end: gap.end }, objectId, utility, true);
     const matched = findSourceFetchError(storedErrors, propertyId, utility, gap.start, gap.end);
 
     return {
@@ -1308,8 +1404,13 @@ export async function getMissingSources(
       label: formatMissingGapLabel(gap, hoursPresent),
       hours_present: hoursPresent,
       ...nbuLinks,
+      nbu_verdict:
+        matched?.verdict ??
+        (matched?.error ? syncErrorVerdict(matched.error, matched.status ?? null) : null),
+      nbu_detail: matched?.error ?? null,
       fetch_status: matched?.status ?? null,
-      fetch_error: matched?.error ?? null,
+      fetch_error:
+        matched?.verdict && matched.verdict !== "NBU_HAS_DATA" ? matched.error : null,
       fetch_preview: matched?.response_preview ?? null,
       fetch_probed_at: matched?.recorded_at ?? null,
       fetch_source: matched?.source ?? null,
@@ -1328,8 +1429,17 @@ export async function getMissingSources(
     range_start: coverage.range_start,
     range_end: coverage.range_end,
     total: items.length,
-    with_errors: items.filter((item) => item.fetch_error).length,
+    checked_on_nbu: items.filter((item) => item.nbu_verdict).length,
+    confirmed_missing_on_nbu: items.filter(
+      (item) => item.nbu_verdict === "NBU_MISSING",
+    ).length,
+    has_data_on_nbu: items.filter((item) => item.nbu_verdict === "NBU_HAS_DATA").length,
+    with_errors: items.filter(
+      (item) => item.nbu_verdict === "NBU_ERROR" || item.nbu_verdict === "NBU_FETCH_FAILED",
+    ).length,
     items,
+    verify_all_script:
+      objectId && probeCandidates.length ? buildNbuVerifyAllScript(probeCandidates) : null,
     probe_script:
       objectId && probeCandidates.length
         ? buildBulkProbeScript(baseUrl, settings.ingest_token, propertyId, utility, probeCandidates)

@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -536,6 +536,14 @@ function pageStyles() {
     .fetch-unknown {
       color: var(--muted);
     }
+    .fetch-confirmed {
+      color: #475569;
+      font-weight: 600;
+    }
+    .fetch-on-nbu {
+      color: #b45309;
+      font-weight: 600;
+    }
     .missing-source-actions {
       display: flex;
       flex-wrap: wrap;
@@ -591,7 +599,7 @@ function dashboardPage() {
         <button id="save-object-id" class="secondary">Save Object ID</button>
       </div>
       <p class="object-id-hint" id="object-id-hint" hidden>
-        Set the NBU Object ID to show portal export URLs and console fetch snippets for missing periods.
+        Set the NBU Object ID to generate per-gap NBU verify snippets (run in Customer Connect console).
       </p>
       <div class="toolbar">
         <select id="utility">
@@ -635,10 +643,11 @@ function dashboardPage() {
       <div class="missing-sources-header">
         <div>
           <h2 style="margin:0">Missing sources</h2>
-          <p class="muted" style="margin:0.35rem 0 0">All hourly gaps with NBU export URLs and fetch errors from extension syncs or the probe script (run in Customer Connect console).</p>
+          <p class="muted" style="margin:0.35rem 0 0">Each gap includes a console snippet to fetch NBU servers and check whether the data is missing there too. Run snippets on the Customer Connect site (logged in, DevTools console).</p>
         </div>
         <div class="toolbar" style="margin:0">
-          <button id="copy-probe-script" class="secondary" hidden>Copy probe script</button>
+          <button id="copy-verify-all-script" class="secondary" hidden>Copy verify-all script</button>
+          <button id="copy-probe-script" class="secondary" hidden>Verify all + save</button>
           <button id="refresh-missing-sources" class="secondary">Refresh</button>
         </div>
       </div>
@@ -761,17 +770,29 @@ function dashboardPage() {
       }, 1500);
     }
 
-    function renderLinkRow(label, url, fetchSnippet, copyKind, copyIndex) {
+    function renderLinkRow(label, url, fetchSnippet, copyKind, copyIndex, copyLabel) {
       if (!url) return "";
+      const buttonLabel = copyLabel || "Copy snippet";
       let html = '<li><span class="muted">' + label + ':</span> ';
       html += '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a>';
       if (fetchSnippet) {
         html += ' <button type="button" class="secondary copy-snippet" data-kind="' + copyKind +
-          '" data-index="' + copyIndex + '">Copy fetch</button>';
+          '" data-index="' + copyIndex + '">' + buttonLabel + '</button>';
         html += '<code class="source-snippet">' + escapeHtml(fetchSnippet) + '</code>';
       }
       html += '</li>';
       return html;
+    }
+
+    function fmtNbuVerdict(item) {
+      if (!item?.nbu_verdict) return null;
+      if (item.nbu_verdict === "NBU_MISSING") {
+        return { className: "fetch-confirmed", text: "Also missing on NBU", detail: item.nbu_detail };
+      }
+      if (item.nbu_verdict === "NBU_HAS_DATA") {
+        return { className: "fetch-on-nbu", text: "Data exists on NBU (sync gap)", detail: item.nbu_detail };
+      }
+      return { className: "fetch-error", text: item.nbu_verdict === "NBU_FETCH_FAILED" ? "NBU fetch failed" : "NBU server error", detail: item.nbu_detail || item.fetch_error };
     }
 
     function fmtDate(iso) {
@@ -997,7 +1018,7 @@ function dashboardPage() {
             let html = '<li>' + labelHtml;
             if (gap.nbu_url) {
               html += '<ul class="source-detail">' +
-                renderLinkRow("NBU export", gap.nbu_url, gap.nbu_fetch, "missing-nbu", index) + '</ul>';
+                renderLinkRow("Verify on NBU", gap.nbu_url, gap.nbu_fetch, "missing-nbu", index, "Copy verify snippet") + '</ul>';
             }
             html += '</li>';
             return html;
@@ -1211,33 +1232,44 @@ function dashboardPage() {
       const summaryEl = document.getElementById("missing-sources-summary");
       const contentEl = document.getElementById("missing-sources-content");
       const probeBtn = document.getElementById("copy-probe-script");
+      const verifyAllBtn = document.getElementById("copy-verify-all-script");
       const data = state.missingSources;
       if (!summaryEl || !contentEl) return;
 
       if (!data?.items?.length) {
         summaryEl.textContent = data?.object_id
           ? "No missing hourly gaps in the current range."
-          : "No missing gaps yet, or set the NBU Object ID to generate export URLs.";
+          : "No missing gaps yet, or set the NBU Object ID to generate verify snippets.";
         contentEl.innerHTML = '<div class="empty">No missing sources to list.</div>';
         if (probeBtn) probeBtn.hidden = true;
+        if (verifyAllBtn) verifyAllBtn.hidden = true;
         return;
       }
 
-      summaryEl.textContent =
-        data.total + " gap" + (data.total === 1 ? "" : "s") +
-        (data.with_errors ? " · " + data.with_errors + " with fetch errors" : "") +
-        (data.range_start && data.range_end ? " · " + fmtCoverageRange(data.range_start, data.range_end) : "");
+      const summaryParts = [data.total + " gap" + (data.total === 1 ? "" : "s")];
+      if (data.checked_on_nbu) summaryParts.push(data.checked_on_nbu + " checked on NBU");
+      if (data.confirmed_missing_on_nbu) summaryParts.push(data.confirmed_missing_on_nbu + " confirmed missing on NBU");
+      if (data.has_data_on_nbu) summaryParts.push(data.has_data_on_nbu + " on NBU only (sync gap)");
+      if (data.with_errors) summaryParts.push(data.with_errors + " NBU errors");
+      if (data.range_start && data.range_end) summaryParts.push(fmtCoverageRange(data.range_start, data.range_end));
+      summaryEl.textContent = summaryParts.join(" · ");
 
+      if (verifyAllBtn) {
+        verifyAllBtn.hidden = !data.verify_all_script;
+        verifyAllBtn.dataset.script = data.verify_all_script || "";
+      }
       if (probeBtn) {
         probeBtn.hidden = !data.probe_script;
         probeBtn.dataset.script = data.probe_script || "";
       }
 
       const rows = data.items.map((item, index) => {
-        const rowClass = "missing-source-row" + (item.fetch_error ? " has-error" : "");
-        let fetchHtml = '<span class="fetch-unknown">Not checked</span>';
-        if (item.fetch_error) {
-          fetchHtml = '<span class="fetch-error">' + escapeHtml(item.fetch_error) + '</span>';
+        const verdict = fmtNbuVerdict(item);
+        const rowClass = "missing-source-row" + (verdict?.className === "fetch-error" ? " has-error" : "");
+        let fetchHtml = '<span class="fetch-unknown">Not checked on NBU</span>';
+        if (verdict) {
+          fetchHtml = '<span class="' + verdict.className + '">' + escapeHtml(verdict.text) + '</span>';
+          if (verdict.detail) fetchHtml += '<div class="muted">' + escapeHtml(verdict.detail) + '</div>';
           if (item.fetch_status !== null && item.fetch_status !== undefined) {
             fetchHtml += '<div class="muted">HTTP ' + item.fetch_status + '</div>';
           }
@@ -1255,7 +1287,7 @@ function dashboardPage() {
           linksHtml += '<div class="missing-source-actions">';
           linksHtml += '<a href="' + escapeHtml(item.nbu_url) + '" target="_blank" rel="noopener">NBU URL</a>';
           if (item.nbu_fetch) {
-            linksHtml += '<button type="button" class="secondary copy-snippet" data-kind="missing-list-nbu" data-index="' + index + '">Copy fetch</button>';
+            linksHtml += '<button type="button" class="secondary copy-snippet" data-kind="missing-list-nbu" data-index="' + index + '">Copy verify snippet</button>';
           }
           if (item.start === item.end) {
             linksHtml += '<button type="button" class="secondary" data-date="' + item.start + '">View day</button>';
@@ -1265,7 +1297,7 @@ function dashboardPage() {
             linksHtml += '<code class="source-snippet">' + escapeHtml(item.nbu_fetch) + '</code>';
           }
         } else {
-          linksHtml = '<span class="muted">Set Object ID for NBU URL</span>';
+          linksHtml = '<span class="muted">Set Object ID for verify snippet</span>';
         }
 
         return '<div class="' + rowClass + '">' +
@@ -1420,6 +1452,12 @@ function dashboardPage() {
       await loadMissingSources();
     });
     document.getElementById("refresh-missing-sources").addEventListener("click", loadMissingSources);
+    document.getElementById("copy-verify-all-script").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const script = button?.dataset?.script;
+      if (!script) return;
+      await copySnippet(button, script);
+    });
     document.getElementById("copy-probe-script").addEventListener("click", async (event) => {
       const button = event.currentTarget;
       const script = button?.dataset?.script;
