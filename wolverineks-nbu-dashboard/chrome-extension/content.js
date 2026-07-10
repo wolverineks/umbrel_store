@@ -139,14 +139,7 @@
     panel.querySelector("#nbu-sync-view").addEventListener("click", () => {
       setStatus("Starting current view sync…");
       setProgress(0);
-      void chrome.storage.local.get(["pendingSyncView"]).then(({ pendingSyncView }) => {
-        const options = {};
-        if (pendingSyncView?.start && pendingSyncView?.end) {
-          options.viewStart = pendingSyncView.start;
-          options.viewEnd = pendingSyncView.end;
-        } else {
-          options.detectPortalView = true;
-        }
+      void resolveSyncViewOptions().then((options) => {
         window.postMessage({ source: "nbu-umbrel-content", type: "START_SYNC", options }, "*");
       });
     });
@@ -180,19 +173,55 @@
     return panel;
   }
 
+  async function resolveSyncViewOptions() {
+    const { baseUrl, token } = await chrome.storage.sync.get(["baseUrl", "token"]);
+    if (baseUrl && token) {
+      try {
+        const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/sync-view/queue`, {
+          headers: { "X-Ingest-Token": token },
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const payload = await response.json();
+          if (payload.queue?.start && payload.queue?.end) {
+            return {
+              viewStart: payload.queue.start,
+              viewEnd: payload.queue.end,
+              utilityHint: payload.queue.utility,
+            };
+          }
+        }
+      } catch {
+        // Fall back to local extension storage.
+      }
+    }
+
+    const { pendingSyncView } = await chrome.storage.local.get(["pendingSyncView"]);
+    if (pendingSyncView?.start && pendingSyncView?.end) {
+      return {
+        viewStart: pendingSyncView.start,
+        viewEnd: pendingSyncView.end,
+        utilityHint: pendingSyncView.utility,
+      };
+    }
+
+    return { detectPortalView: true };
+  }
+
   function refreshPendingViewLabel() {
     const el = document.getElementById("nbu-pending-view");
     if (!el) return;
-    void chrome.storage.local.get(["pendingSyncView"]).then(({ pendingSyncView }) => {
-      if (!pendingSyncView?.start || !pendingSyncView?.end) {
+    void resolveSyncViewOptions().then((options) => {
+      if (!options.viewStart || !options.viewEnd) {
         el.textContent = "No Umbrel view queued. Pick a day there → Queue for extension.";
         return;
       }
       const range =
-        pendingSyncView.start === pendingSyncView.end
-          ? pendingSyncView.start
-          : `${pendingSyncView.start}–${pendingSyncView.end}`;
-      el.textContent = `Queued from Umbrel: ${range}`;
+        options.viewStart === options.viewEnd
+          ? options.viewStart
+          : `${options.viewStart}–${options.viewEnd}`;
+      const utility = options.utilityHint ? ` (${options.utilityHint})` : "";
+      el.textContent = `Queued from Umbrel: ${range}${utility}`;
     });
   }
 

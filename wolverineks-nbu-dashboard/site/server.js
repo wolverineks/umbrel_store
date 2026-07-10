@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.8.2";
+const APP_VERSION = "1.8.3";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -844,6 +844,16 @@ function dashboardPage() {
       return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(iso));
     }
 
+    function centralTodayKey() {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date());
+    }
+
+    function addDaysToDateKey(dateKey, days) {
+      const [year, month, day] = dateKey.split("-").map(Number);
+      const next = new Date(Date.UTC(year, month - 1, day + days));
+      return new Intl.DateTimeFormat("en-CA", { timeZone: "UTC" }).format(next);
+    }
+
     function fmtHourLabel(iso) {
       return new Date(iso).toLocaleTimeString(undefined, {
         timeZone: "America/Chicago",
@@ -1475,23 +1485,58 @@ function dashboardPage() {
       syncDayControls();
       loadUsage();
     });
-    document.addEventListener("nbu-queue-sync-result", (event) => {
+    function buildQueueView() {
+      const day = document.getElementById("day")?.value;
+      const range = document.getElementById("range")?.value;
+      const utility = document.getElementById("utility")?.value || "electric";
+      if (day) {
+        return { start: day, end: day, utility, label: day };
+      }
+      const days = Number(range);
+      if (Number.isFinite(days) && days > 0) {
+        const end = addDaysToDateKey(centralTodayKey(), -1);
+        const start = addDaysToDateKey(end, -(days - 1));
+        return { start, end, utility, label: "Last " + days + " days" };
+      }
+      return null;
+    }
+
+    async function queueExtensionSync() {
       const statusEl = document.getElementById("queue-extension-status");
-      if (!statusEl) return;
-      const detail = event.detail || {};
-      if (!detail.ok) {
-        statusEl.textContent = detail.error || "Could not queue view for extension.";
+      const view = buildQueueView();
+      if (!view) {
+        if (statusEl) {
+          statusEl.textContent = "Pick a specific day or a day range (not All data), then queue again.";
+        }
         return;
       }
-      const view = detail.view;
-      const range =
-        view.start === view.end ? view.start : view.start + " – " + view.end;
-      statusEl.textContent =
-        "Queued " + range + " for extension. Open Customer Connect → Sync current view.";
-    });
-    document.getElementById("queue-extension-sync").addEventListener("click", () => {
-      const statusEl = document.getElementById("queue-extension-status");
       if (statusEl) statusEl.textContent = "Queueing for extension…";
+      try {
+        const res = await fetch("/api/sync-view/queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            property_id: selectedPropertyId(),
+            utility: view.utility,
+            start: view.start,
+            end: view.end,
+            label: view.label,
+          }),
+        });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || "Could not queue view.");
+        const range = view.start === view.end ? view.start : view.start + " – " + view.end;
+        if (statusEl) {
+          statusEl.textContent =
+            "Queued " + range + " for extension. Open Customer Connect → Sync current view.";
+        }
+      } catch (error) {
+        if (statusEl) statusEl.textContent = error.message || "Could not queue view for extension.";
+      }
+    }
+
+    document.getElementById("queue-extension-sync").addEventListener("click", () => {
+      void queueExtensionSync();
     });
     document.getElementById("refresh").addEventListener("click", async () => {
       await loadOverview();
@@ -1754,6 +1799,30 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             const utility = parseUtility(url.searchParams.get("utility"));
             const baseUrl = `http://${req.headers.host ?? "localhost"}`;
             sendJson(res, 200, await (0, store_1.getMissingSources)(propertyId, utility, baseUrl));
+            return;
+        }
+        if (req.method === "GET" && pathname === "/api/sync-view/queue") {
+            if (!(await authorizeIngest(req))) {
+                sendJson(res, 401, { error: "invalid ingest token" });
+                return;
+            }
+            sendJson(res, 200, { queue: await (0, store_1.getSyncViewQueue)() });
+            return;
+        }
+        if (req.method === "POST" && pathname === "/api/sync-view/queue") {
+            const body = JSON.parse((await readBody(req)).toString("utf8"));
+            const start = (0, store_1.parseDateParam)(body.start ?? null);
+            const end = (0, store_1.parseDateParam)(body.end ?? null);
+            if (!start || !end) {
+                sendJson(res, 400, { error: "start and end dates are required (YYYY-MM-DD)" });
+                return;
+            }
+            if (start.localeCompare(end) > 0) {
+                sendJson(res, 400, { error: "start must be on or before end" });
+                return;
+            }
+            const queue = await (0, store_1.setSyncViewQueue)(body.property_id ?? null, parseUtility(body.utility ?? null), start, end, body.label?.trim() || (start === end ? start : `${start} – ${end}`));
+            sendJson(res, 200, { ok: true, queue });
             return;
         }
         if (req.method === "POST" && pathname === "/api/missing-sources/probes") {

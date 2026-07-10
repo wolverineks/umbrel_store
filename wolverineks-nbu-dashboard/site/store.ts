@@ -10,6 +10,7 @@ const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = path.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = path.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = path.join(DATA_ROOT, "source-errors.json");
+const SYNC_QUEUE_PATH = path.join(DATA_ROOT, "sync-view-queue.json");
 
 export type Settings = {
   ingest_token: string;
@@ -114,6 +115,15 @@ export type MissingSource = {
   fetch_preview: string | null;
   fetch_probed_at: string | null;
   fetch_source: SourceFetchError["source"] | null;
+};
+
+export type SyncViewQueue = {
+  property_id: string | null;
+  utility: Utility;
+  start: string;
+  end: string;
+  label: string;
+  queued_at: string;
 };
 
 export type MissingSourcesSummary = {
@@ -343,11 +353,14 @@ let settingsCache: Settings | null = null;
 let importsCache: ImportRecord[] | null = null;
 let readingsCache: StoredReading[] | null = null;
 
+let syncQueueCache: SyncViewQueue | null | undefined;
+
 export function resetStoreCaches(): void {
   settingsCache = null;
   importsCache = null;
   readingsCache = null;
   sourceErrorsCache = null;
+  syncQueueCache = undefined;
 }
 
 export function buildPropertyId(accountId: string | null, usagePoint: string | null): string | null {
@@ -1091,6 +1104,38 @@ export async function getOverview(propertyId: string | null = null): Promise<{
     water_days: count("water", "day"),
     water_billing_periods: count("water", "billing_period"),
   };
+}
+
+export async function getSyncViewQueue(): Promise<SyncViewQueue | null> {
+  if (syncQueueCache !== undefined) return syncQueueCache;
+  await ensureDataRoot();
+  if (!existsSync(SYNC_QUEUE_PATH)) {
+    syncQueueCache = null;
+    return syncQueueCache;
+  }
+  syncQueueCache = JSON.parse(await readFile(SYNC_QUEUE_PATH, "utf8")) as SyncViewQueue;
+  return syncQueueCache;
+}
+
+export async function setSyncViewQueue(
+  propertyId: string | null,
+  utility: Utility,
+  start: string,
+  end: string,
+  label: string,
+): Promise<SyncViewQueue> {
+  const queue: SyncViewQueue = {
+    property_id: propertyId,
+    utility,
+    start,
+    end,
+    label,
+    queued_at: new Date().toISOString(),
+  };
+  await ensureDataRoot();
+  syncQueueCache = queue;
+  await writeFile(SYNC_QUEUE_PATH, JSON.stringify(queue, null, 2));
+  return queue;
 }
 
 export function resolvePropertyId(

@@ -27,6 +27,8 @@ exports.listImports = listImports;
 exports.getStoredImportFile = getStoredImportFile;
 exports.getUsageSummary = getUsageSummary;
 exports.getOverview = getOverview;
+exports.getSyncViewQueue = getSyncViewQueue;
+exports.setSyncViewQueue = setSyncViewQueue;
 exports.resolvePropertyId = resolvePropertyId;
 exports.parseNbuUrlRange = parseNbuUrlRange;
 exports.buildNbuVerifyAllScript = buildNbuVerifyAllScript;
@@ -44,6 +46,7 @@ const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = node_path_1.default.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = node_path_1.default.join(DATA_ROOT, "source-errors.json");
+const SYNC_QUEUE_PATH = node_path_1.default.join(DATA_ROOT, "sync-view-queue.json");
 exports.NBU_GREEN_BUTTON_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportGreenButtonData.xml";
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
@@ -185,11 +188,13 @@ function parseDateParam(value) {
 let settingsCache = null;
 let importsCache = null;
 let readingsCache = null;
+let syncQueueCache;
 function resetStoreCaches() {
     settingsCache = null;
     importsCache = null;
     readingsCache = null;
     sourceErrorsCache = null;
+    syncQueueCache = undefined;
 }
 function buildPropertyId(accountId, usagePoint) {
     if (accountId && usagePoint)
@@ -785,6 +790,31 @@ async function getOverview(propertyId = null) {
         water_days: count("water", "day"),
         water_billing_periods: count("water", "billing_period"),
     };
+}
+async function getSyncViewQueue() {
+    if (syncQueueCache !== undefined)
+        return syncQueueCache;
+    await ensureDataRoot();
+    if (!(0, node_fs_1.existsSync)(SYNC_QUEUE_PATH)) {
+        syncQueueCache = null;
+        return syncQueueCache;
+    }
+    syncQueueCache = JSON.parse(await (0, promises_1.readFile)(SYNC_QUEUE_PATH, "utf8"));
+    return syncQueueCache;
+}
+async function setSyncViewQueue(propertyId, utility, start, end, label) {
+    const queue = {
+        property_id: propertyId,
+        utility,
+        start,
+        end,
+        label,
+        queued_at: new Date().toISOString(),
+    };
+    await ensureDataRoot();
+    syncQueueCache = queue;
+    await (0, promises_1.writeFile)(SYNC_QUEUE_PATH, JSON.stringify(queue, null, 2));
+    return queue;
 }
 function resolvePropertyId(requested, settings, properties) {
     if (requested)

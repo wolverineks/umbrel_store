@@ -171,13 +171,22 @@
     return null;
   }
 
+  function meterObjectIds() {
+    const objectIds = getObjectIds();
+    if (objectIds.length) return objectIds;
+    const selected = getSelectedObjectId();
+    return selected ? [selected] : [];
+  }
+
   function buildViewJobs(viewStart, viewEnd) {
     const start = parseYmd(viewStart);
     const end = parseYmd(viewEnd);
     if (!start || !end) return [];
 
     const utilType = getUtilType();
-    const objectIds = getObjectIds();
+    const objectIds = meterObjectIds();
+    if (!objectIds.length) return [];
+
     const range = {
       start,
       end: end < start ? start : end,
@@ -451,10 +460,21 @@
   async function runSync(options = {}) {
     const jobs = pageJobs(options);
     if (!jobs.length) {
-      if (options.viewStart || options.detectPortalView) {
+      if (options.viewStart && options.viewEnd) {
+        if (!meterObjectIds().length) {
+          post("SYNC_ERROR", {
+            error:
+              "No meter on this page. Open the Consumption Report, wait for the meter dropdown to load, then retry.",
+          });
+        } else {
+          post("SYNC_ERROR", {
+            error: `Could not build exports for ${options.viewStart}${options.viewEnd !== options.viewStart ? `–${options.viewEnd}` : ""}.`,
+          });
+        }
+      } else if (options.detectPortalView) {
         post("SYNC_ERROR", {
           error:
-            "No view to sync. Queue a day/range on the Umbrel dashboard, or open a dated chart on Customer Connect.",
+            "No view to sync. On Umbrel: pick a day → Queue for extension. Or open a dated chart on Customer Connect.",
         });
       } else {
         post("SYNC_ERROR", { error: "Open the Consumption Report or Meter Reading History page first." });
