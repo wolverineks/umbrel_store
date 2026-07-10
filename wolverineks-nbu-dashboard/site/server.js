@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.8.5";
+const APP_VERSION = "1.8.6";
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -440,13 +440,58 @@ function pageStyles() {
       border-top: 1px solid var(--border);
       font-size: 0.88rem;
     }
-    .chart-sources h3 {
-      margin: 0 0 0.45rem;
+    .collapse-panel {
+      border: none;
+    }
+    .collapse-panel > summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      user-select: none;
+    }
+    .collapse-panel > summary::-webkit-details-marker { display: none; }
+    .collapse-panel > summary::before {
+      content: "▸";
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+    .collapse-panel[open] > summary::before { content: "▾"; }
+    .collapse-panel > .collapse-body {
+      margin-top: 0.55rem;
+    }
+    .collapse-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .collapse-card-header .collapse-panel { flex: 1 1 280px; }
+    .collapse-card-actions { margin: 0; flex: 0 0 auto; }
+    .collapse-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .collapse-meta {
+      font-size: 0.85rem;
+      font-weight: 400;
+    }
+    .chart-sources h3,
+    .chart-sources .collapse-panel > summary {
+      margin: 0;
       font-size: 0.82rem;
       color: var(--muted);
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.03em;
+    }
+    .chart-sources .collapse-panel[open] > summary {
+      margin-bottom: 0.45rem;
     }
     .chart-sources-grid {
       display: grid;
@@ -642,20 +687,24 @@ function dashboardPage() {
     </div>
 
     <div class="card" style="margin-top:1rem" id="missing-sources-card">
-      <div class="missing-sources-header">
-        <div>
-          <h2 style="margin:0">Missing sources</h2>
-          <p class="muted" style="margin:0.35rem 0 0">Each gap includes a console snippet to fetch NBU servers and check whether the data is missing there too. Run snippets on the Customer Connect site (logged in, DevTools console).</p>
-        </div>
-        <div class="toolbar" style="margin:0">
+      <div class="collapse-card-header">
+        <details class="collapse-panel" id="missing-sources-panel">
+          <summary class="collapse-summary">
+            <span class="collapse-title">Missing sources</span>
+            <span class="collapse-meta muted" id="missing-sources-summary">Loading…</span>
+          </summary>
+          <div class="collapse-body">
+            <p class="muted" style="margin:0 0 0.75rem">Each gap includes a console snippet to fetch NBU servers and check whether the data is missing there too. Run snippets on the Customer Connect site (logged in, DevTools console).</p>
+            <div id="missing-sources-content">
+              <p class="muted">Loading missing sources…</p>
+            </div>
+          </div>
+        </details>
+        <div class="toolbar collapse-card-actions">
           <button id="copy-verify-all-script" class="secondary" hidden>Copy verify-all script</button>
           <button id="copy-probe-script" class="secondary" hidden>Verify all + save</button>
           <button id="refresh-missing-sources" class="secondary">Refresh</button>
         </div>
-      </div>
-      <p class="muted" id="missing-sources-summary">Loading…</p>
-      <div id="missing-sources-content">
-        <p class="muted">Loading missing sources…</p>
       </div>
     </div>
 
@@ -1068,17 +1117,26 @@ function dashboardPage() {
             html += '</li>';
             return html;
           }).join("") + (missing.length > 12
-            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="#missing-sources-card">View all ' + missing.length + '</a></li>'
+            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="#missing-sources-card" class="open-missing-sources">View all ' + missing.length + '</a></li>'
             : "")
         : '<li class="none">No gaps in this view.</li>';
 
       el.innerHTML =
         '<div class="chart-sources-grid">' +
-          '<div><h3>Source files (' + sources.length + ')</h3><ul>' + sourceItems + '</ul></div>' +
-          '<div><h3>Missing (' + missing.length + ')</h3><ul>' + missingItems + '</ul></div>' +
+          '<details class="collapse-panel chart-source-panel">' +
+            '<summary>Source files (' + sources.length + ')</summary>' +
+            '<div class="collapse-body"><ul>' + sourceItems + '</ul></div>' +
+          '</details>' +
+          '<details class="collapse-panel chart-source-panel">' +
+            '<summary>Missing (' + missing.length + ')</summary>' +
+            '<div class="collapse-body"><ul>' + missingItems + '</ul></div>' +
+          '</details>' +
         '</div>';
       el.hidden = false;
 
+      el.querySelectorAll(".open-missing-sources").forEach((link) => {
+        link.addEventListener("click", () => openMissingSourcesPanel());
+      });
       el.querySelectorAll("button[data-date]").forEach((button) => {
         button.addEventListener("click", () => openCoverageDay(button.dataset.date));
       });
@@ -1209,6 +1267,11 @@ function dashboardPage() {
         return label + ": " + range + " (" + hours + "/24 hours)";
       }
       return label + ": " + range + " (" + gap.days + " day" + (gap.days === 1 ? "" : "s") + ")";
+    }
+
+    function openMissingSourcesPanel() {
+      const panel = document.getElementById("missing-sources-panel");
+      if (panel) panel.open = true;
     }
 
     function openCoverageDay(dateKey) {
@@ -1716,6 +1779,9 @@ function dashboardPage() {
       .then(loadCoverage)
       .then(loadMissingSources)
       .then(loadQueuedSyncView)
+      .then(() => {
+        if (window.location.hash === "#missing-sources-card") openMissingSourcesPanel();
+      })
       .then(() => refreshBackupStatus());
   </script>
 </body>
