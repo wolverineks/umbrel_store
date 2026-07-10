@@ -120,7 +120,9 @@
         <button class="nbu-primary" id="nbu-sync-recent" type="button">Sync last 30 days</button>
         <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
+        <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
         <div class="nbu-mini">Use recent sync for updates. Full history is mainly for the first backfill.</div>
+        <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
     `;
     document.documentElement.appendChild(panel);
@@ -150,6 +152,10 @@
         { source: "nbu-umbrel-content", type: "PLAN_SYNC", options: { recentDays: 30 } },
         "*",
       );
+    });
+
+    panel.querySelector("#nbu-copy-object-id").addEventListener("click", () => {
+      window.postMessage({ source: "nbu-umbrel-content", type: "GET_OBJECT_ID" }, "*");
     });
 
     return panel;
@@ -248,6 +254,21 @@
 
     if (event.data.type === "SYNC_ERROR") {
       setStatus(event.data.error || "Sync failed.", "err");
+    }
+
+    if (event.data.type === "OBJECT_ID") {
+      const objectId = event.data.objectId;
+      if (!objectId) {
+        setStatus("No meter found on this page.", "err");
+        return;
+      }
+      const label = event.data.meterLabel ? ` (${event.data.meterLabel})` : "";
+      void navigator.clipboard
+        .writeText(objectId)
+        .then(() => {
+          setStatus(`Copied Object ID${label}. Paste into Umbrel dashboard → Save Object ID.`, "ok");
+        })
+        .catch(() => setStatus("Copy failed.", "err"));
     }
   });
 

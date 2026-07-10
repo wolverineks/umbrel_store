@@ -64,17 +64,26 @@
     return utilType === "W" ? "Water" : "Electric";
   }
 
+  function normalizeObjectId(value) {
+    return value.replace("_PTR", "").replace("_virtual", "");
+  }
+
   function getObjectIds() {
     const select = document.querySelector("select#meter");
     if (!select) {
       if (typeof window.objectId === "string" && window.objectId) {
-        return [window.objectId.replace("_PTR", "").replace("_virtual", "")];
+        return [normalizeObjectId(window.objectId)];
       }
       return [];
     }
-    return [...select.options].map((option) =>
-      option.value.replace("_PTR", "").replace("_virtual", ""),
-    );
+    return [...select.options].map((option) => normalizeObjectId(option.value));
+  }
+
+  function getSelectedObjectId() {
+    const select = document.querySelector("select#meter");
+    if (select?.value) return normalizeObjectId(select.value);
+    const ids = getObjectIds();
+    return ids[0] ?? null;
   }
 
   function getMeterLabel(objectId) {
@@ -430,6 +439,14 @@
         total: jobs.length,
         mode: event.data.options?.recentDays ? `last ${event.data.options.recentDays} days` : "full history",
         jobs: jobs.slice(0, 5).map((job) => job.label),
+      });
+    }
+    if (event.data.type === "GET_OBJECT_ID") {
+      const objectId = getSelectedObjectId();
+      post("OBJECT_ID", {
+        objectId,
+        objectIds: getObjectIds(),
+        meterLabel: objectId ? getMeterLabel(objectId) : null,
       });
     }
   });
