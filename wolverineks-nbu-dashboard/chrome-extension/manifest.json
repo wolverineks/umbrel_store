@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "NBU Utilities for Umbrel",
-  "version": "2.11.0",
+  "name": "NBU Utilities",
+  "version": "2.12.0",
   "description": "Sync New Braunfels Utilities Customer Connect exports to your Umbrel dashboard.",
   "permissions": ["storage", "scripting"],
   "host_permissions": [

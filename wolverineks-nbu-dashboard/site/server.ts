@@ -25,7 +25,7 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.18.5";
+const APP_VERSION = "1.18.6";
 
 type DashboardPage =
   | "overview"
@@ -170,8 +170,8 @@ function dashboardPageContent(page: DashboardPage): string {
     case "setup":
       return `
       <div class="card">
-        <h2>Chrome extension</h2>
-        <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
+        <h2>NBU Utilities extension</h2>
+        <p class="muted">Configure the NBU Utilities Chrome extension with your Umbrel URL and ingest token.</p>
         <div class="token-box" style="margin-top:0.8rem">
           <code id="token"></code>
           <button id="copy-token" class="secondary">Copy token</button>

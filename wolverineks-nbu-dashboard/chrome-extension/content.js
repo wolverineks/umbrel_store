@@ -106,7 +106,7 @@
     panel.id = PANEL_ID;
     panel.innerHTML = `
       <div class="nbu-head">
-        <span>NBU → Umbrel</span>
+        <span>NBU Utilities</span>
         <span>
           <span class="nbu-mini" id="nbu-page-kind"></span>
           <span class="nbu-version">v${version}</span>

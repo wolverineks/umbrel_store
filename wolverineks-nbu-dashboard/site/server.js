@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.18.4";
+const APP_VERSION = "1.18.6";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -136,8 +136,8 @@ function dashboardPageContent(page) {
         case "setup":
             return `
       <div class="card">
-        <h2>Chrome extension</h2>
-        <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
+        <h2>NBU Utilities extension</h2>
+        <p class="muted">Configure the NBU Utilities Chrome extension with your Umbrel URL and ingest token.</p>
         <div class="token-box" style="margin-top:0.8rem">
           <code id="token"></code>
           <button id="copy-token" class="secondary">Copy token</button>
