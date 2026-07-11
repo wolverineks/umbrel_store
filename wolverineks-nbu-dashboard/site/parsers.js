@@ -3,7 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.centralHourSlotIso = centralHourSlotIso;
 exports.detectFormat = detectFormat;
 exports.parseNbuExport = parseNbuExport;
-const ESPI_NS = "http://naesb.org/espi";
 function filenameUtility(filename) {
     const lower = filename.toLowerCase();
     if (lower.includes("water"))
@@ -17,92 +16,6 @@ function filenameIds(filename) {
     if (!match)
         return { account_id: null, usage_point: null };
     return { account_id: match[1], usage_point: match[2] };
-}
-function parseXmlTag(block, tag) {
-    const match = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
-    return match ? match[1].trim() : null;
-}
-function parseXmlBlocks(xml, tag) {
-    const blocks = [];
-    const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "g");
-    let match;
-    while ((match = re.exec(xml)) !== null) {
-        blocks.push(match[0]);
-    }
-    return blocks;
-}
-function whToKwh(value, powerOfTenMultiplier = 0) {
-    const scaled = value * Math.pow(10, powerOfTenMultiplier);
-    return scaled / 1000;
-}
-function unixToIso(seconds) {
-    return new Date(seconds * 1000).toISOString();
-}
-function parseGreenButtonXml(content, filename) {
-    const { account_id, usage_point } = filenameIds(filename);
-    const utility = filenameUtility(filename) ?? "electric";
-    let address = null;
-    const usagePointEntry = xmlEntryByHref(content, /UsagePoint\/\d+"/);
-    if (usagePointEntry) {
-        const title = parseXmlTag(usagePointEntry, "title");
-        if (title) {
-            address = title.replace(/\s+/g, " ").trim();
-        }
-        const kind = parseXmlTag(usagePointEntry, "kind");
-        if (kind) {
-            // kind 0 = electricity in ESPI
-        }
-    }
-    const readingTypeBlock = xmlEntryByHref(content, /ReadingType\/\d+"/);
-    let powerOfTenMultiplier = 0;
-    let unit = "kWh";
-    if (readingTypeBlock) {
-        const readingTypeContent = parseXmlTag(readingTypeBlock, "content") ?? readingTypeBlock;
-        const multiplier = parseXmlTag(readingTypeContent, "powerOfTenMultiplier");
-        if (multiplier)
-            powerOfTenMultiplier = Number(multiplier);
-        const uom = parseXmlTag(readingTypeContent, "uom");
-        if (uom === "119")
-            unit = "gal";
-    }
-    const readings = [];
-    for (const block of parseXmlBlocks(content, "IntervalBlock")) {
-        for (const readingBlock of parseXmlBlocks(block, "IntervalReading")) {
-            const start = Number(parseXmlTag(readingBlock, "start") ?? "0");
-            const duration = Number(parseXmlTag(readingBlock, "duration") ?? "3600");
-            const rawValue = Number(parseXmlTag(readingBlock, "value") ?? "0");
-            const value = unit === "kWh" ? whToKwh(rawValue, powerOfTenMultiplier) : rawValue * Math.pow(10, powerOfTenMultiplier);
-            readings.push({
-                utility,
-                granularity: duration >= 86400 ? "day" : "hour",
-                period_start: unixToIso(start),
-                period_end: unixToIso(start + duration),
-                value,
-                unit,
-                meter_id: null,
-                account_id,
-                usage_point,
-                address,
-            });
-        }
-    }
-    return {
-        format: "greenbutton_xml",
-        utility,
-        filename,
-        account_id,
-        usage_point,
-        address,
-        readings,
-    };
-}
-function xmlEntryByHref(xml, hrefPattern) {
-    const entries = parseXmlBlocks(xml, "entry");
-    for (const entry of entries) {
-        if (hrefPattern.test(entry))
-            return entry;
-    }
-    return null;
 }
 function parseHourlyCsv(content, filename) {
     const { account_id, usage_point } = filenameIds(filename);
@@ -304,22 +217,24 @@ function parseIsoDate(label) {
     return parsed;
 }
 function detectFormat(filename, content) {
+    const trimmed = content.trim();
     const lower = filename.toLowerCase();
-    if (lower.endsWith(".xml") || content.includes(`xmlns="${ESPI_NS}"`)) {
-        return "greenbutton_xml";
-    }
-    if (lower.includes("hourly_usage") || /^date\/time,/i.test(content.trim())) {
+    if (/^date\/time,/i.test(trimmed)) {
         return "hourly_csv";
     }
-    if (lower.includes("readinghistory") || /^meter #,/i.test(content.trim())) {
+    if (/^meter #,/i.test(trimmed)) {
         return "history_csv";
     }
-    throw new Error("unsupported file format");
+    if (lower.includes("hourlyusage") || lower.includes("hourly_usage")) {
+        return "hourly_csv";
+    }
+    if (lower.includes("readinghistory")) {
+        return "history_csv";
+    }
+    throw new Error("unsupported file format (CSV only)");
 }
 function parseNbuExport(filename, content) {
     const format = detectFormat(filename, content);
-    if (format === "greenbutton_xml")
-        return parseGreenButtonXml(content, filename);
     if (format === "hourly_csv")
         return parseHourlyCsv(content, filename);
     return parseHistoryCsv(content, filename);

@@ -43,7 +43,7 @@
 <body>
   <div class="wrap">
     <h1>NBU → Umbrel <span id="version" class="version"></span></h1>
-    <p>On Customer Connect, use the floating sync panel on report pages to pull Green Button exports (one request per day). Umbrel URL must match your browser address bar when the dashboard is open (not a redirect).</p>
+    <p>On Customer Connect, use the floating sync panel on report pages to pull hourly CSV exports (one request per day). Umbrel URL must match your browser address bar when the dashboard is open (not a redirect).</p>
     <label for="baseUrl">Umbrel app URL</label>
     <input id="baseUrl" placeholder="copy from browser address bar">
     <label for="token">Ingest token</label>
@@ -52,7 +52,7 @@
     <button id="upload" class="secondary">Upload files manually</button>
     <input id="files" type="file" multiple accept=".xml,.csv,text/xml,text/csv">
     <ol>
-      <li>First time: <strong>Sync full history</strong> on Consumption Report (daily Green Button, up to 24 months)</li>
+      <li>First time: <strong>Sync full history</strong> on Consumption Report (daily hourly CSV, up to 24 months)</li>
       <li>After that: <strong>Sync last 30 days</strong> for updates</li>
       <li>Re-run Meter Reading History occasionally for new billing months</li>
       <li>Switch accounts for your second house</li>

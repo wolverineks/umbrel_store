@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NBU_GREEN_BUTTON_BASE = void 0;
+exports.NBU_HOURLY_CSV_BASE = void 0;
 exports.centralLocalDateKey = centralLocalDateKey;
 exports.centralTodayKey = centralTodayKey;
 exports.addDaysToDateKey = addDaysToDateKey;
@@ -48,7 +48,7 @@ const IMPORTS_PATH = node_path_1.default.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = node_path_1.default.join(DATA_ROOT, "source-errors.json");
 const SYNC_QUEUE_PATH = node_path_1.default.join(DATA_ROOT, "sync-view-queue.json");
-exports.NBU_GREEN_BUTTON_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportGreenButtonData.xml";
+exports.NBU_HOURLY_CSV_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportExcelReadData.xml";
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
     return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
@@ -303,11 +303,11 @@ function buildNbuExportUrl(start, end, objectId, utility) {
         StartDateTime: `${start}T00:00:00`,
         EndDateTime: `${addDaysToDateKey(end, 1)}T00:00:00`,
         ObjectId: objectId,
-        Type: "Tier",
+        Type: "all",
         utilType: utility === "water" ? "W" : "E",
         View: "usage",
     });
-    return `${exports.NBU_GREEN_BUTTON_BASE}?${params.toString()}`;
+    return `${exports.NBU_HOURLY_CSV_BASE}?${params.toString()}`;
 }
 function jsFetchSnippet(url, withCredentials = false) {
     const escaped = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -318,25 +318,17 @@ function jsFetchSnippet(url, withCredentials = false) {
 }
 function nbuVerifyLogicJs() {
     return `function analyzeNbuResponse(status, text) {
-  const hasXml = /xmlns="http:\\/\\/naesb.org\\/espi"/i.test(text);
-  const intervalBlockCount = (text.match(/<IntervalBlock/gi) || []).length;
-  const intervalReadingCount = (text.match(/<IntervalReading/gi) || []).length;
-  const hasCsv = /^Date\\/Time,/im.test(text.trim());
-  const csvRows = hasCsv ? Math.max(0, text.trim().split(/\\n/).length - 1) : 0;
+  const trimmed = text.trim();
+  const hasCsv = /^Date\\/Time,/im.test(trimmed) || /^Meter #,/im.test(trimmed);
+  const csvRows = hasCsv ? Math.max(0, trimmed.split(/\\n/).length - 1) : 0;
   if (!status || status < 200 || status >= 300) {
     return { verdict: "NBU_ERROR", detail: status ? "HTTP " + status : "fetch failed", hasData: false };
-  }
-  if (hasXml && intervalReadingCount > 0) {
-    return { verdict: "NBU_HAS_DATA", detail: intervalReadingCount + " IntervalReading(s)", hasData: true };
   }
   if (hasCsv && csvRows > 0) {
     return { verdict: "NBU_HAS_DATA", detail: csvRows + " CSV row(s)", hasData: true };
   }
-  if (hasXml && intervalBlockCount > 0) {
-    return { verdict: "NBU_MISSING", detail: intervalBlockCount + " empty IntervalBlock(s) — no readings", hasData: false };
-  }
-  if (hasXml || hasCsv) {
-    return { verdict: "NBU_MISSING", detail: "feed returned with no readings", hasData: false };
+  if (hasCsv) {
+    return { verdict: "NBU_MISSING", detail: "CSV returned with no data rows", hasData: false };
   }
   return { verdict: "NBU_MISSING", detail: "empty or unsupported response", hasData: false };
 }`;
@@ -646,7 +638,7 @@ function buildUsageSources(filtered, imports, objectId, utility) {
         return {
             id,
             filename: record?.filename ?? "Unknown file",
-            format: record?.format ?? "greenbutton_xml",
+            format: record?.format ?? "hourly_csv",
             imported_at: record?.imported_at ?? "",
             readings_in_view,
             file_url,

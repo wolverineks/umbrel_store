@@ -191,7 +191,7 @@
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
       for (const range of dayRanges(start, effectiveEnd)) {
-        const job = greenButtonJobForRange(range, objectId, utilType, "View");
+        const job = csvJobForRange(range, objectId, utilType, "View");
         if (job) jobs.push({ ...job, meterLabel, objectId });
       }
     }
@@ -210,7 +210,7 @@
     return ranges;
   }
 
-  function greenButtonJobForRange(range, objectId, utilType, rangeKind) {
+  function csvJobForRange(range, objectId, utilType, rangeKind) {
     const effectiveRange =
       rangeKind === "View" ? range : clampRangeForExport(range);
     if (!effectiveRange) return null;
@@ -219,7 +219,7 @@
       ObjectId: objectId,
       utilType,
       View: "usage",
-      Type: "Tier",
+      Type: "all",
     };
     const times = isoRange(effectiveRange.start, effectiveRange.end, rangeKind === "View");
     const util = utilityLabel(utilType);
@@ -227,11 +227,11 @@
     const meterSuffix = objectId.slice(0, 8);
 
     return {
-      kind: "greenbutton",
+      kind: "csv",
       rangeKind,
-      label: `${effectiveRange.label} · Green Button`,
-      filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_GreenButton_${util}.xml`,
-      url: buildExportUrl("ExportGreenButtonData.xml", { ...base, ...times }),
+      label: `${effectiveRange.label} · Hourly CSV`,
+      filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_HourlyUsage_${util}.csv`,
+      url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times }),
     };
   }
 
@@ -268,7 +268,7 @@
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
       for (const range of dayRanges(firstDate, lastDate)) {
-        const job = greenButtonJobForRange(range, objectId, utilType, "Day");
+        const job = csvJobForRange(range, objectId, utilType, "Day");
         if (job) jobs.push({ ...job, meterLabel, objectId });
       }
     }
@@ -339,12 +339,14 @@
   function normalizeContent(text, contentType) {
     const trimmed = text.trim();
     if (!trimmed) return null;
-    if (/xmlns="http:\/\/naesb.org\/espi"/i.test(trimmed)) return trimmed;
+    if (/xmlns="http:\/\/naesb.org\/espi"/i.test(trimmed)) return null;
+    if (trimmed.includes("<feed") && trimmed.includes("espi")) return null;
     if (/^Meter #,/i.test(trimmed)) return trimmed;
     if (/^Date\/Time,/i.test(trimmed)) return trimmed;
-    if (contentType.includes("xml") && trimmed.startsWith("<?xml")) return trimmed;
-    if (contentType.includes("csv") || /^[0-9/T:," -]+/i.test(trimmed.slice(0, 40))) return trimmed;
-    if (trimmed.includes("<feed") && trimmed.includes("espi")) return trimmed;
+    if (contentType.includes("csv") || /^[0-9/A-Za-z:," -]+/i.test(trimmed.slice(0, 40))) {
+      if (trimmed.startsWith("<?xml")) return null;
+      return trimmed;
+    }
     return null;
   }
 
@@ -500,8 +502,8 @@
       post("SYNC_PLAN", {
         total: jobs.length,
         mode: event.data.options?.recentDays
-          ? `last ${event.data.options.recentDays} days · Green Button · daily`
-          : "full history · Green Button · daily",
+          ? `last ${event.data.options.recentDays} days · Hourly CSV · daily`
+          : "full history · Hourly CSV · daily",
         jobs: jobs.slice(0, 5).map((job) => job.label),
       });
     }

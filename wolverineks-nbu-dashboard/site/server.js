@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.9.8";
+const APP_VERSION = "1.10.0";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -145,7 +145,7 @@ function dashboardPageContent(page) {
         <h3 style="margin:1rem 0 0.35rem;font-size:0.95rem;color:var(--muted)">NBU Object ID</h3>
         <p class="muted" style="margin:0 0 0.75rem">Per property (selected above). Saved in <code>settings.json</code> and included in backup/restore.</p>
         <div class="toolbar" style="margin-bottom:0">
-          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs" style="min-width:280px;flex:1">
+          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for hourly CSV export URLs" style="min-width:280px;flex:1">
           <button id="save-object-id" class="secondary">Save Object ID</button>
         </div>
         <p class="object-id-hint" id="object-id-hint" hidden style="margin:0.75rem 0 0">
@@ -304,7 +304,7 @@ async function handleIngest(req, res) {
             return;
         }
         const filenameHeader = req.headers["x-filename"];
-        const filename = typeof filenameHeader === "string" ? filenameHeader : "upload.xml";
+        const filename = typeof filenameHeader === "string" ? filenameHeader : "upload.csv";
         const rawContent = body.toString("utf8");
         const parsed = (0, parsers_1.parseNbuExport)(filename, rawContent);
         const record = await (0, store_1.importParsed)(parsed, rawContent);
@@ -1341,7 +1341,7 @@ function dashboardPage(page) {
               html += renderLinkRow("View", viewUrl);
             }
             if (source.nbu_url) {
-              html += renderLinkRow("NBU export", source.nbu_url);
+              html += renderLinkRow("NBU CSV", source.nbu_url);
             }
             html += '</ul></li>';
             return html;
