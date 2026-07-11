@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.9.5";
+const APP_VERSION = "1.9.6";
 
 type DashboardPage =
   | "overview"
@@ -1150,18 +1150,10 @@ function dashboardPage(page: DashboardPage): string {
       }, 1500);
     }
 
-    function renderLinkRow(label, url, fetchSnippet, copyKind, copyIndex, copyLabel) {
+    function renderLinkRow(label, url) {
       if (!url) return "";
-      const buttonLabel = copyLabel || "Copy snippet";
-      let html = '<li><span class="muted">' + label + ':</span> ';
-      html += '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a>';
-      if (fetchSnippet) {
-        html += ' <button type="button" class="secondary copy-snippet" data-kind="' + copyKind +
-          '" data-index="' + copyIndex + '">' + buttonLabel + '</button>';
-        html += '<code class="source-snippet">' + escapeHtml(fetchSnippet) + '</code>';
-      }
-      html += '</li>';
-      return html;
+      return '<li><span class="muted">' + label + ':</span> ' +
+        '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a></li>';
     }
 
     function fmtNbuVerdict(item) {
@@ -1386,10 +1378,10 @@ function dashboardPage(page: DashboardPage): string {
             let html = '<li>' + name + '<div class="muted">' + meta + '</div>';
             html += '<ul class="source-detail">';
             if (viewUrl) {
-              html += renderLinkRow("View", viewUrl, source.file_fetch, "source-file", index);
+              html += renderLinkRow("View", viewUrl);
             }
             if (source.nbu_url) {
-              html += renderLinkRow("NBU export", source.nbu_url, source.nbu_fetch, "source-nbu", index);
+              html += renderLinkRow("NBU export", source.nbu_url);
             }
             html += '</ul></li>';
             return html;
@@ -1405,8 +1397,7 @@ function dashboardPage(page: DashboardPage): string {
             }
             let html = '<li>' + labelHtml;
             if (gap.nbu_url) {
-              html += '<ul class="source-detail">' +
-                renderLinkRow("Verify on NBU", gap.nbu_url, gap.nbu_fetch, "missing-nbu", index, "Copy verify snippet") + '</ul>';
+              html += '<ul class="source-detail">' + renderLinkRow("Verify on NBU", gap.nbu_url) + '</ul>';
             }
             html += '</li>';
             return html;
@@ -1430,15 +1421,6 @@ function dashboardPage(page: DashboardPage): string {
 
       el.querySelectorAll("button[data-date]").forEach((button) => {
         button.addEventListener("click", () => openCoverageDay(button.dataset.date));
-      });
-      el.querySelectorAll(".copy-snippet").forEach((button) => {
-        const kind = button.dataset.kind;
-        const index = Number(button.dataset.index);
-        let text = null;
-        if (kind === "source-file") text = usage.sources[index]?.file_fetch ?? null;
-        else if (kind === "source-nbu") text = usage.sources[index]?.nbu_fetch ?? null;
-        else if (kind === "missing-nbu") text = usage.missing[index]?.nbu_fetch ?? null;
-        button.addEventListener("click", () => copySnippet(button, text));
       });
     }
 
