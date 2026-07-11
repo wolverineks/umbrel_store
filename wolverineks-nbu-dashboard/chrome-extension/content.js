@@ -92,9 +92,7 @@
   }
 
   function isRelevantPage() {
-    return /\/CC\//i.test(window.location.href) &&
-      (/Reports\.xml/i.test(window.location.href) ||
-        /MeterReadingHistory\.xml/i.test(window.location.href));
+    return /\/CC\//i.test(window.location.href) && /Reports\.xml/i.test(window.location.href);
   }
 
   function ensurePanel() {
@@ -129,10 +127,7 @@
     `;
     document.documentElement.appendChild(panel);
 
-    const pageKind = /MeterReadingHistory\.xml/i.test(window.location.href)
-      ? "History"
-      : "Consumption";
-    panel.querySelector("#nbu-page-kind").textContent = pageKind;
+    panel.querySelector("#nbu-page-kind").textContent = "Consumption";
 
     refreshPendingViewLabel();
 

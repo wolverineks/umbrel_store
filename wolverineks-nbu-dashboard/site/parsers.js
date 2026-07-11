@@ -106,66 +106,6 @@ function rejectTouCsv(filename, content) {
         throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
     }
 }
-function parseHistoryCsv(content, filename) {
-    const { account_id, usage_point } = filenameIds(filename);
-    const utility = filenameUtility(filename) ?? "electric";
-    const lines = content.trim().split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) {
-        throw new Error("history CSV is empty");
-    }
-    const header = splitCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
-    const idx = {
-        meter: header.indexOf("meter #"),
-        readDate: header.indexOf("read date"),
-        days: header.indexOf("# of days"),
-        readType: header.indexOf("read type"),
-        usage: header.indexOf("usage"),
-        unit: header.indexOf("unit measure"),
-    };
-    const readings = [];
-    for (let i = 1; i < lines.length; i++) {
-        const parts = splitCsvLine(lines[i]);
-        const readType = parts[idx.readType]?.trim();
-        if (readType !== "MR")
-            continue;
-        const usage = Number(parts[idx.usage]?.trim());
-        if (!Number.isFinite(usage) || usage < 0)
-            continue;
-        const meterId = parts[idx.meter]?.trim() || null;
-        const readDate = parts[idx.readDate]?.trim();
-        const days = Number(parts[idx.days]?.trim() ?? "0");
-        const unitLabel = parts[idx.unit]?.trim().toLowerCase();
-        const unit = unitLabel === "gal" || unitLabel === "gallons" ? "gal" : "kWh";
-        const periodEnd = parseIsoDate(readDate);
-        if (!periodEnd)
-            continue;
-        const periodStart = new Date(periodEnd);
-        if (days > 0) {
-            periodStart.setUTCDate(periodStart.getUTCDate() - days);
-        }
-        readings.push({
-            utility,
-            granularity: "billing_period",
-            period_start: periodStart.toISOString(),
-            period_end: periodEnd.toISOString(),
-            value: usage,
-            unit,
-            meter_id: meterId,
-            account_id,
-            usage_point,
-            address: null,
-        });
-    }
-    return {
-        format: "history_csv",
-        utility,
-        filename,
-        account_id,
-        usage_point,
-        address: null,
-        readings,
-    };
-}
 function splitCsvLine(line) {
     const parts = [];
     let current = "";
@@ -228,18 +168,17 @@ function centralHourSlotIso(dateKey, hour) {
 function nbuDayStartIso(year, month, day) {
     return nbuHourIso(year, month, day, 1);
 }
-function parseIsoDate(label) {
-    const parsed = new Date(label);
-    if (Number.isNaN(parsed.getTime()))
-        return null;
-    return parsed;
+function rejectHistoryCsv(filename, content) {
+    const trimmed = content.trim();
+    const lower = filename.toLowerCase();
+    if (/^meter #,/i.test(trimmed) || lower.includes("readinghistory")) {
+        throw new Error("Billing history CSV is no longer supported; sync hourly CSV only");
+    }
 }
 function detectFormat(filename, content) {
     const trimmed = content.trim();
     const lower = filename.toLowerCase();
-    if (/^meter #,/i.test(trimmed) || lower.includes("readinghistory")) {
-        return "history_csv";
-    }
+    rejectHistoryCsv(filename, content);
     if (/^date\/time,/i.test(trimmed) || lower.includes("hourlyusage") || lower.includes("hourly_usage")) {
         rejectTouCsv(filename, content);
         return "hourly_csv";
@@ -248,8 +187,6 @@ function detectFormat(filename, content) {
     throw new Error("unsupported file format (CSV only)");
 }
 function parseNbuExport(filename, content) {
-    const format = detectFormat(filename, content);
-    if (format === "hourly_csv")
-        return parseHourlyCsv(content, filename);
-    return parseHistoryCsv(content, filename);
+    detectFormat(filename, content);
+    return parseHourlyCsv(content, filename);
 }

@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.14.1";
+const APP_VERSION = "1.15.0";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -60,7 +60,6 @@ function usageChartSection() {
           <select id="granularity">
             <option value="hour">Hourly</option>
             <option value="day">Daily</option>
-            <option value="billing_period">Billing periods</option>
           </select>
           <select id="range">
             <option value="7">Last 7 days</option>
@@ -224,7 +223,7 @@ function parseUtility(value) {
     return value === "water" ? "water" : "electric";
 }
 function parseGranularity(value) {
-    if (value === "day" || value === "billing_period")
+    if (value === "day")
         return value;
     return "hour";
 }
@@ -1383,9 +1382,6 @@ function dashboardPage(page) {
           minute: "2-digit",
         });
       }
-      if (granularity === "billing_period") {
-        return date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
-      }
       return date.toLocaleDateString(undefined, {
         weekday: "short",
         month: "short",
@@ -1451,8 +1447,8 @@ function dashboardPage(page) {
       el.innerHTML = [
         ["Electric hours", o.electric_hours, "stored"],
         ["Electric days", o.electric_days, "stored"],
-        ["Billing periods", o.electric_billing_periods, "stored"],
         ["Water hours", o.water_hours, "stored"],
+        ["Water days", o.water_days, "stored"],
       ].map(([label, value, suffix]) => \`
         <div class="card">
           <h3>\${label}</h3>
@@ -1469,7 +1465,9 @@ function dashboardPage(page) {
 
     function renderImports() {
       const importsEl = document.getElementById("imports");
-      const items = (state.imports?.imports ?? []).filter((item) => item.format !== "tou_csv");
+      const items = (state.imports?.imports ?? []).filter(
+        (item) => item.format !== "tou_csv" && item.format !== "history_csv",
+      );
       if (!importsEl) return;
       if (!items.length) {
         importsEl.innerHTML = '<div class="empty">No uploads yet.</div>';
@@ -1804,11 +1802,9 @@ function dashboardPage(page) {
         if (rangeEl) rangeEl.textContent = "";
         const granularity = document.getElementById("granularity")?.value;
         const hint =
-          granularity === "billing_period"
-            ? "Switch to Hourly or Daily view to see the energy report."
-            : granularity === "day"
-              ? "No daily totals in this range yet. Sync more data from Customer Connect."
-              : "No hourly data in this range. Pick a day with synced data, or widen the range.";
+          granularity === "day"
+            ? "No daily totals in this range yet. Sync more data from Customer Connect."
+            : "No hourly data in this range. Pick a day with synced data, or widen the range.";
         el.innerHTML = '<p class="muted" style="margin:0">' + escapeHtml(hint) + "</p>";
         return;
       }

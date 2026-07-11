@@ -3,7 +3,7 @@
   window.__nbuUmbrelPageBridge = true;
 
   const BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/";
-  const BILL_BASE = "https://myinfo.nbutexas.com/CC/connect/users/bill/indicators/";
+
   const DELAY_MS = 350;
 
   function sleep(ms) {
@@ -99,14 +99,6 @@
 
   function buildExportUrl(endpoint, params) {
     const url = new URL(`${BASE}${endpoint}`);
-    for (const [key, value] of Object.entries(params)) {
-      url.searchParams.set(key, value);
-    }
-    return url.toString();
-  }
-
-  function buildBillExportUrl(endpoint, params) {
-    const url = new URL(`${BILL_BASE}${endpoint}`);
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value);
     }
@@ -283,36 +275,6 @@
     return jobs;
   }
 
-  function historyExportCandidates(objectId, utilType) {
-    const params = { utility: utilType, ObjectId: objectId };
-    const bare = { utility: utilType };
-    return [
-      buildBillExportUrl("ExportMeterReadingHistory.xml", params),
-      buildBillExportUrl("ExportMeterReadingHistory.xml", bare),
-      buildBillExportUrl("ExportReadingHistory.xml", params),
-      buildBillExportUrl("ExportExcelReadData.xml", { ...params, Type: "all" }),
-    ];
-  }
-
-  function buildHistoryJobs() {
-    const utilType = getUtilType();
-    const util = utilityLabel(utilType);
-    const objectIds = getObjectIds();
-    const jobs = [];
-    for (const objectId of objectIds) {
-      jobs.push({
-        kind: "history",
-        rangeKind: "History",
-        label: `${getMeterLabel(objectId)} · Reading history`,
-        filename: `nbu-${objectId.slice(0, 8)}_${util}ReadingHistory_.csv`,
-        urls: historyExportCandidates(objectId, utilType),
-        meterLabel: getMeterLabel(objectId),
-        objectId,
-      });
-    }
-    return jobs;
-  }
-
   function pageJobs(options = {}) {
     if (options.viewStart && options.viewEnd) {
       return buildViewJobs(options.viewStart, options.viewEnd);
@@ -326,11 +288,8 @@
       return [];
     }
 
-    const html = document.documentElement.innerHTML;
-    if (/MeterReadingHistory\.xml/i.test(window.location.href)) {
-      return buildHistoryJobs();
-    }
     if (/Reports\.xml/i.test(window.location.href)) {
+      const html = document.documentElement.innerHTML;
       return buildConsumptionJobs(html, options);
     }
     return [];
@@ -348,7 +307,6 @@
     if (!trimmed) return null;
     if (/xmlns="http:\/\/naesb.org\/espi"/i.test(trimmed)) return null;
     if (trimmed.includes("<feed") && trimmed.includes("espi")) return null;
-    if (/^Meter #,/i.test(trimmed)) return trimmed;
     if (/^Date\/Time,/i.test(trimmed)) return trimmed;
     if (contentType.includes("csv") || /^[0-9/A-Za-z:," -]+/i.test(trimmed.slice(0, 40))) {
       if (trimmed.startsWith("<?xml")) return null;
@@ -446,7 +404,7 @@
             "No view to sync. On Umbrel: pick a day → Queue for extension. Or open a dated chart on Customer Connect.",
         });
       } else {
-        post("SYNC_ERROR", { error: "Open the Consumption Report or Meter Reading History page first." });
+        post("SYNC_ERROR", { error: "Open the Consumption Report page first." });
       }
       return;
     }

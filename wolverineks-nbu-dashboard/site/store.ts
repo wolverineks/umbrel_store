@@ -833,10 +833,6 @@ function viewRangeKeys(
   }
 
   if (!filtered.length) return null;
-  if (granularity === "billing_period") {
-    const starts = filtered.map((reading) => reading.period_start.slice(0, 10)).sort();
-    return { start: starts[0], end: starts[starts.length - 1] };
-  }
 
   const dates = filtered.map((reading) => centralLocalDateKey(reading.period_start)).sort();
   return { start: dates[0], end: dates[dates.length - 1] };
@@ -1014,40 +1010,7 @@ function buildUsageMissing(
     return withNbuLinks(mergeMissingPeriods(items), objectId, utility);
   }
 
-  const billing = [...filtered].sort((a, b) => a.period_start.localeCompare(b.period_start));
-  if (!billing.length) {
-    return withNbuLinks(
-      [
-        {
-          start: range.start,
-          end: range.end,
-          label: `${formatRangeLabel(range.start, range.end)} (no billing periods)`,
-        },
-      ],
-      objectId,
-      utility,
-    );
-  }
-
-  const missing: Array<{ start: string; end: string; label: string }> = [];
-  for (let index = 1; index < billing.length; index++) {
-    const previous = billing[index - 1];
-    const current = billing[index];
-    const previousEnd = previous.period_end ?? previous.period_start;
-    const gapDays = Math.round(
-      (new Date(current.period_start).getTime() - new Date(previousEnd).getTime()) / 86_400_000,
-    );
-    if (gapDays > 45) {
-      const gapStart = centralLocalDateKey(previousEnd);
-      const gapEnd = centralLocalDateKey(current.period_start);
-      missing.push({
-        start: gapStart,
-        end: gapEnd,
-        label: `${formatRangeLabel(gapStart, gapEnd)} (gap between billing periods)`,
-      });
-    }
-  }
-  return withNbuLinks(missing, objectId, utility);
+  return [];
 }
 
 function centralLocalHour(iso: string): number {
@@ -1187,8 +1150,6 @@ function buildEnergyReport(
     utility === "electric"
       ? "Estimated cost: — (add your electric rates in Settings to enable)"
       : "Estimated cost: — (water rates not configured)";
-
-  if (granularity === "billing_period") return null;
 
   if (granularity === "day") {
     const dayReadings = filterReadings(
@@ -1415,10 +1376,8 @@ export async function getOverview(propertyId: string | null = null): Promise<{
   import_count: number;
   electric_hours: number;
   electric_days: number;
-  electric_billing_periods: number;
   water_hours: number;
   water_days: number;
-  water_billing_periods: number;
 }> {
   const settings = await loadSettings();
   const properties = await listProperties();
@@ -1440,10 +1399,8 @@ export async function getOverview(propertyId: string | null = null): Promise<{
     import_count,
     electric_hours: count("electric", "hour"),
     electric_days: count("electric", "day"),
-    electric_billing_periods: count("electric", "billing_period"),
     water_hours: count("water", "hour"),
     water_days: count("water", "day"),
-    water_billing_periods: count("water", "billing_period"),
   };
 }
 
