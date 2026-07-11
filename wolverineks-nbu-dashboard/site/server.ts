@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "1.11.0";
 
 type DashboardPage =
   | "overview"
@@ -93,6 +93,9 @@ function usageChartSection(): string {
             <option value="day">Daily</option>
             <option value="billing_period">Billing periods</option>
           </select>
+          <select id="tou-tier" hidden title="Time-of-use tier">
+            <option value="total" selected>Total usage</option>
+          </select>
           <select id="range">
             <option value="7">Last 7 days</option>
             <option value="30" selected>Last 30 days</option>
@@ -107,6 +110,7 @@ function usageChartSection(): string {
         </div>
         <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
         <p class="day-view-label" id="day-view-label" hidden></p>
+        <div class="tou-summary muted" id="tou-summary" hidden></div>
         <div class="chart-shell">
           <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
           <div class="chart-tooltip" id="chart-tooltip" hidden></div>
@@ -613,6 +617,11 @@ function pageStyles(): string {
     }
     .day-view-label strong {
       color: var(--text);
+    }
+    .tou-summary {
+      margin: 0 0 0.75rem;
+      font-size: 0.88rem;
+      line-height: 1.5;
     }
     .coverage-summary {
       font-size: 0.92rem;
@@ -1267,13 +1276,14 @@ function dashboardPage(page: DashboardPage): string {
       });
     }
 
-    function fmtTooltipHtml(point, unit, granularity) {
+    function fmtTooltipHtml(point, unit, granularity, touTier) {
       const label = fmtTooltipLabel(point.period_start, granularity);
       if (point.missing) {
         return \`\${label}<br><strong>Missing hour</strong>\`;
       }
       const value = Number(point.value).toFixed(2);
-      return \`\${label}<br><strong>\${value} \${unit}</strong>\`;
+      const tierLine = touTier ? "<br><span class=\\"muted\\">" + escapeHtml(touTier) + "</span>" : "";
+      return \`\${label}<br><strong>\${value} \${unit}</strong>\${tierLine}\`;
     }
 
     function positionChartTooltip(event, tooltip) {
@@ -1293,7 +1303,7 @@ function dashboardPage(page: DashboardPage): string {
           const index = Number(bar.dataset.index);
           const point = usage.points[index];
           if (!point) return;
-          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity);
+          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity, usage.tou_tier);
           tooltip.hidden = false;
           positionChartTooltip(event, tooltip);
         });
@@ -1830,6 +1840,48 @@ function dashboardPage(page: DashboardPage): string {
       }
     }
 
+    function syncTouTierControls(usage) {
+      const select = document.getElementById("tou-tier");
+      const summaryEl = document.getElementById("tou-summary");
+      if (!select) return;
+
+      const utility = selectedUtility();
+      const granularity = document.getElementById("granularity")?.value;
+      const day = document.getElementById("day")?.value;
+      const tiers = usage?.tou_tiers ?? [];
+      const showTierPicker =
+        utility === "electric" && (granularity === "hour" || Boolean(day)) && tiers.length > 0;
+
+      if (!showTierPicker) {
+        select.hidden = true;
+        select.value = "total";
+        if (summaryEl) summaryEl.hidden = true;
+        return;
+      }
+
+      const selected = usage?.tou_tier || select.value || "total";
+      select.hidden = false;
+      select.innerHTML =
+        '<option value="total">Total usage</option>' +
+        tiers.map((tier) =>
+          '<option value="' + escapeHtml(tier) + '">' + escapeHtml(tier) + "</option>"
+        ).join("");
+      select.value = tiers.includes(selected) ? selected : "total";
+
+      if (summaryEl) {
+        const summary = usage?.tou_summary ?? [];
+        if (day && summary.length && select.value === "total") {
+          summaryEl.hidden = false;
+          summaryEl.innerHTML =
+            "<strong>TOU breakdown</strong> · " +
+            summary.map((item) => escapeHtml(item.tier) + ": " + item.total.toFixed(2) + " " + (usage.unit || "kWh")).join(" · ");
+        } else {
+          summaryEl.hidden = true;
+          summaryEl.innerHTML = "";
+        }
+      }
+    }
+
     async function loadUsage() {
       const granularityEl = document.getElementById("granularity");
       const rangeEl = document.getElementById("range");
@@ -1837,14 +1889,17 @@ function dashboardPage(page: DashboardPage): string {
       const granularity = granularityEl.value;
       const days = rangeEl.value;
       const day = document.getElementById("day")?.value || "";
+      const touTier = document.getElementById("tou-tier")?.value || "total";
       const params = propertyParams();
       params.set("utility", selectedUtility());
       params.set("granularity", granularity);
       if (day) params.set("date", day);
       else if (days) params.set("days", days);
+      if (touTier && touTier !== "total") params.set("tou_tier", touTier);
       syncDayControls();
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
+      syncTouTierControls(state.usage);
       renderChart();
       renderChartSources();
     }
@@ -1918,6 +1973,7 @@ function dashboardPage(page: DashboardPage): string {
       if (APP_PAGE === "sources") await loadMissingSources();
     });
     on("granularity", "change", loadUsage);
+    on("tou-tier", "change", loadUsage);
     on("range", "change", async () => {
       await loadUsage();
       await queueExtensionSync(true);
@@ -2436,7 +2492,8 @@ const server = createServer(async (req, res) => {
       const granularity = parseGranularity(url.searchParams.get("granularity"));
       const date = parseDateParam(url.searchParams.get("date"));
       const days = date ? null : parseDays(url.searchParams.get("days"));
-      sendJson(res, 200, await getUsageSummary(propertyId, utility, granularity, days, date));
+      const touTier = url.searchParams.get("tou_tier");
+      sendJson(res, 200, await getUsageSummary(propertyId, utility, granularity, days, date, touTier));
       return;
     }
 

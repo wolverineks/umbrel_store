@@ -149,6 +149,11 @@ export type MissingSourcesSummary = {
   probe_script: string | null;
 };
 
+export type TouTierSummary = {
+  tier: string;
+  total: number;
+};
+
 export type UsageSummary = {
   property_id: string | null;
   utility: Utility;
@@ -162,6 +167,9 @@ export type UsageSummary = {
   sources: UsageSourceFile[];
   missing: UsageMissingPeriod[];
   last_import_at: string | null;
+  tou_tier: string | null;
+  tou_tiers: string[];
+  tou_summary: TouTierSummary[];
 };
 
 const CENTRAL_TZ = "America/Chicago";
@@ -260,7 +268,8 @@ export async function getCoverageSummary(
     (r) =>
       matchesProperty(propertyId, r.account_id, r.usage_point) &&
       r.utility === utility &&
-      r.granularity === "hour",
+      r.granularity === "hour" &&
+      !r.tou_tier,
   );
 
   const empty: CoverageSummary = {
@@ -594,10 +603,65 @@ function readingKey(reading: ParsedReading): string {
     reading.utility,
     reading.granularity,
     reading.period_start,
+    reading.tou_tier ?? "",
     reading.meter_id ?? "",
     reading.account_id ?? "",
     reading.usage_point ?? "",
   ].join("|");
+}
+
+function excludeTouReadings(readings: StoredReading[]): StoredReading[] {
+  return readings.filter((reading) => !reading.tou_tier);
+}
+
+function applyTouTierFilter(
+  readings: StoredReading[],
+  touTier: string | null,
+): StoredReading[] {
+  if (touTier && touTier !== "total") {
+    return readings.filter((reading) => reading.tou_tier === touTier);
+  }
+  return excludeTouReadings(readings);
+}
+
+function listTouTiers(
+  readings: StoredReading[],
+  propertyId: string | null,
+  utility: Utility,
+  days: number | null,
+  date: string | null,
+): string[] {
+  const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
+  const tiers = new Set<string>();
+  for (const reading of readings) {
+    if (!reading.tou_tier) continue;
+    if (!matchesProperty(propertyId, reading.account_id, reading.usage_point)) continue;
+    if (reading.utility !== utility) continue;
+    if (date && centralLocalDateKey(reading.period_start) !== date) continue;
+    if (cutoff && new Date(reading.period_start).getTime() < cutoff) continue;
+    tiers.add(reading.tou_tier);
+  }
+  return [...tiers].sort((a, b) => a.localeCompare(b));
+}
+
+function buildTouSummary(
+  readings: StoredReading[],
+  propertyId: string | null,
+  utility: Utility,
+  date: string | null,
+): TouTierSummary[] {
+  if (!date) return [];
+  const totals = new Map<string, number>();
+  for (const reading of readings) {
+    if (!reading.tou_tier || reading.granularity !== "hour") continue;
+    if (!matchesProperty(propertyId, reading.account_id, reading.usage_point)) continue;
+    if (reading.utility !== utility) continue;
+    if (centralLocalDateKey(reading.period_start) !== date) continue;
+    totals.set(reading.tou_tier, (totals.get(reading.tou_tier) ?? 0) + reading.value);
+  }
+  return [...totals.entries()]
+    .map(([tier, total]) => ({ tier, total: Math.round(total * 1000) / 1000 }))
+    .sort((a, b) => a.tier.localeCompare(b.tier));
 }
 
 function readingPropertyId(reading: ParsedReading): string | null {
@@ -917,19 +981,16 @@ function buildUsageMissing(
   objectId: string | null,
 ): UsageMissingPeriod[] {
   const effectiveGranularity = date ? "hour" : granularity;
-  const filtered = filterReadings(
-    readings,
-    propertyId,
-    utility,
-    effectiveGranularity,
-    days,
-    date,
+  const filtered = excludeTouReadings(
+    filterReadings(readings, propertyId, utility, effectiveGranularity, days, date),
   );
   const range = viewRangeKeys(days, date, filtered, effectiveGranularity);
   if (!range) return [];
 
   if (effectiveGranularity === "hour") {
-    const hourReadings = filterReadings(readings, propertyId, utility, "hour", days, date);
+    const hourReadings = excludeTouReadings(
+      filterReadings(readings, propertyId, utility, "hour", days, date),
+    );
     const hoursByDate = new Map<string, number>();
     for (const reading of hourReadings) {
       const dateKey = centralLocalDateKey(reading.period_start);
@@ -1078,16 +1139,21 @@ export async function getUsageSummary(
   granularity: Granularity,
   days: number | null,
   date: string | null = null,
+  touTier: string | null = null,
 ): Promise<UsageSummary> {
   const settings = await loadSettings();
   const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
   const readings = await loadReadings();
   const imports = await loadImports();
   const effectiveGranularity = date ? "hour" : granularity;
-  const filtered = filterReadings(readings, propertyId, utility, granularity, days, date);
+  const touTiers = listTouTiers(readings, propertyId, utility, days, date);
+  const effectiveTouTier =
+    touTier && touTier !== "total" && touTiers.includes(touTier) ? touTier : null;
+  const scopedReadings = applyTouTierFilter(readings, effectiveTouTier);
+  const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date);
   const hourReadings =
     effectiveGranularity === "hour"
-      ? filterReadings(readings, propertyId, utility, "hour", days, date)
+      ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date)
       : [];
   let points: UsagePoint[];
   if (effectiveGranularity === "hour") {
@@ -1129,6 +1195,9 @@ export async function getUsageSummary(
     sources: buildUsageSources(filtered, propertyImports, objectId, utility),
     missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
     last_import_at: utilityImports[0]?.imported_at ?? null,
+    tou_tier: effectiveTouTier,
+    tou_tiers: touTiers,
+    tou_summary: buildTouSummary(readings, propertyId, utility, date),
   };
 }
 

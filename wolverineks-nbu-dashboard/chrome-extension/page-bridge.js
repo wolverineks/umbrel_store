@@ -191,8 +191,9 @@
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
       for (const range of dayRanges(start, effectiveEnd)) {
-        const job = csvJobForRange(range, objectId, utilType, "View");
-        if (job) jobs.push({ ...job, meterLabel, objectId });
+        for (const job of csvJobsForRange(range, objectId, utilType, "View")) {
+          jobs.push({ ...job, meterLabel, objectId });
+        }
       }
     }
 
@@ -210,7 +211,7 @@
     return ranges;
   }
 
-  function csvJobForRange(range, objectId, utilType, rangeKind) {
+  function csvJobForRange(range, objectId, utilType, rangeKind, exportType, labelSuffix, fileSuffix) {
     const effectiveRange =
       rangeKind === "View" ? range : clampRangeForExport(range);
     if (!effectiveRange) return null;
@@ -219,7 +220,7 @@
       ObjectId: objectId,
       utilType,
       View: "usage",
-      Type: "all",
+      Type: exportType,
     };
     const times = isoRange(effectiveRange.start, effectiveRange.end, rangeKind === "View");
     const util = utilityLabel(utilType);
@@ -227,12 +228,23 @@
     const meterSuffix = objectId.slice(0, 8);
 
     return {
-      kind: "csv",
+      kind: exportType === "Tier" ? "tou_csv" : "csv",
       rangeKind,
-      label: `${effectiveRange.label} · Hourly CSV`,
-      filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_HourlyUsage_${util}.csv`,
+      label: `${effectiveRange.label} · ${labelSuffix}`,
+      filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_${fileSuffix}_${util}.csv`,
       url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times }),
     };
+  }
+
+  function csvJobsForRange(range, objectId, utilType, rangeKind) {
+    const jobs = [];
+    const hourly = csvJobForRange(range, objectId, utilType, rangeKind, "all", "Hourly CSV", "HourlyUsage");
+    if (hourly) jobs.push(hourly);
+    if (utilType === "E") {
+      const tou = csvJobForRange(range, objectId, utilType, rangeKind, "Tier", "TOU CSV", "TOUUsage");
+      if (tou) jobs.push(tou);
+    }
+    return jobs;
   }
 
   function historyCutoff(months, lastDate) {
@@ -268,8 +280,9 @@
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
       for (const range of dayRanges(firstDate, lastDate)) {
-        const job = csvJobForRange(range, objectId, utilType, "Day");
-        if (job) jobs.push({ ...job, meterLabel, objectId });
+        for (const job of csvJobsForRange(range, objectId, utilType, "Day")) {
+          jobs.push({ ...job, meterLabel, objectId });
+        }
       }
     }
 
@@ -502,8 +515,8 @@
       post("SYNC_PLAN", {
         total: jobs.length,
         mode: event.data.options?.recentDays
-          ? `last ${event.data.options.recentDays} days · Hourly CSV · daily`
-          : "full history · Hourly CSV · daily",
+          ? `last ${event.data.options.recentDays} days · Hourly + TOU CSV · daily`
+          : "full history · Hourly + TOU CSV · daily",
         jobs: jobs.slice(0, 5).map((job) => job.label),
       });
     }
