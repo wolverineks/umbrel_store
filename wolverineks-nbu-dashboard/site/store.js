@@ -27,8 +27,6 @@ exports.listImports = listImports;
 exports.getStoredImportFile = getStoredImportFile;
 exports.getUsageSummary = getUsageSummary;
 exports.getOverview = getOverview;
-exports.getSyncViewQueue = getSyncViewQueue;
-exports.setSyncViewQueue = setSyncViewQueue;
 exports.resolvePropertyId = resolvePropertyId;
 exports.parseNbuUrlRange = parseNbuUrlRange;
 exports.buildNbuVerifyAllScript = buildNbuVerifyAllScript;
@@ -47,7 +45,6 @@ const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = node_path_1.default.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = node_path_1.default.join(DATA_ROOT, "source-errors.json");
-const SYNC_QUEUE_PATH = node_path_1.default.join(DATA_ROOT, "sync-view-queue.json");
 exports.NBU_HOURLY_CSV_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportExcelReadData.xml";
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
@@ -190,13 +187,11 @@ function parseDateParam(value) {
 let settingsCache = null;
 let importsCache = null;
 let readingsCache = null;
-let syncQueueCache;
 function resetStoreCaches() {
     settingsCache = null;
     importsCache = null;
     readingsCache = null;
     sourceErrorsCache = null;
-    syncQueueCache = undefined;
 }
 function buildPropertyId(accountId, usagePoint) {
     if (accountId && usagePoint)
@@ -551,18 +546,21 @@ function formatRangeLabel(start, end) {
         return formatDateLabel(start);
     return `${formatDateLabel(start)} – ${formatDateLabel(end)}`;
 }
-function viewRangeKeys(days, date, filtered, granularity) {
+function resolveUsageWindow(days, date, endDate, filtered) {
     if (date)
         return { start: date, end: date };
-    const todayKey = centralTodayKey();
-    const yesterdayKey = addDaysToDateKey(todayKey, -1);
+    const yesterdayKey = addDaysToDateKey(centralTodayKey(), -1);
     if (days) {
-        return { start: addDaysToDateKey(todayKey, -days), end: yesterdayKey };
+        const end = endDate && compareDateKeys(endDate, yesterdayKey) <= 0 ? endDate : yesterdayKey;
+        return { start: addDaysToDateKey(end, -(days - 1)), end };
     }
     if (!filtered.length)
         return null;
     const dates = filtered.map((reading) => centralLocalDateKey(reading.period_start)).sort();
     return { start: dates[0], end: dates[dates.length - 1] };
+}
+function viewRangeKeys(days, date, filtered, _granularity, endDate = null) {
+    return resolveUsageWindow(days, date, endDate, filtered);
 }
 function iterateDateKeys(start, end) {
     const keys = [];
@@ -652,14 +650,14 @@ function buildUsageSources(filtered, imports, objectId, utility) {
     })
         .sort((a, b) => b.readings_in_view - a.readings_in_view || a.filename.localeCompare(b.filename));
 }
-function buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId) {
+function buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId, endDate = null) {
     const effectiveGranularity = date ? "hour" : granularity;
-    const filtered = excludeTouReadings(filterReadings(readings, propertyId, utility, effectiveGranularity, days, date));
-    const range = viewRangeKeys(days, date, filtered, effectiveGranularity);
+    const filtered = excludeTouReadings(filterReadings(readings, propertyId, utility, effectiveGranularity, days, date, endDate));
+    const range = viewRangeKeys(days, date, filtered, effectiveGranularity, endDate);
     if (!range)
         return [];
     if (effectiveGranularity === "hour") {
-        const hourReadings = excludeTouReadings(filterReadings(readings, propertyId, utility, "hour", days, date));
+        const hourReadings = excludeTouReadings(filterReadings(readings, propertyId, utility, "hour", days, date, endDate));
         const hoursByDate = new Map();
         for (const reading of hourReadings) {
             const dateKey = centralLocalDateKey(reading.period_start);
@@ -710,172 +708,8 @@ function isFutureHourSlot(dateKey, hour, todayKey) {
         return false;
     return hour > centralLocalHour(new Date().toISOString());
 }
-function formatCompactHour(hour) {
-    if (hour === 0)
-        return "12a";
-    if (hour < 12)
-        return `${hour}a`;
-    if (hour === 12)
-        return "12p";
-    return `${hour - 12}p`;
-}
-function formatDayHeading(dateKey) {
-    const [year, month, day] = dateKey.split("-").map(Number);
-    const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-    return date.toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-        timeZone: CENTRAL_TZ,
-    });
-}
 function roundUsage(value) {
     return Math.round(value * 1000) / 1000;
-}
-function findPeakLow(hours) {
-    const present = hours.filter((item) => !item.missing && item.value !== null);
-    if (!present.length)
-        return { peak: null, low: null };
-    let peak = present[0];
-    let low = present[0];
-    for (const item of present) {
-        if (item.value > peak.value)
-            peak = item;
-        if (item.value < low.value)
-            low = item;
-    }
-    return {
-        peak: { hour: peak.hour, label: peak.label, value: roundUsage(peak.value) },
-        low: { hour: low.hour, label: low.label, value: roundUsage(low.value) },
-    };
-}
-function buildEnergyReportDay(dateKey, valuesBySlot, todayKey) {
-    const hours = [];
-    let total = 0;
-    let hoursPresent = 0;
-    let hoursMissing = 0;
-    for (let hour = 0; hour < 24; hour++) {
-        if (isFutureHourSlot(dateKey, hour, todayKey))
-            continue;
-        const value = valuesBySlot.get(`${dateKey}:${hour}`);
-        const missing = value === undefined;
-        if (!missing) {
-            total += value;
-            hoursPresent += 1;
-        }
-        else {
-            hoursMissing += 1;
-        }
-        hours.push({
-            hour: hour + 1,
-            label: formatCompactHour(hour),
-            value: missing ? null : roundUsage(value),
-            missing,
-        });
-    }
-    const { peak, low } = findPeakLow(hours);
-    const average = hoursPresent ? roundUsage(total / hoursPresent) : 0;
-    return {
-        date: dateKey,
-        label: formatDayHeading(dateKey),
-        total: roundUsage(total),
-        average,
-        peak,
-        low,
-        hours,
-        hours_present: hoursPresent,
-        hours_missing: hoursMissing,
-    };
-}
-function buildEnergyReportComparison(days) {
-    if (days.length < 2)
-        return null;
-    let highest = days[0];
-    let lowest = days[0];
-    let sum = 0;
-    for (const day of days) {
-        if (day.total > highest.total)
-            highest = day;
-        if (day.total < lowest.total)
-            lowest = day;
-        sum += day.total;
-    }
-    return {
-        highest_day: { date: highest.date, label: highest.label, total: highest.total },
-        lowest_day: { date: lowest.date, label: lowest.label, total: lowest.total },
-        avg_daily: roundUsage(sum / days.length),
-    };
-}
-function buildEnergyReport(readings, propertyId, utility, granularity, days, date) {
-    const unit = utility === "water" ? "gal" : "kWh";
-    const costNote = utility === "electric"
-        ? "Estimated cost: — (add your electric rates in Settings to enable)"
-        : "Estimated cost: — (water rates not configured)";
-    if (granularity === "day") {
-        const dayReadings = filterReadings(excludeTouReadings(readings), propertyId, utility, "day", days, date);
-        const range = viewRangeKeys(days, date, dayReadings, "day");
-        if (!range)
-            return null;
-        const totalsByDate = new Map();
-        for (const reading of dayReadings) {
-            const dateKey = centralLocalDateKey(reading.period_start);
-            totalsByDate.set(dateKey, roundUsage(reading.value));
-        }
-        const reportDays = iterateDateKeys(range.start, range.end)
-            .filter((dateKey) => totalsByDate.has(dateKey))
-            .map((dateKey) => {
-            const total = totalsByDate.get(dateKey) ?? 0;
-            return {
-                date: dateKey,
-                label: formatDayHeading(dateKey),
-                total,
-                average: total,
-                peak: null,
-                low: null,
-                hours: [],
-                hours_present: 0,
-                hours_missing: 0,
-            };
-        });
-        if (!reportDays.length)
-            return null;
-        return {
-            unit,
-            range_label: formatRangeLabel(range.start, range.end),
-            days: reportDays,
-            comparison: buildEnergyReportComparison(reportDays),
-            cost_note: costNote,
-            detail_mode: "daily",
-        };
-    }
-    const hourReadings = filterReadings(excludeTouReadings(readings), propertyId, utility, "hour", days, date);
-    const range = viewRangeKeys(days, date, hourReadings, "hour");
-    if (!range)
-        return null;
-    const todayKey = centralTodayKey();
-    const valuesBySlot = new Map();
-    for (const reading of hourReadings) {
-        const dateKey = centralLocalDateKey(reading.period_start);
-        const hour = centralLocalHour(reading.period_start);
-        valuesBySlot.set(`${dateKey}:${hour}`, reading.value);
-    }
-    const reportDays = [];
-    for (const dateKey of iterateDateKeys(range.start, range.end)) {
-        const day = buildEnergyReportDay(dateKey, valuesBySlot, todayKey);
-        if (day.hours_present > 0)
-            reportDays.push(day);
-    }
-    if (!reportDays.length)
-        return null;
-    return {
-        unit,
-        range_label: formatRangeLabel(range.start, range.end),
-        days: reportDays,
-        comparison: buildEnergyReportComparison(reportDays),
-        cost_note: costNote,
-        detail_mode: "hourly",
-    };
 }
 function hourSlotKey(reading) {
     const dateKey = centralLocalDateKey(reading.period_start);
@@ -910,8 +744,8 @@ function buildHourlyChartPoints(hourReadings, range) {
     }
     return points;
 }
-function filterReadings(readings, propertyId, utility, granularity, days, date) {
-    const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
+function filterReadings(readings, propertyId, utility, granularity, days, date, endDate = null) {
+    const window = date ? null : days ? resolveUsageWindow(days, null, endDate, []) : null;
     return readings
         .filter((r) => matchesProperty(propertyId, r.account_id, r.usage_point))
         .filter((r) => r.utility === utility)
@@ -920,23 +754,28 @@ function filterReadings(readings, propertyId, utility, granularity, days, date) 
             return r.granularity === "hour" && centralLocalDateKey(r.period_start) === date;
         return r.granularity === granularity;
     })
-        .filter((r) => !cutoff || new Date(r.period_start).getTime() >= cutoff)
+        .filter((r) => {
+        if (!window)
+            return true;
+        const dateKey = centralLocalDateKey(r.period_start);
+        return compareDateKeys(window.start, dateKey) <= 0 && compareDateKeys(dateKey, window.end) <= 0;
+    })
         .sort((a, b) => a.period_start.localeCompare(b.period_start));
 }
-async function getUsageSummary(propertyId, utility, granularity, days, date = null) {
+async function getUsageSummary(propertyId, utility, granularity, days, date = null, endDate = null) {
     const settings = await loadSettings();
     const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
     const readings = await loadReadings();
     const imports = await loadImports();
     const effectiveGranularity = date ? "hour" : granularity;
     const scopedReadings = excludeTouReadings(readings);
-    const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date);
+    const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date, endDate);
     const hourReadings = effectiveGranularity === "hour"
-        ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date)
+        ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date, endDate)
         : [];
+    const range = viewRangeKeys(days, date, hourReadings.length ? hourReadings : filtered, effectiveGranularity, endDate);
     let points;
     if (effectiveGranularity === "hour") {
-        const range = viewRangeKeys(days, date, hourReadings, "hour");
         points = range ? buildHourlyChartPoints(hourReadings, range) : [];
     }
     else {
@@ -955,21 +794,22 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
     const unit = filtered[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
     const utilityImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility);
     const propertyImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
-    const sourceReadings = filterReadings(scopedReadings, propertyId, utility, effectiveGranularity, days, date);
+    const sourceReadings = filterReadings(scopedReadings, propertyId, utility, effectiveGranularity, days, date, endDate);
     return {
         property_id: propertyId,
         utility,
         granularity: date ? "hour" : granularity,
         date,
+        range_start: range?.start ?? null,
+        range_end: range?.end ?? null,
         unit,
         total: Math.round(total * 1000) / 1000,
         average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
         peak,
         points,
         sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
-        missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
+        missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId, endDate),
         last_import_at: utilityImports[0]?.imported_at ?? null,
-        report: buildEnergyReport(readings, propertyId, utility, effectiveGranularity, days, date),
     };
 }
 async function getOverview(propertyId = null) {
@@ -991,31 +831,6 @@ async function getOverview(propertyId = null) {
         water_hours: count("water", "hour"),
         water_days: count("water", "day"),
     };
-}
-async function getSyncViewQueue() {
-    if (syncQueueCache !== undefined)
-        return syncQueueCache;
-    await ensureDataRoot();
-    if (!(0, node_fs_1.existsSync)(SYNC_QUEUE_PATH)) {
-        syncQueueCache = null;
-        return syncQueueCache;
-    }
-    syncQueueCache = JSON.parse(await (0, promises_1.readFile)(SYNC_QUEUE_PATH, "utf8"));
-    return syncQueueCache;
-}
-async function setSyncViewQueue(propertyId, utility, start, end, label) {
-    const queue = {
-        property_id: propertyId,
-        utility,
-        start,
-        end,
-        label,
-        queued_at: new Date().toISOString(),
-    };
-    await ensureDataRoot();
-    syncQueueCache = queue;
-    await (0, promises_1.writeFile)(SYNC_QUEUE_PATH, JSON.stringify(queue, null, 2));
-    return queue;
 }
 function resolvePropertyId(requested, settings, properties) {
     if (requested)

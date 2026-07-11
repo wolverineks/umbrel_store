@@ -22,11 +22,6 @@ document.getElementById("save").addEventListener("click", async () => {
     return;
   }
   await chrome.storage.sync.set({ baseUrl, token });
-  try {
-    await chrome.runtime.sendMessage({ type: "register-dashboard-bridge", baseUrl });
-  } catch {
-    // Bridge registration is best-effort.
-  }
   setStatus("Checking token…");
   try {
     const response = await chrome.runtime.sendMessage({ type: "verify-ingest-token" });

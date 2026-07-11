@@ -120,8 +120,7 @@
         <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
         <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
-        <div class="nbu-mini" id="nbu-pending-view">Queue a day on Umbrel, then sync it here.</div>
-        <div class="nbu-mini">Consumption sync fetches hourly CSV per day. Sync current view uses the queued Umbrel day/range.</div>
+        <div class="nbu-mini">Consumption sync fetches hourly CSV per day. Sync current view uses the date range shown on this page.</div>
         <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
     `;
@@ -129,36 +128,17 @@
 
     panel.querySelector("#nbu-page-kind").textContent = "Consumption";
 
-    refreshPendingViewLabel();
-
     panel.querySelector("#nbu-sync-view").addEventListener("click", () => {
       setProgress(0);
-      void resolveSyncViewOptions().then((options) => {
-        if (options.queueError && !options.viewStart) {
-          setStatus("Cannot read Umbrel queue: " + options.queueError, "err");
-          return;
-        }
-        if (!options.viewStart || !options.viewEnd) {
-          setStatus("No day queued on Umbrel. Pick a day there (auto-queues), then retry.", "err");
-          return;
-        }
-        const range =
-          options.viewStart === options.viewEnd
-            ? options.viewStart
-            : `${options.viewStart}–${options.viewEnd}`;
-        setStatus(`Syncing ${range}…`);
-        window.postMessage(
-          {
-            source: "nbu-umbrel-content",
-            type: "START_SYNC",
-            options: {
-              viewStart: options.viewStart,
-              viewEnd: options.viewEnd,
-            },
-          },
-          "*",
-        );
-      });
+      setStatus("Syncing current portal view…");
+      window.postMessage(
+        {
+          source: "nbu-umbrel-content",
+          type: "START_SYNC",
+          options: { detectPortalView: true },
+        },
+        "*",
+      );
     });
 
     panel.querySelector("#nbu-sync-recent").addEventListener("click", () => {
@@ -188,57 +168,6 @@
     });
 
     return panel;
-  }
-
-  async function resolveSyncViewOptions() {
-    try {
-      const response = await chrome.runtime.sendMessage({ type: "get-sync-view-queue" });
-      if (response?.ok && response.queue?.start && response.queue?.end) {
-        return {
-          viewStart: response.queue.start,
-          viewEnd: response.queue.end,
-          utilityHint: response.queue.utility,
-          queueError: null,
-        };
-      }
-      if (response?.error) {
-        return { queueError: response.error };
-      }
-    } catch (error) {
-      return { queueError: error?.message || String(error) };
-    }
-
-    const { pendingSyncView } = await chrome.storage.local.get(["pendingSyncView"]);
-    if (pendingSyncView?.start && pendingSyncView?.end) {
-      return {
-        viewStart: pendingSyncView.start,
-        viewEnd: pendingSyncView.end,
-        utilityHint: pendingSyncView.utility,
-      };
-    }
-
-    return {};
-  }
-
-  function refreshPendingViewLabel() {
-    const el = document.getElementById("nbu-pending-view");
-    if (!el) return;
-    void resolveSyncViewOptions().then((options) => {
-      if (options.queueError) {
-        el.textContent = "Queue fetch failed: " + options.queueError;
-        return;
-      }
-      if (!options.viewStart || !options.viewEnd) {
-        el.textContent = "No Umbrel view queued. Pick a day there → Queue for extension.";
-        return;
-      }
-      const range =
-        options.viewStart === options.viewEnd
-          ? options.viewStart
-          : `${options.viewStart}–${options.viewEnd}`;
-      const utility = options.utilityHint ? ` (${options.utilityHint})` : "";
-      el.textContent = `Queued from Umbrel: ${range}${utility}`;
-    });
   }
 
   function setStatus(text, kind = "") {

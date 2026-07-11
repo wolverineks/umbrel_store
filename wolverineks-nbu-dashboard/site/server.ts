@@ -22,11 +22,10 @@ import {
   setPropertyLabel,
   setPropertyObjectId,
   setSelectedProperty,
-  setSyncViewQueue,
-  getSyncViewQueue,
+
 } from "./store";
 
-const APP_VERSION = "1.15.0";
+const APP_VERSION = "1.16.0";
 
 type DashboardPage =
   | "overview"
@@ -101,10 +100,13 @@ function usageChartSection(): string {
           </select>
           <input id="day" type="date" title="View hourly usage for a specific day">
           <button id="clear-day" class="secondary" hidden>Clear day</button>
+          <div class="chart-nav">
+            <button id="chart-prev" class="secondary" type="button" title="Previous period">← Prev</button>
+            <button id="chart-next" class="secondary" type="button" title="Next period">Next →</button>
+          </div>
           <button id="refresh" class="secondary">Refresh</button>
-          <button id="queue-extension-sync" class="secondary">Queue for extension</button>
+          <input id="range-end" type="hidden">
         </div>
-        <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
         <p class="day-view-label" id="day-view-label" hidden></p>
         <div class="chart-shell">
           <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
@@ -113,17 +115,6 @@ function usageChartSection(): string {
         <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
         <p class="chart-missing-legend muted" id="chart-missing-legend" hidden>Red bars mark hours with no data.</p>
         <div class="chart-sources" id="chart-sources" hidden></div>
-      </div>`;
-}
-
-function energyReportSection(): string {
-  return `
-      <div class="card energy-report-wrap" id="energy-report-wrap">
-        <div class="energy-report-header">
-          <h2 style="margin:0;color:var(--text);font-size:1.1rem">Energy Report</h2>
-          <p class="muted" id="energy-report-range" style="margin:0.25rem 0 0"></p>
-        </div>
-        <div id="energy-report"></div>
       </div>`;
 }
 
@@ -141,7 +132,7 @@ function coverageSection(): string {
 function dashboardPageContent(page: DashboardPage): string {
   switch (page) {
     case "overview":
-      return `<div class="grid" id="stats"></div>${usageChartSection()}${energyReportSection()}${coverageSection()}`;
+      return `<div class="grid" id="stats"></div>${usageChartSection()}${coverageSection()}`;
     case "sources":
       return `
       <div class="card" id="missing-sources-card">
@@ -624,175 +615,21 @@ function pageStyles(): string {
     .day-view-label strong {
       color: var(--text);
     }
-
-    .energy-report-wrap {
-      margin-top: 1rem;
-      margin-bottom: 1.5rem;
-    }
-    .energy-report-header {
-      margin-bottom: 1rem;
-      padding-bottom: 0.75rem;
-      border-bottom: 1px solid var(--border);
-    }
-    .energy-compare {
-      margin-bottom: 1.25rem;
-    }
-    .energy-compare-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-      gap: 0.75rem;
-      margin-top: 0.75rem;
-    }
-    .energy-stat-card {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 0.7rem 0.85rem;
-    }
-    .energy-stat-card .label {
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin-bottom: 0.2rem;
-    }
-    .energy-stat-card .value {
-      font-size: 1.15rem;
-      font-weight: 700;
-      line-height: 1.25;
-    }
-    .energy-stat-card .sub {
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin-top: 0.15rem;
-    }
-    .energy-stat-card.peak { border-color: #f59e0b55; background: #fffbeb; }
-    .energy-stat-card.low { border-color: #0ea5e955; background: #f0f9ff; }
-    .energy-cost-note {
-      font-size: 0.84rem;
-      color: var(--muted);
-      margin: 0.75rem 0 0;
-      padding: 0.55rem 0.75rem;
-      background: var(--bg);
-      border-radius: 10px;
-      border: 1px dashed var(--border);
-    }
-    .energy-compare-table-wrap {
-      overflow-x: auto;
-      margin-top: 0.75rem;
-    }
-    .energy-compare-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.86rem;
-    }
-    .energy-compare-table th,
-    .energy-compare-table td {
-      padding: 0.45rem 0.6rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-    }
-    .energy-compare-table th {
-      color: var(--muted);
-      font-weight: 600;
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .energy-compare-table tr:hover td { background: var(--bg); }
-    .energy-compare-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-    .energy-compare-table .high { color: #b45309; font-weight: 600; }
-    .energy-compare-table .low { color: #0369a1; font-weight: 600; }
-    .energy-day {
-      margin-top: 1.25rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border);
-    }
-    .energy-day:first-of-type {
-      margin-top: 0;
-      padding-top: 0;
-      border-top: 0;
-    }
-    .energy-day h3 {
-      margin: 0 0 0.65rem;
-      font-size: 0.98rem;
-      color: var(--text);
-      font-weight: 600;
-    }
-    .energy-day-stats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem 1.25rem;
-      font-size: 0.84rem;
-      color: var(--muted);
-      margin-bottom: 0.75rem;
-    }
-    .energy-day-stats strong { color: var(--text); }
-    .energy-day-stats .peak-tag { color: #b45309; }
-    .energy-day-stats .low-tag { color: #0369a1; }
-    .energy-bars {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.95rem;
-      line-height: 1;
-      letter-spacing: 0.02em;
-      overflow-x: auto;
-      padding: 0.35rem 0;
-      white-space: nowrap;
-    }
-    .energy-bar {
-      display: inline-block;
-      width: 1.1em;
-      text-align: center;
-      cursor: default;
-    }
-    .energy-bar.peak { color: #d97706; }
-    .energy-bar.low { color: #0284c7; }
-    .energy-bar.missing { color: #cbd5e1; }
-    .energy-hour-labels {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.62rem;
-      color: var(--muted);
-      letter-spacing: 0.02em;
-      overflow-x: auto;
-      white-space: nowrap;
-      margin-top: 0.2rem;
-    }
-    .energy-hour-labels span {
-      display: inline-block;
-      width: 1.1em;
-      text-align: center;
-    }
-
-    .energy-daily-bar-row {
-      display: flex;
+    .chart-nav {
+      display: inline-flex;
+      gap: 0.35rem;
       align-items: center;
-      gap: 0.65rem;
-      font-size: 0.84rem;
-      margin: 0.35rem 0;
     }
-    .energy-daily-bar-row .date {
-      min-width: 5.5rem;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
+    .chart-nav button {
+      min-width: 4.5rem;
+      padding-left: 0.65rem;
+      padding-right: 0.65rem;
     }
-    .energy-daily-bar-row .bar {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      color: #f59e0b;
-      letter-spacing: -0.05em;
+    .chart-nav button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
-    .energy-daily-bar-row .total {
-      font-variant-numeric: tabular-nums;
-      font-weight: 600;
-      min-width: 4rem;
-      text-align: right;
-    }
-    .energy-legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.85rem;
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin-top: 0.75rem;
-    }
-    .energy-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+
     .coverage-summary {
       font-size: 0.92rem;
       color: var(--muted);
@@ -1397,6 +1234,87 @@ function dashboardPage(page: DashboardPage): string {
       });
     }
 
+    function compareDateKeys(a, b) {
+      return a.localeCompare(b);
+    }
+
+    function chartYesterdayKey() {
+      return addDaysToDateKey(centralTodayKey(), -1);
+    }
+
+    function chartNavState() {
+      const dayInput = document.getElementById("day");
+      const rangeSelect = document.getElementById("range");
+      const rangeEndInput = document.getElementById("range-end");
+      const yesterday = chartYesterdayKey();
+
+      if (dayInput?.value) {
+        return {
+          mode: "day",
+          canPrev: true,
+          canNext: compareDateKeys(dayInput.value, yesterday) < 0,
+        };
+      }
+
+      const days = Number(rangeSelect?.value);
+      if (!days) {
+        return { mode: "all", canPrev: false, canNext: false };
+      }
+
+      const end = rangeEndInput?.value || yesterday;
+      return {
+        mode: "range",
+        canPrev: true,
+        canNext: compareDateKeys(end, yesterday) < 0,
+      };
+    }
+
+    function updateChartNavButtons() {
+      const prev = document.getElementById("chart-prev");
+      const next = document.getElementById("chart-next");
+      const state = chartNavState();
+      if (prev) prev.disabled = !state.canPrev;
+      if (next) next.disabled = !state.canNext;
+    }
+
+    function clearRangeEnd() {
+      const rangeEndInput = document.getElementById("range-end");
+      if (rangeEndInput) rangeEndInput.value = "";
+    }
+
+    function navigateChart(direction) {
+      const dayInput = document.getElementById("day");
+      const rangeSelect = document.getElementById("range");
+      const rangeEndInput = document.getElementById("range-end");
+      const yesterday = chartYesterdayKey();
+      const delta = direction === "prev" ? -1 : 1;
+
+      if (dayInput?.value) {
+        const nextDay = addDaysToDateKey(dayInput.value, delta);
+        if (direction === "next" && compareDateKeys(nextDay, yesterday) > 0) return;
+        dayInput.value = nextDay;
+        syncDayControls();
+        void loadUsage();
+        return;
+      }
+
+      const days = Number(rangeSelect?.value);
+      if (!days) return;
+
+      const currentEnd = rangeEndInput?.value || yesterday;
+      if (direction === "prev") {
+        if (rangeEndInput) rangeEndInput.value = addDaysToDateKey(currentEnd, -days);
+      } else {
+        const newEnd = addDaysToDateKey(currentEnd, days);
+        if (compareDateKeys(newEnd, yesterday) >= 0) {
+          clearRangeEnd();
+        } else if (rangeEndInput) {
+          rangeEndInput.value = newEnd;
+        }
+      }
+      void loadUsage();
+    }
+
     function syncDayControls() {
       const dayInput = document.getElementById("day");
       const rangeSelect = document.getElementById("range");
@@ -1409,11 +1327,17 @@ function dashboardPage(page: DashboardPage): string {
         if (hasDay) {
           dayLabel.innerHTML = "Showing hourly usage for <strong>" + fmtDayHeading(dayInput.value) + "</strong>";
           dayLabel.hidden = false;
+        } else if (state.usage?.range_start && state.usage?.range_end && Number(rangeSelect?.value)) {
+          const startLabel = fmtShortDate(state.usage.range_start + "T12:00:00Z", true);
+          const endLabel = fmtShortDate(state.usage.range_end + "T12:00:00Z", true);
+          dayLabel.innerHTML = "Showing <strong>" + startLabel + " – " + endLabel + "</strong>";
+          dayLabel.hidden = false;
         } else {
           dayLabel.hidden = true;
           dayLabel.textContent = "";
         }
       }
+      updateChartNavButtons();
     }
 
     function fmtShortDate(iso, withYear = false) {
@@ -1485,6 +1409,7 @@ function dashboardPage(page: DashboardPage): string {
             if (!point) return;
             const dayInput = document.getElementById("day");
             if (!dayInput) return;
+            clearRangeEnd();
             dayInput.value = centralLocalDateKey(point.period_start);
             syncDayControls();
             loadUsage();
@@ -1497,12 +1422,18 @@ function dashboardPage(page: DashboardPage): string {
       const el = document.getElementById("stats");
       const o = state.overview;
       if (!el || !o) return;
-      el.innerHTML = [
-        ["Electric hours", o.electric_hours, "stored"],
-        ["Electric days", o.electric_days, "stored"],
-        ["Water hours", o.water_hours, "stored"],
-        ["Water days", o.water_days, "stored"],
-      ].map(([label, value, suffix]) => \`
+      const utility = selectedUtility();
+      const stats =
+        utility === "water"
+          ? [
+              ["Water hours", o.water_hours, "stored"],
+              ["Water days", o.water_days, "stored"],
+            ]
+          : [
+              ["Electric hours", o.electric_hours, "stored"],
+              ["Electric days", o.electric_days, "stored"],
+            ];
+      el.innerHTML = stats.map(([label, value, suffix]) => \`
         <div class="card">
           <h3>\${label}</h3>
           <div class="metric">\${value} <small>\${suffix}</small></div>
@@ -1606,316 +1537,6 @@ function dashboardPage(page: DashboardPage): string {
       el.querySelectorAll("button[data-date]").forEach((button) => {
         button.addEventListener("click", () => openCoverageDay(button.dataset.date));
       });
-    }
-
-    const ENERGY_BLOCKS = "▁▂▃▄▅▆▇█";
-
-    function energyBarChar(value, max, missing) {
-      if (missing) return "░";
-      if (!max || value <= 0) return "▁";
-      const idx = Math.max(0, Math.min(7, Math.round((value / max) * 7)));
-      return ENERGY_BLOCKS[idx];
-    }
-
-    function energyDailyBarChar(value, max) {
-      if (!max || value <= 0) return "▁";
-      const idx = Math.max(0, Math.min(7, Math.round((value / max) * 7)));
-      return ENERGY_BLOCKS[idx].repeat(3);
-    }
-
-    function fmtEnergyValue(value, unit) {
-      return Number(value).toFixed(2) + " " + unit;
-    }
-
-    function renderEnergyComparison(report) {
-      const cmp = report.comparison;
-      if (!cmp) return "";
-
-      const cards = [
-        ["Days", String(report.days.length), report.range_label],
-        ["Avg daily", fmtEnergyValue(cmp.avg_daily, report.unit), "across range"],
-        cmp.highest_day
-          ? ["Highest", fmtEnergyValue(cmp.highest_day.total, report.unit), cmp.highest_day.label.split(",")[0]]
-          : null,
-        cmp.lowest_day
-          ? ["Lowest", fmtEnergyValue(cmp.lowest_day.total, report.unit), cmp.lowest_day.label.split(",")[0]]
-          : null,
-      ]
-        .filter(Boolean)
-        .map((item) => {
-          const [label, value, sub] = item;
-          const cls =
-            label === "Highest" ? " peak" : label === "Lowest" ? " low" : "";
-          return (
-            '<div class="energy-stat-card' + cls + '">' +
-              '<div class="label">' + escapeHtml(label) + "</div>" +
-              '<div class="value">' + escapeHtml(value) + "</div>" +
-              (sub ? '<div class="sub">' + escapeHtml(sub) + "</div>" : "") +
-            "</div>"
-          );
-        })
-        .join("");
-
-      const avgDaily = cmp.avg_daily;
-      const rows = report.days
-        .map((day) => {
-          const delta = avgDaily ? ((day.total - avgDaily) / avgDaily) * 100 : 0;
-          const deltaLabel =
-            report.days.length < 2
-              ? "—"
-              : (delta >= 0 ? "+" : "") + delta.toFixed(0) + "%";
-          const peakLabel = day.peak
-            ? day.peak.label + " · " + day.peak.value.toFixed(2)
-            : "—";
-          const rowClass =
-            cmp.highest_day && day.date === cmp.highest_day.date
-              ? "high"
-              : cmp.lowest_day && day.date === cmp.lowest_day.date
-                ? "low"
-                : "";
-          return (
-            "<tr" + (rowClass ? ' class="' + rowClass + '"' : "") + ">" +
-              "<td>" + escapeHtml(day.label.split(",")[0]) + "</td>" +
-              '<td class="num">' + day.total.toFixed(2) + "</td>" +
-              '<td class="num">' + (day.average ? day.average.toFixed(2) : "—") + "</td>" +
-              '<td class="num">' + escapeHtml(peakLabel) + "</td>" +
-              '<td class="num">' + escapeHtml(deltaLabel) + "</td>" +
-            "</tr>"
-          );
-        })
-        .join("");
-
-      return (
-        '<section class="energy-compare">' +
-          '<h3 style="margin:0;font-size:0.92rem;color:var(--muted)">Multi-day comparison</h3>' +
-          '<div class="energy-compare-grid">' + cards + '</div>' +
-          '<div class="energy-compare-table-wrap"><table class="energy-compare-table">' +
-            '<thead><tr>' +
-              '<th>Day</th><th class="num">Total</th><th class="num">Avg/hr</th>' +
-              '<th class="num">Peak hour</th><th class="num">vs avg</th>' +
-            '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
-        '</section>'
-      );
-    }
-
-    function renderEnergyDayHourly(day, unit) {
-      const values = day.hours.filter((h) => !h.missing && h.value !== null).map((h) => h.value);
-      const max = values.length ? Math.max(...values) : 0;
-      const peakVal = day.peak?.value ?? null;
-      const lowVal = day.low?.value ?? null;
-
-      const bars = day.hours
-        .map((hour) => {
-          let cls = "energy-bar";
-          if (hour.missing) cls += " missing";
-          else if (peakVal !== null && hour.value === peakVal) cls += " peak";
-          else if (lowVal !== null && hour.value === lowVal) cls += " low";
-          const title =
-            "Hour " + hour.hour + " (" + hour.label + "): " +
-            (hour.missing ? "missing" : hour.value.toFixed(2) + " " + unit);
-          return (
-            '<span class="' + cls + '" title="' + escapeHtml(title) + '">' +
-              energyBarChar(hour.value ?? 0, max, hour.missing) +
-            "</span>"
-          );
-        })
-        .join("");
-
-      const labels = day.hours
-        .map((hour, index) => {
-          const show = index % 3 === 0 || hour.hour === 12 || hour.hour === 24;
-          return '<span>' + (show ? escapeHtml(hour.label) : "") + "</span>";
-        })
-        .join("");
-
-      const peakLine = day.peak
-        ? '<span class="peak-tag">Peak <strong>' + escapeHtml(day.peak.label) + "</strong> · " +
-          day.peak.value.toFixed(2) + " " + unit + "</span>"
-        : "";
-      const lowLine = day.low
-        ? '<span class="low-tag">Low <strong>' + escapeHtml(day.low.label) + "</strong> · " +
-          day.low.value.toFixed(2) + " " + unit + "</span>"
-        : "";
-      const missingLine = day.hours_missing
-        ? "<span>" + day.hours_missing + " missing hour" + (day.hours_missing === 1 ? "" : "s") + "</span>"
-        : "";
-
-      return (
-        '<article class="energy-day">' +
-          "<h3>" + escapeHtml(day.label) + "</h3>" +
-          '<div class="energy-day-stats">' +
-            "<span>Total <strong>" + day.total.toFixed(2) + " " + unit + "</strong></span>" +
-            "<span>Avg/hr <strong>" + day.average.toFixed(2) + "</strong></span>" +
-            peakLine + lowLine + missingLine +
-          "</div>" +
-          '<div class="energy-bars">' + bars + "</div>" +
-          '<div class="energy-hour-labels">' + labels + "</div>" +
-        "</article>"
-      );
-    }
-
-    function renderEnergyDayDaily(day, unit, maxTotal) {
-      const shortDate = day.date.slice(5);
-      return (
-        '<div class="energy-daily-bar-row">' +
-          '<span class="date">' + escapeHtml(shortDate) + "</span>" +
-          '<span class="bar">' + energyDailyBarChar(day.total, maxTotal) + "</span>" +
-          '<span class="total">' + day.total.toFixed(2) + " " + unit + "</span>" +
-        "</div>"
-      );
-    }
-
-    function buildClientEnergyReport(usage) {
-      if (!usage || usage.granularity !== "hour") return null;
-      const present = (usage.points ?? []).filter((point) => !point.missing);
-      if (!present.length) return null;
-
-      const byDay = new Map();
-      for (const point of present) {
-        const dateKey = centralLocalDateKey(point.period_start);
-        if (!byDay.has(dateKey)) byDay.set(dateKey, []);
-        byDay.get(dateKey).push(point);
-      }
-
-      const days = [...byDay.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([dateKey, points]) => {
-          const hours = points
-            .map((point) => {
-              const hour = Number(
-                new Intl.DateTimeFormat("en-US", {
-                  timeZone: "America/Chicago",
-                  hour: "numeric",
-                  hour12: false,
-                }).format(new Date(point.period_start)),
-              );
-              const label =
-                hour === 0 ? "12a" : hour < 12 ? hour + "a" : hour === 12 ? "12p" : (hour - 12) + "p";
-              return { hour: hour + 1, label, value: point.value, missing: false };
-            })
-            .sort((a, b) => a.hour - b.hour);
-          const total = hours.reduce((sum, hour) => sum + hour.value, 0);
-          let peak = hours[0];
-          let low = hours[0];
-          for (const hour of hours) {
-            if (hour.value > peak.value) peak = hour;
-            if (hour.value < low.value) low = hour;
-          }
-          return {
-            date: dateKey,
-            label: fmtDayHeading(dateKey),
-            total: Math.round(total * 1000) / 1000,
-            average: Math.round((total / hours.length) * 1000) / 1000,
-            peak: { hour: peak.hour, label: peak.label, value: peak.value },
-            low: { hour: low.hour, label: low.label, value: low.value },
-            hours,
-            hours_present: hours.length,
-            hours_missing: 0,
-          };
-        });
-
-      if (!days.length) return null;
-
-      const sum = days.reduce((acc, day) => acc + day.total, 0);
-      const avgDaily = Math.round((sum / days.length) * 1000) / 1000;
-      let highest = days[0];
-      let lowest = days[0];
-      for (const day of days) {
-        if (day.total > highest.total) highest = day;
-        if (day.total < lowest.total) lowest = day;
-      }
-
-      return {
-        unit: usage.unit,
-        range_label: days.length === 1 ? days[0].label : days[0].date + " – " + days[days.length - 1].date,
-        days,
-        comparison: days.length > 1
-          ? {
-              highest_day: { date: highest.date, label: highest.label, total: highest.total },
-              lowest_day: { date: lowest.date, label: lowest.label, total: lowest.total },
-              avg_daily: avgDaily,
-            }
-          : null,
-        cost_note: usage.utility === "electric"
-          ? "Estimated cost: — (add your electric rates in Settings to enable)"
-          : "Estimated cost: — (water rates not configured)",
-        detail_mode: "hourly",
-      };
-    }
-
-    function renderEnergyReport() {
-      const wrap = document.getElementById("energy-report-wrap");
-      const el = document.getElementById("energy-report");
-      const rangeEl = document.getElementById("energy-report-range");
-      const usage = state.usage;
-      const report = usage?.report ?? buildClientEnergyReport(usage);
-
-      if (!wrap || !el) return;
-      if (!report?.days?.length) {
-        if (rangeEl) rangeEl.textContent = "";
-        const granularity = document.getElementById("granularity")?.value;
-        const hint =
-          granularity === "day"
-            ? "No daily totals in this range yet. Sync more data from Customer Connect."
-            : "No hourly data in this range. Pick a day with synced data, or widen the range.";
-        el.innerHTML = '<p class="muted" style="margin:0">' + escapeHtml(hint) + "</p>";
-        return;
-      }
-
-      if (rangeEl) rangeEl.textContent = report.range_label;
-
-      const showHourlyDetail =
-        report.detail_mode === "hourly" && report.days.length <= 7;
-      const maxDaily = Math.max(...report.days.map((day) => day.total), 0.001);
-
-      let body = "";
-      if (report.days.length > 1) {
-        body += renderEnergyComparison(report);
-      }
-
-      if (showHourlyDetail) {
-        body += report.days.map((day) => renderEnergyDayHourly(day, report.unit)).join("");
-      } else if (report.detail_mode === "hourly" && report.days.length > 7) {
-        body +=
-          '<section class="energy-compare"><h3 style="margin:0 0 0.5rem;font-size:0.92rem;color:var(--muted)">Daily totals</h3>' +
-          report.days.map((day) => renderEnergyDayDaily(day, report.unit, maxDaily)).join("") +
-          '<p class="muted" style="margin:0.5rem 0 0;font-size:0.82rem">Hourly breakdown hidden for ranges over 7 days — pick a single day to see hour-by-hour bars.</p></section>';
-      } else {
-        body += report.days.map((day) => renderEnergyDayDaily(day, report.unit, maxDaily)).join("");
-      }
-
-      if (report.days.length === 1 && report.detail_mode === "hourly") {
-        const day = report.days[0];
-        body =
-          '<section class="energy-compare"><div class="energy-compare-grid">' +
-            '<div class="energy-stat-card"><div class="label">Daily total</div><div class="value">' +
-              fmtEnergyValue(day.total, report.unit) + "</div></div>" +
-            '<div class="energy-stat-card"><div class="label">Avg per hour</div><div class="value">' +
-              fmtEnergyValue(day.average, report.unit) + '</div><div class="sub">' +
-              day.hours_present + " hours recorded</div></div>" +
-            (day.peak
-              ? '<div class="energy-stat-card peak"><div class="label">Peak hour</div><div class="value">' +
-                day.peak.value.toFixed(2) + " " + report.unit +
-                '</div><div class="sub">Hour ' + day.peak.hour + " · " + escapeHtml(day.peak.label) + "</div></div>"
-              : "") +
-            (day.low
-              ? '<div class="energy-stat-card low"><div class="label">Lowest hour</div><div class="value">' +
-                day.low.value.toFixed(2) + " " + report.unit +
-                '</div><div class="sub">Hour ' + day.low.hour + " · " + escapeHtml(day.low.label) + "</div></div>"
-              : "") +
-          "</div></section>" + renderEnergyDayHourly(day, report.unit);
-      }
-
-      body +=
-        '<div class="energy-legend">' +
-          "<span>█▇▆▅▄▃▂▁ relative usage</span>" +
-          '<span><span class="energy-bar peak">█</span> peak hour</span>' +
-          '<span><span class="energy-bar low">█</span> lowest hour</span>' +
-          '<span><span class="energy-bar missing">░</span> missing data</span>' +
-        "</div>" +
-        '<p class="energy-cost-note">' + escapeHtml(report.cost_note) + "</p>";
-
-      el.innerHTML = body;
     }
 
     function renderChart() {
@@ -2047,10 +1668,11 @@ function dashboardPage(page: DashboardPage): string {
       const dayInput = document.getElementById("day");
       const granularity = document.getElementById("granularity");
       if (dayInput && granularity) {
+        clearRangeEnd();
         dayInput.value = dateKey;
         granularity.value = "hour";
         syncDayControls();
-        void loadUsage().then(() => queueExtensionSync(true));
+        void loadUsage();
         document.querySelector(".chart-wrap")?.scrollIntoView({ behavior: "smooth", block: "start" });
         return;
       }
@@ -2105,7 +1727,6 @@ function dashboardPage(page: DashboardPage): string {
         case "overview":
           renderStats();
           await loadUsage();
-          await loadQueuedSyncView();
           await loadCoverage();
           break;
         case "sources":
@@ -2130,7 +1751,6 @@ function dashboardPage(page: DashboardPage): string {
           applyUsageQueryParams();
           renderStats();
           await loadUsage();
-          await loadQueuedSyncView();
           await loadCoverage();
           break;
         case "sources":
@@ -2319,17 +1939,20 @@ function dashboardPage(page: DashboardPage): string {
       const granularity = granularityEl.value;
       const days = rangeEl.value;
       const day = document.getElementById("day")?.value || "";
+      const rangeEnd = document.getElementById("range-end")?.value || "";
       const params = propertyParams();
       params.set("utility", selectedUtility());
       params.set("granularity", granularity);
       if (day) params.set("date", day);
-      else if (days) params.set("days", days);
+      else if (days) {
+        params.set("days", days);
+        if (rangeEnd) params.set("end", rangeEnd);
+      }
       syncDayControls();
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
       renderChart();
       renderChartSources();
-      renderEnergyReport();
     }
 
     async function savePropertySelection(propertyId) {
@@ -2394,110 +2017,34 @@ function dashboardPage(page: DashboardPage): string {
     });
     on("utility", "change", async () => {
       if (APP_PAGE === "overview") {
+        renderStats();
         await loadUsage();
-        await loadQueuedSyncView();
       }
       if (APP_PAGE === "overview") await loadCoverage();
       if (APP_PAGE === "sources") await loadMissingSources();
     });
-    on("granularity", "change", loadUsage);
-    on("range", "change", async () => {
-      await loadUsage();
-      await queueExtensionSync(true);
+    on("granularity", "change", () => {
+      clearRangeEnd();
+      loadUsage();
     });
-    on("day", "change", async () => {
-      await loadUsage();
-      await queueExtensionSync(true);
+    on("range", "change", () => {
+      clearRangeEnd();
+      loadUsage();
+    });
+    on("day", "change", () => {
+      clearRangeEnd();
+      loadUsage();
     });
     on("clear-day", "click", () => {
       const dayInput = document.getElementById("day");
       if (!dayInput) return;
       dayInput.value = "";
+      clearRangeEnd();
       syncDayControls();
       loadUsage();
     });
-    function buildQueueView() {
-      const day = document.getElementById("day")?.value;
-      const range = document.getElementById("range")?.value;
-      const utility = document.getElementById("utility")?.value || "electric";
-      if (day) {
-        return { start: day, end: day, utility, label: day };
-      }
-      const days = Number(range);
-      if (Number.isFinite(days) && days > 0) {
-        const end = addDaysToDateKey(centralTodayKey(), -1);
-        const start = addDaysToDateKey(end, -(days - 1));
-        return { start, end, utility, label: "Last " + days + " days" };
-      }
-      return null;
-    }
-
-    function formatQueuedRange(queue) {
-      if (!queue) return "";
-      return queue.start === queue.end ? queue.start : queue.start + " – " + queue.end;
-    }
-
-    async function loadQueuedSyncView() {
-      const statusEl = document.getElementById("queue-extension-status");
-      if (!statusEl) return;
-      try {
-        const res = await fetch("/api/sync-view/queue");
-        const payload = await res.json();
-        if (!res.ok || !payload.queue) {
-          statusEl.textContent = "";
-          return;
-        }
-        const queued = formatQueuedRange(payload.queue);
-        const pickerDay = document.getElementById("day")?.value;
-        if (pickerDay && payload.queue.start === payload.queue.end && pickerDay !== payload.queue.start) {
-          statusEl.textContent =
-            "Queued " + queued + " (date picker is " + pickerDay + " — pick that day or change picker and wait for auto-queue).";
-          return;
-        }
-        statusEl.textContent = "Queued " + queued + " for extension → Sync current view on Customer Connect.";
-      } catch {
-        statusEl.textContent = "";
-      }
-    }
-
-    async function queueExtensionSync(silent) {
-      const statusEl = document.getElementById("queue-extension-status");
-      const view = buildQueueView();
-      if (!view) {
-        if (!silent && statusEl) {
-          statusEl.textContent = "Pick a specific day or a day range (not All data), then queue again.";
-        }
-        return;
-      }
-      if (!silent && statusEl) statusEl.textContent = "Queueing for extension…";
-      try {
-        const res = await fetch("/api/sync-view/queue", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            property_id: selectedPropertyId(),
-            utility: view.utility,
-            start: view.start,
-            end: view.end,
-            label: view.label,
-          }),
-        });
-        const payload = await res.json();
-        if (!res.ok) throw new Error(payload.error || "Could not queue view.");
-        const range = formatQueuedRange(view);
-        if (statusEl) {
-          statusEl.textContent = silent
-            ? "Queued " + range + " for extension → Sync current view on Customer Connect."
-            : "Queued " + range + " for extension. Open Customer Connect → Sync current view.";
-        }
-      } catch (error) {
-        if (statusEl) statusEl.textContent = error.message || "Could not queue view for extension.";
-      }
-    }
-
-    on("queue-extension-sync", "click", () => {
-      void queueExtensionSync(false);
-    });
+    on("chart-prev", "click", () => navigateChart("prev"));
+    on("chart-next", "click", () => navigateChart("next"));
     on("refresh", "click", () => {
       void refreshDashboard();
     });
@@ -2821,40 +2368,6 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && pathname === "/api/sync-view/queue") {
-      sendJson(res, 200, { queue: await getSyncViewQueue() });
-      return;
-    }
-
-    if (req.method === "POST" && pathname === "/api/sync-view/queue") {
-      const body = JSON.parse((await readBody(req)).toString("utf8")) as {
-        property_id?: string | null;
-        utility?: Utility;
-        start?: string;
-        end?: string;
-        label?: string;
-      };
-      const start = parseDateParam(body.start ?? null);
-      const end = parseDateParam(body.end ?? null);
-      if (!start || !end) {
-        sendJson(res, 400, { error: "start and end dates are required (YYYY-MM-DD)" });
-        return;
-      }
-      if (start.localeCompare(end) > 0) {
-        sendJson(res, 400, { error: "start must be on or before end" });
-        return;
-      }
-      const queue = await setSyncViewQueue(
-        body.property_id ?? null,
-        parseUtility(body.utility ?? null),
-        start,
-        end,
-        body.label?.trim() || (start === end ? start : `${start} – ${end}`),
-      );
-      sendJson(res, 200, { ok: true, queue });
-      return;
-    }
-
     if (req.method === "POST" && pathname === "/api/missing-sources/probes") {
       if (!(await authorizeIngest(req))) {
         sendJson(res, 401, { error: "invalid ingest token" });
@@ -2919,7 +2432,8 @@ const server = createServer(async (req, res) => {
       const granularity = parseGranularity(url.searchParams.get("granularity"));
       const date = parseDateParam(url.searchParams.get("date"));
       const days = date ? null : parseDays(url.searchParams.get("days"));
-      sendJson(res, 200, await getUsageSummary(propertyId, utility, granularity, days, date));
+      const endDate = date || !days ? null : parseDateParam(url.searchParams.get("end"));
+      sendJson(res, 200, await getUsageSummary(propertyId, utility, granularity, days, date, endDate));
       return;
     }
 

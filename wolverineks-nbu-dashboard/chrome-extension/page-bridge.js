@@ -401,7 +401,7 @@
       } else if (options.detectPortalView) {
         post("SYNC_ERROR", {
           error:
-            "No view to sync. On Umbrel: pick a day → Queue for extension. Or open a dated chart on Customer Connect.",
+            "No view to sync. Set a date range on this Consumption Report page, then retry.",
         });
       } else {
         post("SYNC_ERROR", { error: "Open the Consumption Report page first." });

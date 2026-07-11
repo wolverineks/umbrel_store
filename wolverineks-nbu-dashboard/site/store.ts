@@ -16,7 +16,7 @@ const SETTINGS_PATH = path.join(DATA_ROOT, "settings.json");
 const IMPORTS_PATH = path.join(DATA_ROOT, "imports.json");
 const READINGS_PATH = path.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = path.join(DATA_ROOT, "source-errors.json");
-const SYNC_QUEUE_PATH = path.join(DATA_ROOT, "sync-view-queue.json");
+
 
 export type Settings = {
   ingest_token: string;
@@ -124,15 +124,6 @@ export type MissingSource = {
   fetch_source: SourceFetchError["source"] | null;
 };
 
-export type SyncViewQueue = {
-  property_id: string | null;
-  utility: Utility;
-  start: string;
-  end: string;
-  label: string;
-  queued_at: string;
-};
-
 export type MissingSourcesSummary = {
   property_id: string | null;
   utility: Utility;
@@ -149,51 +140,13 @@ export type MissingSourcesSummary = {
   probe_script: string | null;
 };
 
-export type EnergyReportHour = {
-  hour: number;
-  label: string;
-  value: number | null;
-  missing: boolean;
-};
-
-export type EnergyReportPeak = {
-  hour: number;
-  label: string;
-  value: number;
-};
-
-export type EnergyReportDay = {
-  date: string;
-  label: string;
-  total: number;
-  average: number;
-  peak: EnergyReportPeak | null;
-  low: EnergyReportPeak | null;
-  hours: EnergyReportHour[];
-  hours_present: number;
-  hours_missing: number;
-};
-
-export type EnergyReportComparison = {
-  highest_day: { date: string; label: string; total: number } | null;
-  lowest_day: { date: string; label: string; total: number } | null;
-  avg_daily: number;
-};
-
-export type EnergyReport = {
-  unit: "kWh" | "gal";
-  range_label: string;
-  days: EnergyReportDay[];
-  comparison: EnergyReportComparison | null;
-  cost_note: string;
-  detail_mode: "hourly" | "daily";
-};
-
 export type UsageSummary = {
   property_id: string | null;
   utility: Utility;
   granularity: Granularity;
   date: string | null;
+  range_start: string | null;
+  range_end: string | null;
   unit: "kWh" | "gal";
   total: number;
   average: number;
@@ -202,7 +155,6 @@ export type UsageSummary = {
   sources: UsageSourceFile[];
   missing: UsageMissingPeriod[];
   last_import_at: string | null;
-  report: EnergyReport | null;
 };
 
 const CENTRAL_TZ = "America/Chicago";
@@ -402,14 +354,11 @@ let settingsCache: Settings | null = null;
 let importsCache: ImportRecord[] | null = null;
 let readingsCache: StoredReading[] | null = null;
 
-let syncQueueCache: SyncViewQueue | null | undefined;
-
 export function resetStoreCaches(): void {
   settingsCache = null;
   importsCache = null;
   readingsCache = null;
   sourceErrorsCache = null;
-  syncQueueCache = undefined;
 }
 
 export function buildPropertyId(accountId: string | null, usagePoint: string | null): string | null {
@@ -818,24 +767,35 @@ function formatRangeLabel(start: string, end: string): string {
   return `${formatDateLabel(start)} – ${formatDateLabel(end)}`;
 }
 
-function viewRangeKeys(
+function resolveUsageWindow(
   days: number | null,
   date: string | null,
+  endDate: string | null,
   filtered: StoredReading[],
-  granularity: Granularity,
 ): { start: string; end: string } | null {
   if (date) return { start: date, end: date };
 
-  const todayKey = centralTodayKey();
-  const yesterdayKey = addDaysToDateKey(todayKey, -1);
+  const yesterdayKey = addDaysToDateKey(centralTodayKey(), -1);
   if (days) {
-    return { start: addDaysToDateKey(todayKey, -days), end: yesterdayKey };
+    const end =
+      endDate && compareDateKeys(endDate, yesterdayKey) <= 0 ? endDate : yesterdayKey;
+    return { start: addDaysToDateKey(end, -(days - 1)), end };
   }
 
   if (!filtered.length) return null;
 
   const dates = filtered.map((reading) => centralLocalDateKey(reading.period_start)).sort();
   return { start: dates[0], end: dates[dates.length - 1] };
+}
+
+function viewRangeKeys(
+  days: number | null,
+  date: string | null,
+  filtered: StoredReading[],
+  _granularity: Granularity,
+  endDate: string | null = null,
+): { start: string; end: string } | null {
+  return resolveUsageWindow(days, date, endDate, filtered);
 }
 
 function iterateDateKeys(start: string, end: string): string[] {
@@ -961,17 +921,18 @@ function buildUsageMissing(
   days: number | null,
   date: string | null,
   objectId: string | null,
+  endDate: string | null = null,
 ): UsageMissingPeriod[] {
   const effectiveGranularity = date ? "hour" : granularity;
   const filtered = excludeTouReadings(
-    filterReadings(readings, propertyId, utility, effectiveGranularity, days, date),
+    filterReadings(readings, propertyId, utility, effectiveGranularity, days, date, endDate),
   );
-  const range = viewRangeKeys(days, date, filtered, effectiveGranularity);
+  const range = viewRangeKeys(days, date, filtered, effectiveGranularity, endDate);
   if (!range) return [];
 
   if (effectiveGranularity === "hour") {
     const hourReadings = excludeTouReadings(
-      filterReadings(readings, propertyId, utility, "hour", days, date),
+      filterReadings(readings, propertyId, utility, "hour", days, date, endDate),
     );
     const hoursByDate = new Map<string, number>();
     for (const reading of hourReadings) {
@@ -1029,210 +990,8 @@ function isFutureHourSlot(dateKey: string, hour: number, todayKey: string): bool
   return hour > centralLocalHour(new Date().toISOString());
 }
 
-function formatCompactHour(hour: number): string {
-  if (hour === 0) return "12a";
-  if (hour < 12) return `${hour}a`;
-  if (hour === 12) return "12p";
-  return `${hour - 12}p`;
-}
-
-function formatDayHeading(dateKey: string): string {
-  const [year, month, day] = dateKey.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-  return date.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    timeZone: CENTRAL_TZ,
-  });
-}
-
 function roundUsage(value: number): number {
   return Math.round(value * 1000) / 1000;
-}
-
-function findPeakLow(hours: EnergyReportHour[]): {
-  peak: EnergyReportPeak | null;
-  low: EnergyReportPeak | null;
-} {
-  const present = hours.filter((item) => !item.missing && item.value !== null) as Array<
-    EnergyReportHour & { value: number }
-  >;
-  if (!present.length) return { peak: null, low: null };
-
-  let peak = present[0];
-  let low = present[0];
-  for (const item of present) {
-    if (item.value > peak.value) peak = item;
-    if (item.value < low.value) low = item;
-  }
-
-  return {
-    peak: { hour: peak.hour, label: peak.label, value: roundUsage(peak.value) },
-    low: { hour: low.hour, label: low.label, value: roundUsage(low.value) },
-  };
-}
-
-function buildEnergyReportDay(
-  dateKey: string,
-  valuesBySlot: Map<string, number>,
-  todayKey: string,
-): EnergyReportDay {
-  const hours: EnergyReportHour[] = [];
-  let total = 0;
-  let hoursPresent = 0;
-  let hoursMissing = 0;
-
-  for (let hour = 0; hour < 24; hour++) {
-    if (isFutureHourSlot(dateKey, hour, todayKey)) continue;
-    const value = valuesBySlot.get(`${dateKey}:${hour}`);
-    const missing = value === undefined;
-    if (!missing) {
-      total += value;
-      hoursPresent += 1;
-    } else {
-      hoursMissing += 1;
-    }
-    hours.push({
-      hour: hour + 1,
-      label: formatCompactHour(hour),
-      value: missing ? null : roundUsage(value),
-      missing,
-    });
-  }
-
-  const { peak, low } = findPeakLow(hours);
-  const average = hoursPresent ? roundUsage(total / hoursPresent) : 0;
-
-  return {
-    date: dateKey,
-    label: formatDayHeading(dateKey),
-    total: roundUsage(total),
-    average,
-    peak,
-    low,
-    hours,
-    hours_present: hoursPresent,
-    hours_missing: hoursMissing,
-  };
-}
-
-function buildEnergyReportComparison(days: EnergyReportDay[]): EnergyReportComparison | null {
-  if (days.length < 2) return null;
-
-  let highest = days[0];
-  let lowest = days[0];
-  let sum = 0;
-  for (const day of days) {
-    if (day.total > highest.total) highest = day;
-    if (day.total < lowest.total) lowest = day;
-    sum += day.total;
-  }
-
-  return {
-    highest_day: { date: highest.date, label: highest.label, total: highest.total },
-    lowest_day: { date: lowest.date, label: lowest.label, total: lowest.total },
-    avg_daily: roundUsage(sum / days.length),
-  };
-}
-
-function buildEnergyReport(
-  readings: StoredReading[],
-  propertyId: string | null,
-  utility: Utility,
-  granularity: Granularity,
-  days: number | null,
-  date: string | null,
-): EnergyReport | null {
-  const unit: "kWh" | "gal" = utility === "water" ? "gal" : "kWh";
-  const costNote =
-    utility === "electric"
-      ? "Estimated cost: — (add your electric rates in Settings to enable)"
-      : "Estimated cost: — (water rates not configured)";
-
-  if (granularity === "day") {
-    const dayReadings = filterReadings(
-      excludeTouReadings(readings),
-      propertyId,
-      utility,
-      "day",
-      days,
-      date,
-    );
-    const range = viewRangeKeys(days, date, dayReadings, "day");
-    if (!range) return null;
-
-    const totalsByDate = new Map<string, number>();
-    for (const reading of dayReadings) {
-      const dateKey = centralLocalDateKey(reading.period_start);
-      totalsByDate.set(dateKey, roundUsage(reading.value));
-    }
-
-    const reportDays: EnergyReportDay[] = iterateDateKeys(range.start, range.end)
-      .filter((dateKey) => totalsByDate.has(dateKey))
-      .map((dateKey) => {
-        const total = totalsByDate.get(dateKey) ?? 0;
-        return {
-          date: dateKey,
-          label: formatDayHeading(dateKey),
-          total,
-          average: total,
-          peak: null,
-          low: null,
-          hours: [],
-          hours_present: 0,
-          hours_missing: 0,
-        };
-      });
-
-    if (!reportDays.length) return null;
-
-    return {
-      unit,
-      range_label: formatRangeLabel(range.start, range.end),
-      days: reportDays,
-      comparison: buildEnergyReportComparison(reportDays),
-      cost_note: costNote,
-      detail_mode: "daily",
-    };
-  }
-
-  const hourReadings = filterReadings(
-    excludeTouReadings(readings),
-    propertyId,
-    utility,
-    "hour",
-    days,
-    date,
-  );
-  const range = viewRangeKeys(days, date, hourReadings, "hour");
-  if (!range) return null;
-
-  const todayKey = centralTodayKey();
-  const valuesBySlot = new Map<string, number>();
-  for (const reading of hourReadings) {
-    const dateKey = centralLocalDateKey(reading.period_start);
-    const hour = centralLocalHour(reading.period_start);
-    valuesBySlot.set(`${dateKey}:${hour}`, reading.value);
-  }
-
-  const reportDays: EnergyReportDay[] = [];
-  for (const dateKey of iterateDateKeys(range.start, range.end)) {
-    const day = buildEnergyReportDay(dateKey, valuesBySlot, todayKey);
-    if (day.hours_present > 0) reportDays.push(day);
-  }
-
-  if (!reportDays.length) return null;
-
-  return {
-    unit,
-    range_label: formatRangeLabel(range.start, range.end),
-    days: reportDays,
-    comparison: buildEnergyReportComparison(reportDays),
-    cost_note: costNote,
-    detail_mode: "hourly",
-  };
 }
 
 function hourSlotKey(reading: StoredReading): string {
@@ -1279,8 +1038,9 @@ function filterReadings(
   granularity: Granularity,
   days: number | null,
   date: string | null,
+  endDate: string | null = null,
 ): StoredReading[] {
-  const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
+  const window = date ? null : days ? resolveUsageWindow(days, null, endDate, []) : null;
   return readings
     .filter((r) => matchesProperty(propertyId, r.account_id, r.usage_point))
     .filter((r) => r.utility === utility)
@@ -1288,7 +1048,11 @@ function filterReadings(
       if (date) return r.granularity === "hour" && centralLocalDateKey(r.period_start) === date;
       return r.granularity === granularity;
     })
-    .filter((r) => !cutoff || new Date(r.period_start).getTime() >= cutoff)
+    .filter((r) => {
+      if (!window) return true;
+      const dateKey = centralLocalDateKey(r.period_start);
+      return compareDateKeys(window.start, dateKey) <= 0 && compareDateKeys(dateKey, window.end) <= 0;
+    })
     .sort((a, b) => a.period_start.localeCompare(b.period_start));
 }
 
@@ -1298,6 +1062,7 @@ export async function getUsageSummary(
   granularity: Granularity,
   days: number | null,
   date: string | null = null,
+  endDate: string | null = null,
 ): Promise<UsageSummary> {
   const settings = await loadSettings();
   const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
@@ -1305,14 +1070,14 @@ export async function getUsageSummary(
   const imports = await loadImports();
   const effectiveGranularity = date ? "hour" : granularity;
   const scopedReadings = excludeTouReadings(readings);
-  const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date);
+  const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date, endDate);
   const hourReadings =
     effectiveGranularity === "hour"
-      ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date)
+      ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date, endDate)
       : [];
+  const range = viewRangeKeys(days, date, hourReadings.length ? hourReadings : filtered, effectiveGranularity, endDate);
   let points: UsagePoint[];
   if (effectiveGranularity === "hour") {
-    const range = viewRangeKeys(days, date, hourReadings, "hour");
     points = range ? buildHourlyChartPoints(hourReadings, range) : [];
   } else {
     points = filtered.map((r) => ({
@@ -1343,6 +1108,7 @@ export async function getUsageSummary(
     effectiveGranularity,
     days,
     date,
+    endDate,
   );
 
   return {
@@ -1350,22 +1116,16 @@ export async function getUsageSummary(
     utility,
     granularity: date ? "hour" : granularity,
     date,
+    range_start: range?.start ?? null,
+    range_end: range?.end ?? null,
     unit,
     total: Math.round(total * 1000) / 1000,
     average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
     peak,
     points,
     sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
-    missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
+    missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId, endDate),
     last_import_at: utilityImports[0]?.imported_at ?? null,
-    report: buildEnergyReport(
-      readings,
-      propertyId,
-      utility,
-      effectiveGranularity,
-      days,
-      date,
-    ),
   };
 }
 
@@ -1402,38 +1162,6 @@ export async function getOverview(propertyId: string | null = null): Promise<{
     water_hours: count("water", "hour"),
     water_days: count("water", "day"),
   };
-}
-
-export async function getSyncViewQueue(): Promise<SyncViewQueue | null> {
-  if (syncQueueCache !== undefined) return syncQueueCache;
-  await ensureDataRoot();
-  if (!existsSync(SYNC_QUEUE_PATH)) {
-    syncQueueCache = null;
-    return syncQueueCache;
-  }
-  syncQueueCache = JSON.parse(await readFile(SYNC_QUEUE_PATH, "utf8")) as SyncViewQueue;
-  return syncQueueCache;
-}
-
-export async function setSyncViewQueue(
-  propertyId: string | null,
-  utility: Utility,
-  start: string,
-  end: string,
-  label: string,
-): Promise<SyncViewQueue> {
-  const queue: SyncViewQueue = {
-    property_id: propertyId,
-    utility,
-    start,
-    end,
-    label,
-    queued_at: new Date().toISOString(),
-  };
-  await ensureDataRoot();
-  syncQueueCache = queue;
-  await writeFile(SYNC_QUEUE_PATH, JSON.stringify(queue, null, 2));
-  return queue;
 }
 
 export function resolvePropertyId(
