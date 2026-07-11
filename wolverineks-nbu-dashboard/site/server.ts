@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.9.7";
+const APP_VERSION = "1.9.8";
 
 type DashboardPage =
   | "overview"
@@ -1468,9 +1468,7 @@ function dashboardPage(page: DashboardPage): string {
       const bars = usage.points.map((point, index) => {
         const x = pad.left + index * step;
         if (point.missing) {
-          const h = Math.max(4, innerH * 0.08);
-          const y = pad.top + innerH - h;
-          return \`<rect class="chart-bar chart-bar-missing" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="#f87171" opacity="0.85"></rect>\`;
+          return \`<rect class="chart-bar chart-bar-missing" data-index="\${index}" x="\${x}" y="\${pad.top}" width="\${barW}" height="\${innerH}" rx="2" fill="#991b1b" opacity="0.82"></rect>\`;
         }
         const h = (point.value / max) * innerH;
         const y = pad.top + innerH - h;
