@@ -9,21 +9,18 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.9.4";
+const APP_VERSION = "1.9.5";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
-    "/missing-sources": "missing-sources",
-    "/uploads": "uploads",
-    "/upload-history": "uploads",
+    "/sources": "sources",
     "/setup": "setup",
     "/extension": "setup",
     "/backup": "setup",
 };
 const DASHBOARD_PAGE_TITLES = {
     overview: "Overview",
-    "missing-sources": "Missing sources",
-    uploads: "Upload history",
+    sources: "Sources",
     setup: "Setup",
 };
 function resolveDashboardPage(pathname) {
@@ -32,8 +29,7 @@ function resolveDashboardPage(pathname) {
 function renderSideNav(active) {
     const items = [
         { page: "overview", href: "/", label: "Overview" },
-        { page: "missing-sources", href: "/missing-sources", label: "Missing sources" },
-        { page: "uploads", href: "/uploads", label: "Upload history" },
+        { page: "sources", href: "/sources", label: "Sources" },
         { page: "setup", href: "/setup", label: "Setup" },
     ];
     return items
@@ -102,7 +98,7 @@ function dashboardPageContent(page) {
     switch (page) {
         case "overview":
             return `<div class="grid" id="stats"></div>${usageChartSection()}${coverageSection()}`;
-        case "missing-sources":
+        case "sources":
             return `
       <div class="card" id="missing-sources-card">
         <div class="missing-sources-header">
@@ -120,10 +116,8 @@ function dashboardPageContent(page) {
         <div id="missing-sources-content">
           <p class="muted">Loading missing sources…</p>
         </div>
-      </div>`;
-        case "uploads":
-            return `
-      <div class="card">
+      </div>
+      <div class="card" style="margin-top:1rem">
         <div class="import-history-header">
           <h2 style="margin:0">Upload history</h2>
           <span class="muted" id="import-count"></span>
@@ -154,7 +148,7 @@ function dashboardPageContent(page) {
           <button id="save-object-id" class="secondary">Save Object ID</button>
         </div>
         <p class="object-id-hint" id="object-id-hint" hidden style="margin:0.75rem 0 0">
-          Set the Object ID to generate per-gap NBU verify snippets on the Missing sources page.
+          Set the Object ID to generate per-gap NBU verify snippets on the Sources page.
         </p>
         <div class="grid" style="margin-top:1rem">
           <div>
@@ -1365,7 +1359,7 @@ function dashboardPage(page) {
             html += '</li>';
             return html;
           }).join("") + (missing.length > 12
-            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="/missing-sources">View all ' + missing.length + '</a></li>'
+            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="/sources">View all ' + missing.length + '</a></li>'
             : "")
         : '<li class="none">No gaps in this view.</li>';
 
@@ -1579,10 +1573,8 @@ function dashboardPage(page) {
           await loadQueuedSyncView();
           await loadCoverage();
           break;
-        case "missing-sources":
+        case "sources":
           await loadMissingSources();
-          break;
-        case "uploads":
           await loadImports();
           break;
         case "setup":
@@ -1606,10 +1598,8 @@ function dashboardPage(page) {
           await loadQueuedSyncView();
           await loadCoverage();
           break;
-        case "missing-sources":
+        case "sources":
           await loadMissingSources();
-          break;
-        case "uploads":
           await loadImports();
           break;
         case "setup":
@@ -1862,7 +1852,7 @@ function dashboardPage(page) {
         const objectIdHint = document.getElementById("object-id-hint");
         if (objectIdHint) objectIdHint.hidden = Boolean(objectId.trim());
         if (APP_PAGE === "overview") await loadUsage();
-        if (APP_PAGE === "missing-sources") await loadMissingSources();
+        if (APP_PAGE === "sources") await loadMissingSources();
         if (APP_PAGE === "setup") await refreshBackupStatus();
       }
     });
@@ -1872,7 +1862,7 @@ function dashboardPage(page) {
         await loadQueuedSyncView();
       }
       if (APP_PAGE === "overview") await loadCoverage();
-      if (APP_PAGE === "missing-sources") await loadMissingSources();
+      if (APP_PAGE === "sources") await loadMissingSources();
     });
     on("granularity", "change", loadUsage);
     on("range", "change", async () => {
@@ -2377,8 +2367,15 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             }
             return;
         }
-        if (req.method === "GET" && (pathname === "/usage" || pathname === "/coverage")) {
-            const target = "/" + (url.search || "");
+        if (req.method === "GET" &&
+            (pathname === "/usage" ||
+                pathname === "/coverage" ||
+                pathname === "/missing-sources" ||
+                pathname === "/uploads" ||
+                pathname === "/upload-history")) {
+            const target = pathname === "/missing-sources" || pathname === "/uploads" || pathname === "/upload-history"
+                ? "/sources" + (url.search || "")
+                : "/" + (url.search || "");
             res.writeHead(302, { Location: target });
             res.end();
             return;
