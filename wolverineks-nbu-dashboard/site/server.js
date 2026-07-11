@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.12.2";
+const APP_VERSION = "1.13.0";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -62,9 +62,6 @@ function usageChartSection() {
             <option value="day">Daily</option>
             <option value="billing_period">Billing periods</option>
           </select>
-          <select id="tou-tier" hidden title="Time-of-use tier">
-            <option value="total" selected>Total usage</option>
-          </select>
           <select id="range">
             <option value="7">Last 7 days</option>
             <option value="30" selected>Last 30 days</option>
@@ -79,6 +76,7 @@ function usageChartSection() {
         </div>
         <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
         <p class="day-view-label" id="day-view-label" hidden></p>
+        <div class="chart-tier-legend" id="chart-tier-legend" hidden></div>
         <div class="tou-summary muted" id="tou-summary" hidden></div>
         <div class="chart-shell">
           <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
@@ -581,6 +579,27 @@ function pageStyles() {
       margin: 0 0 0.75rem;
       font-size: 0.88rem;
       line-height: 1.5;
+    }
+    .chart-tier-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      align-items: center;
+      margin: 0 0 0.75rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .chart-tier-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .chart-tier-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      display: inline-block;
+      flex-shrink: 0;
     }
     .energy-report-wrap {
       margin-top: 1rem;
@@ -1406,14 +1425,25 @@ function dashboardPage(page) {
       });
     }
 
-    function fmtTooltipHtml(point, unit, granularity, touTier) {
+    function fmtTooltipHtml(point, unit, granularity, tierColors) {
       const label = fmtTooltipLabel(point.period_start, granularity);
       if (point.missing) {
         return \`\${label}<br><strong>Missing hour</strong>\`;
       }
       const value = Number(point.value).toFixed(2);
-      const tierLine = touTier ? "<br><span class=\\"muted\\">" + escapeHtml(touTier) + "</span>" : "";
-      return \`\${label}<br><strong>\${value} \${unit}</strong>\${tierLine}\`;
+      let html = \`\${label}<br><strong>\${value} \${unit}</strong>\`;
+      if (point.tiers?.length) {
+        html += point.tiers
+          .map((slice) => {
+            const color = tierColors?.[slice.tier] ?? "#94a3b8";
+            return (
+              '<br><span style="color:' + escapeHtml(color) + '">●</span> ' +
+              escapeHtml(slice.tier) + ": " + Number(slice.value).toFixed(2) + " " + unit
+            );
+          })
+          .join("");
+      }
+      return html;
     }
 
     function positionChartTooltip(event, tooltip) {
@@ -1433,7 +1463,7 @@ function dashboardPage(page) {
           const index = Number(bar.dataset.index);
           const point = usage.points[index];
           if (!point) return;
-          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity, usage.tou_tier);
+          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity, usage.tou_tier_colors);
           tooltip.hidden = false;
           positionChartTooltip(event, tooltip);
         });
@@ -1929,16 +1959,28 @@ function dashboardPage(page) {
       const step = innerW / usage.points.length;
       const barW = Math.max(2, step - 2);
       const showYears = chartSpansYears(usage.points);
-      const color = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
+      const defaultColor = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
+      const tierColors = usage.tou_tier_colors ?? {};
 
       const bars = usage.points.map((point, index) => {
         const x = pad.left + index * step;
         if (point.missing) {
           return \`<rect class="chart-bar chart-bar-missing" data-index="\${index}" x="\${x}" y="\${pad.top}" width="\${barW}" height="\${innerH}" rx="2" fill="#991b1b" opacity="0.82"></rect>\`;
         }
+        if (point.tiers?.length) {
+          let cursorY = pad.top + innerH;
+          return point.tiers
+            .map((slice) => {
+              const h = (slice.value / max) * innerH;
+              cursorY -= h;
+              const fill = tierColors[slice.tier] ?? defaultColor;
+              return \`<rect class="chart-bar chart-bar-tier" data-index="\${index}" x="\${x}" y="\${cursorY}" width="\${barW}" height="\${h}" rx="1" fill="\${fill}" opacity="0.92"></rect>\`;
+            })
+            .join("");
+        }
         const h = (point.value / max) * innerH;
         const y = pad.top + innerH - h;
-        return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${color}" opacity="0.9"></rect>\`;
+        return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${defaultColor}" opacity="0.9"></rect>\`;
       }).join("");
 
       let lastYear = null;
@@ -2296,41 +2338,61 @@ function dashboardPage(page) {
       }
     }
 
-    function syncTouTierControls(usage) {
-      const select = document.getElementById("tou-tier");
+    function renderTouTierLegend(usage) {
+      const legendEl = document.getElementById("chart-tier-legend");
       const summaryEl = document.getElementById("tou-summary");
-      if (!select) return;
-
       const utility = selectedUtility();
       const granularity = document.getElementById("granularity")?.value;
       const day = document.getElementById("day")?.value;
       const tiers = usage?.tou_tiers ?? [];
-      const showTierPicker =
+      const colors = usage?.tou_tier_colors ?? {};
+      const showTiers =
         utility === "electric" && (granularity === "hour" || Boolean(day)) && tiers.length > 0;
 
-      if (!showTierPicker) {
-        select.hidden = true;
-        select.value = "total";
-        if (summaryEl) summaryEl.hidden = true;
-        return;
+      if (legendEl) {
+        if (!showTiers) {
+          legendEl.hidden = true;
+          legendEl.innerHTML = "";
+        } else {
+          legendEl.hidden = false;
+          legendEl.innerHTML =
+            "<strong>TOU tiers</strong> " +
+            tiers
+              .map((tier) => {
+                const color = colors[tier] ?? "#f59e0b";
+                return (
+                  '<span><span class="chart-tier-swatch" style="background:' +
+                  escapeHtml(color) +
+                  '"></span>' +
+                  escapeHtml(tier) +
+                  "</span>"
+                );
+              })
+              .join("");
+        }
       }
-
-      const selected = usage?.tou_tier || select.value || "total";
-      select.hidden = false;
-      select.innerHTML =
-        '<option value="total">Total usage</option>' +
-        tiers.map((tier) =>
-          '<option value="' + escapeHtml(tier) + '">' + escapeHtml(tier) + "</option>"
-        ).join("");
-      select.value = tiers.includes(selected) ? selected : "total";
 
       if (summaryEl) {
         const summary = usage?.tou_summary ?? [];
-        if (day && summary.length && select.value === "total") {
+        if (day && summary.length) {
           summaryEl.hidden = false;
           summaryEl.innerHTML =
-            "<strong>TOU breakdown</strong> · " +
-            summary.map((item) => escapeHtml(item.tier) + ": " + item.total.toFixed(2) + " " + (usage.unit || "kWh")).join(" · ");
+            "<strong>Daily TOU totals</strong> · " +
+            summary
+              .map((item) => {
+                const color = colors[item.tier] ?? "#f59e0b";
+                return (
+                  '<span style="color:' +
+                  escapeHtml(color) +
+                  '">●</span> ' +
+                  escapeHtml(item.tier) +
+                  ": " +
+                  item.total.toFixed(2) +
+                  " " +
+                  (usage.unit || "kWh")
+                );
+              })
+              .join(" · ");
         } else {
           summaryEl.hidden = true;
           summaryEl.innerHTML = "";
@@ -2345,17 +2407,15 @@ function dashboardPage(page) {
       const granularity = granularityEl.value;
       const days = rangeEl.value;
       const day = document.getElementById("day")?.value || "";
-      const touTier = document.getElementById("tou-tier")?.value || "total";
       const params = propertyParams();
       params.set("utility", selectedUtility());
       params.set("granularity", granularity);
       if (day) params.set("date", day);
       else if (days) params.set("days", days);
-      if (touTier && touTier !== "total") params.set("tou_tier", touTier);
       syncDayControls();
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
-      syncTouTierControls(state.usage);
+      renderTouTierLegend(state.usage);
       renderChart();
       renderChartSources();
       renderEnergyReport();
@@ -2430,7 +2490,6 @@ function dashboardPage(page) {
       if (APP_PAGE === "sources") await loadMissingSources();
     });
     on("granularity", "change", loadUsage);
-    on("tou-tier", "change", loadUsage);
     on("range", "change", async () => {
       await loadUsage();
       await queueExtensionSync(true);
@@ -2865,8 +2924,7 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             const granularity = parseGranularity(url.searchParams.get("granularity"));
             const date = (0, store_1.parseDateParam)(url.searchParams.get("date"));
             const days = date ? null : parseDays(url.searchParams.get("days"));
-            const touTier = url.searchParams.get("tou_tier");
-            sendJson(res, 200, await (0, store_1.getUsageSummary)(propertyId, utility, granularity, days, date, touTier));
+            sendJson(res, 200, await (0, store_1.getUsageSummary)(propertyId, utility, granularity, days, date));
             return;
         }
         if (req.method === "GET" && pathname === "/api/settings") {

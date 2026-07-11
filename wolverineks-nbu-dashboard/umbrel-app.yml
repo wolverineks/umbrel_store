@@ -4,7 +4,7 @@ name: NBU Utilities
 tagline: Electricity and water usage dashboard for New Braunfels Utilities
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-nbu-dashboard/icon.svg
 category: files
-version: "1.12.2"
+version: "1.13.0"
 port: 4060
 description: >-
   Self-hosted dashboard for New Braunfels Utilities electric and water usage.
@@ -19,8 +19,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  Energy Report with hourly unicode bar charts, peak/low highlights, multi-day
-  comparison, and TOU tier breakdown. Fix loading crash from v1.12.0.
+  TOU tiers shown as stacked color-coded chart bars (dropdown removed). Each
+  tier has a distinct color with legend and per-hour tooltip breakdown.
 dependencies: []
 path: ""
 defaultUsername: ""

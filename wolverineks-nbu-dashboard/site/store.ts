@@ -63,11 +63,35 @@ export type StoredReading = ParsedReading & {
   import_id: string;
 };
 
+export type UsageTierSlice = {
+  tier: string;
+  value: number;
+};
+
 export type UsagePoint = {
   period_start: string;
   value: number;
   missing?: boolean;
+  tiers?: UsageTierSlice[];
 };
+
+export const TOU_TIER_PALETTE = [
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#06b6d4",
+  "#22c55e",
+  "#ec4899",
+];
+
+export function touTierColorMap(tiers: string[]): Record<string, string> {
+  const sorted = [...tiers].sort((a, b) => a.localeCompare(b));
+  const colors: Record<string, string> = {};
+  sorted.forEach((tier, index) => {
+    colors[tier] = TOU_TIER_PALETTE[index % TOU_TIER_PALETTE.length];
+  });
+  return colors;
+}
 
 export type UsageSourceFile = {
   id: string;
@@ -208,8 +232,8 @@ export type UsageSummary = {
   sources: UsageSourceFile[];
   missing: UsageMissingPeriod[];
   last_import_at: string | null;
-  tou_tier: string | null;
   tou_tiers: string[];
+  tou_tier_colors: Record<string, string>;
   tou_summary: TouTierSummary[];
   report: EnergyReport | null;
 };
@@ -1335,6 +1359,12 @@ function buildEnergyReport(
   };
 }
 
+function hourSlotKey(reading: StoredReading): string {
+  const dateKey = centralLocalDateKey(reading.period_start);
+  const hour = centralLocalHour(reading.period_start);
+  return `${dateKey}:${hour}`;
+}
+
 function buildHourlyChartPoints(
   hourReadings: StoredReading[],
   range: { start: string; end: string },
@@ -1342,9 +1372,7 @@ function buildHourlyChartPoints(
   const todayKey = centralTodayKey();
   const valuesBySlot = new Map<string, number>();
   for (const reading of hourReadings) {
-    const dateKey = centralLocalDateKey(reading.period_start);
-    const hour = centralLocalHour(reading.period_start);
-    valuesBySlot.set(`${dateKey}:${hour}`, reading.value);
+    valuesBySlot.set(hourSlotKey(reading), reading.value);
   }
 
   const points: UsagePoint[] = [];
@@ -1357,7 +1385,71 @@ function buildHourlyChartPoints(
       if (value !== undefined) {
         points.push({
           period_start,
-          value: Math.round(value * 1000) / 1000,
+          value: roundUsage(value),
+          missing: false,
+        });
+      } else {
+        points.push({ period_start, value: 0, missing: true });
+      }
+    }
+  }
+  return points;
+}
+
+function buildHourlyTierChartPoints(
+  totalHourReadings: StoredReading[],
+  touHourReadings: StoredReading[],
+  range: { start: string; end: string },
+  tierOrder: string[],
+): UsagePoint[] {
+  const todayKey = centralTodayKey();
+  const totalsBySlot = new Map<string, number>();
+  for (const reading of totalHourReadings) {
+    totalsBySlot.set(hourSlotKey(reading), reading.value);
+  }
+
+  const tiersBySlot = new Map<string, Map<string, number>>();
+  for (const reading of touHourReadings) {
+    if (!reading.tou_tier) continue;
+    const slotKey = hourSlotKey(reading);
+    const tiers = tiersBySlot.get(slotKey) ?? new Map<string, number>();
+    tiers.set(reading.tou_tier, reading.value);
+    tiersBySlot.set(slotKey, tiers);
+  }
+
+  const points: UsagePoint[] = [];
+  for (const dateKey of iterateDateKeys(range.start, range.end)) {
+    for (let hour = 0; hour < 24; hour++) {
+      if (isFutureHourSlot(dateKey, hour, todayKey)) continue;
+      const slotKey = `${dateKey}:${hour}`;
+      const period_start = centralHourSlotIso(dateKey, hour);
+      const tierMap = tiersBySlot.get(slotKey);
+      const tierSlices: UsageTierSlice[] = tierOrder
+        .filter((tier) => tierMap?.has(tier))
+        .map((tier) => ({
+          tier,
+          value: roundUsage(tierMap!.get(tier)!),
+        }));
+
+      if (tierSlices.length) {
+        const tierTotal = tierSlices.reduce((sum, slice) => sum + slice.value, 0);
+        const total = totalsBySlot.has(slotKey)
+          ? roundUsage(totalsBySlot.get(slotKey)!)
+          : roundUsage(tierTotal);
+        points.push({
+          period_start,
+          value: total,
+          tiers: tierSlices,
+          missing: false,
+        });
+        continue;
+      }
+
+      const total = totalsBySlot.get(slotKey);
+      if (total !== undefined) {
+        points.push({
+          period_start,
+          value: roundUsage(total),
           missing: false,
         });
       } else {
@@ -1394,7 +1486,6 @@ export async function getUsageSummary(
   granularity: Granularity,
   days: number | null,
   date: string | null = null,
-  touTier: string | null = null,
 ): Promise<UsageSummary> {
   const settings = await loadSettings();
   const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
@@ -1402,18 +1493,28 @@ export async function getUsageSummary(
   const imports = await loadImports();
   const effectiveGranularity = date ? "hour" : granularity;
   const touTiers = listTouTiers(readings, propertyId, utility, days, date);
-  const effectiveTouTier =
-    touTier && touTier !== "total" && touTiers.includes(touTier) ? touTier : null;
-  const scopedReadings = applyTouTierFilter(readings, effectiveTouTier);
-  const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date);
+  const totalReadings = excludeTouReadings(readings);
+  const filtered = filterReadings(totalReadings, propertyId, utility, granularity, days, date);
   const hourReadings =
     effectiveGranularity === "hour"
-      ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date)
+      ? filterReadings(totalReadings, propertyId, utility, "hour", days, date)
+      : [];
+  const touHourReadings =
+    effectiveGranularity === "hour" && utility === "electric"
+      ? filterReadings(readings, propertyId, utility, "hour", days, date).filter(
+          (reading) => reading.tou_tier,
+        )
       : [];
   let points: UsagePoint[];
   if (effectiveGranularity === "hour") {
     const range = viewRangeKeys(days, date, hourReadings, "hour");
-    points = range ? buildHourlyChartPoints(hourReadings, range) : [];
+    if (!range) {
+      points = [];
+    } else if (utility === "electric" && touTiers.length) {
+      points = buildHourlyTierChartPoints(hourReadings, touHourReadings, range, touTiers);
+    } else {
+      points = buildHourlyChartPoints(hourReadings, range);
+    }
   } else {
     points = filtered.map((r) => ({
       period_start: r.period_start,
@@ -1458,8 +1559,8 @@ export async function getUsageSummary(
     sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
     missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
     last_import_at: utilityImports[0]?.imported_at ?? null,
-    tou_tier: effectiveTouTier,
     tou_tiers: touTiers,
+    tou_tier_colors: touTierColorMap(touTiers),
     tou_summary: buildTouSummary(readings, propertyId, utility, date),
     report: buildEnergyReport(
       readings,
