@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.12.1";
+const APP_VERSION = "1.12.2";
 
 type DashboardPage =
   | "overview"
@@ -123,7 +123,7 @@ function usageChartSection(): string {
 
 function energyReportSection(): string {
   return `
-      <div class="card energy-report-wrap" id="energy-report-wrap" hidden>
+      <div class="card energy-report-wrap" id="energy-report-wrap">
         <div class="energy-report-header">
           <h2 style="margin:0;color:var(--text);font-size:1.1rem">Energy Report</h2>
           <p class="muted" id="energy-report-range" style="margin:0.25rem 0 0"></p>
@@ -1799,22 +1799,106 @@ function dashboardPage(page: DashboardPage): string {
       );
     }
 
+    function buildClientEnergyReport(usage) {
+      if (!usage || usage.granularity !== "hour") return null;
+      const present = (usage.points ?? []).filter((point) => !point.missing);
+      if (!present.length) return null;
+
+      const byDay = new Map();
+      for (const point of present) {
+        const dateKey = centralLocalDateKey(point.period_start);
+        if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+        byDay.get(dateKey).push(point);
+      }
+
+      const days = [...byDay.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([dateKey, points]) => {
+          const hours = points
+            .map((point) => {
+              const hour = Number(
+                new Intl.DateTimeFormat("en-US", {
+                  timeZone: "America/Chicago",
+                  hour: "numeric",
+                  hour12: false,
+                }).format(new Date(point.period_start)),
+              );
+              const label =
+                hour === 0 ? "12a" : hour < 12 ? hour + "a" : hour === 12 ? "12p" : (hour - 12) + "p";
+              return { hour: hour + 1, label, value: point.value, missing: false };
+            })
+            .sort((a, b) => a.hour - b.hour);
+          const total = hours.reduce((sum, hour) => sum + hour.value, 0);
+          let peak = hours[0];
+          let low = hours[0];
+          for (const hour of hours) {
+            if (hour.value > peak.value) peak = hour;
+            if (hour.value < low.value) low = hour;
+          }
+          return {
+            date: dateKey,
+            label: fmtDayHeading(dateKey),
+            total: Math.round(total * 1000) / 1000,
+            average: Math.round((total / hours.length) * 1000) / 1000,
+            peak: { hour: peak.hour, label: peak.label, value: peak.value },
+            low: { hour: low.hour, label: low.label, value: low.value },
+            hours,
+            hours_present: hours.length,
+            hours_missing: 0,
+            tiers: usage.tou_summary ?? [],
+          };
+        });
+
+      if (!days.length) return null;
+
+      const sum = days.reduce((acc, day) => acc + day.total, 0);
+      const avgDaily = Math.round((sum / days.length) * 1000) / 1000;
+      let highest = days[0];
+      let lowest = days[0];
+      for (const day of days) {
+        if (day.total > highest.total) highest = day;
+        if (day.total < lowest.total) lowest = day;
+      }
+
+      return {
+        unit: usage.unit,
+        range_label: days.length === 1 ? days[0].label : days[0].date + " – " + days[days.length - 1].date,
+        days,
+        comparison: days.length > 1
+          ? {
+              highest_day: { date: highest.date, label: highest.label, total: highest.total },
+              lowest_day: { date: lowest.date, label: lowest.label, total: lowest.total },
+              avg_daily: avgDaily,
+            }
+          : null,
+        cost_note: usage.utility === "electric"
+          ? "Estimated cost: — (add your NBU tier rates in Settings to enable)"
+          : "Estimated cost: — (water rates not configured)",
+        detail_mode: "hourly",
+      };
+    }
+
     function renderEnergyReport() {
       const wrap = document.getElementById("energy-report-wrap");
       const el = document.getElementById("energy-report");
       const rangeEl = document.getElementById("energy-report-range");
       const usage = state.usage;
-      const report = usage?.report;
+      const report = usage?.report ?? buildClientEnergyReport(usage);
 
       if (!wrap || !el) return;
       if (!report?.days?.length) {
-        wrap.hidden = true;
-        el.innerHTML = "";
         if (rangeEl) rangeEl.textContent = "";
+        const granularity = document.getElementById("granularity")?.value;
+        const hint =
+          granularity === "billing_period"
+            ? "Switch to Hourly or Daily view to see the energy report."
+            : granularity === "day"
+              ? "No daily totals in this range yet. Sync more data from Customer Connect."
+              : "No hourly data in this range. Pick a day with synced data, or widen the range.";
+        el.innerHTML = '<p class="muted" style="margin:0">' + escapeHtml(hint) + "</p>";
         return;
       }
 
-      wrap.hidden = false;
       if (rangeEl) rangeEl.textContent = report.range_label;
 
       const showHourlyDetail =
