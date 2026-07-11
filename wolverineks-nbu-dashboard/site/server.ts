@@ -25,7 +25,7 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.16.0";
+const APP_VERSION = "1.18.3";
 
 type DashboardPage =
   | "overview"
@@ -65,21 +65,29 @@ function renderSideNav(active: DashboardPage): string {
     .join("\n          ");
 }
 
-function globalContextBar(): string {
-  return `
-      <div class="global-context card" style="margin-bottom:1rem">
-        <div class="property-bar">
-          <select id="property"></select>
-          <input id="property-label" type="text" placeholder="House name">
-          <button id="save-label" class="secondary">Save name</button>
-        </div>
+function globalContextBar(page: DashboardPage): string {
+  const utilityToolbar =
+    page === "setup"
+      ? ""
+      : `
         <div class="toolbar" style="margin-bottom:0">
           <label class="muted" for="utility" style="font-weight:600">Utility</label>
           <select id="utility">
             <option value="electric">Electric</option>
             <option value="water">Water</option>
           </select>
+        </div>`;
+  const accountLine =
+    page === "setup"
+      ? '<p class="property-account muted" id="property-account">Account —</p>'
+      : "";
+  return `
+      <div class="global-context card" style="margin-bottom:1rem">
+        <div class="property-bar">
+          <select id="property"></select>
+          ${accountLine}
         </div>
+        ${utilityToolbar}
       </div>`;
 }
 
@@ -591,9 +599,13 @@ function pageStyles(): string {
       padding-bottom: 1rem;
       border-bottom: 1px solid var(--border);
     }
-    .property-bar input[type="text"] {
-      min-width: 220px;
-      flex: 1 1 220px;
+    .property-account {
+      margin: 0;
+      font-size: 0.92rem;
+    }
+    .property-account strong {
+      color: var(--text);
+      font-weight: 600;
     }
     input[type="text"], input[type="date"] {
       font: inherit;
@@ -897,6 +909,19 @@ function pageStyles(): string {
     }
     .chart-sources a:hover { text-decoration: underline; }
     .chart-sources .none { color: var(--muted); list-style: none; padding-left: 0; }
+    .source-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.65rem;
+      margin-top: 0.3rem;
+      font-size: 0.82rem;
+    }
+    .source-actions a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .source-actions a:hover { text-decoration: underline; }
     .source-detail {
       margin-top: 0.35rem;
       padding-left: 0;
@@ -1054,7 +1079,7 @@ function dashboardPage(page: DashboardPage): string {
         </div>
       </header>
       <main class="main-content" id="main-content">
-        ${globalContextBar()}
+        ${globalContextBar(page)}
         ${dashboardPageContent(page)}
       </main>
     </div>
@@ -1090,9 +1115,44 @@ function dashboardPage(page: DashboardPage): string {
       return params;
     }
 
+    function propertyAddressLabel(property) {
+      if (property?.address) return property.address.replace(/\\s+/g, " ").trim();
+      return "Address unknown";
+    }
+
+    function propertyAccountLabel(property) {
+      if (property?.account_id && property?.usage_point) {
+        return "Account " + property.account_id + "-" + property.usage_point;
+      }
+      if (property?.account_id) return "Account " + property.account_id;
+      return "Account unknown";
+    }
+
+    function propertySelectorLabel(property) {
+      return APP_PAGE === "setup" ? propertyAccountLabel(property) : propertyAddressLabel(property);
+    }
+
+    function renderPropertyContext(property) {
+      const addressEl = document.getElementById("address");
+      const accountEl = document.getElementById("property-account");
+      if (!property) {
+        if (addressEl && APP_PAGE !== "setup") {
+          addressEl.textContent = "New Braunfels Utilities usage dashboard";
+        }
+        if (accountEl) accountEl.textContent = "Account —";
+        return;
+      }
+      if (addressEl && APP_PAGE !== "setup") {
+        addressEl.textContent = propertyAddressLabel(property);
+      }
+      if (accountEl) {
+        accountEl.innerHTML =
+          "<strong>Account</strong> " + escapeHtml(propertyAccountLabel(property).replace(/^Account\\s+/, ""));
+      }
+    }
+
     function renderPropertySelector() {
       const select = document.getElementById("property");
-      const labelInput = document.getElementById("property-label");
       const objectIdInput = document.getElementById("property-object-id");
       const objectIdHint = document.getElementById("object-id-hint");
       const o = state.overview;
@@ -1100,30 +1160,27 @@ function dashboardPage(page: DashboardPage): string {
 
       if (!o.properties.length) {
         select.innerHTML = '<option value="">No properties yet</option>';
-        if (labelInput) labelInput.value = "";
         if (objectIdInput) objectIdInput.value = "";
         if (objectIdHint) objectIdHint.hidden = true;
+        renderPropertyContext(null);
         return;
       }
 
       const selectedId = o.selected_property?.id ?? o.properties[0].id;
+      const selectedProperty =
+        o.properties.find((property) => property.id === selectedId) ?? o.properties[0];
       select.innerHTML = o.properties.map((property) =>
-        \`<option value="\${property.id}">\${property.label}</option>\`
+        \`<option value="\${property.id}">\${escapeHtml(propertySelectorLabel(property))}</option>\`
       ).join("");
       select.value = selectedId;
-      if (labelInput && o.selected_property) {
-        labelInput.value = o.settings.property_labels[o.selected_property.id] ?? o.selected_property.label ?? "";
-      }
-      if (objectIdInput && o.selected_property) {
-        objectIdInput.value = o.settings.property_object_ids?.[o.selected_property.id] ?? "";
+      if (objectIdInput && selectedProperty) {
+        objectIdInput.value = o.settings.property_object_ids?.[selectedProperty.id] ?? "";
       }
       if (objectIdHint) {
         const hasObjectId = Boolean(o.settings.property_object_ids?.[selectedId]);
         objectIdHint.hidden = hasObjectId;
       }
-      if (o.selected_property) {
-        document.getElementById("address").textContent = o.selected_property.label;
-      }
+      renderPropertyContext(selectedProperty);
     }
 
     function escapeHtml(text) {
@@ -1178,6 +1235,43 @@ function dashboardPage(page: DashboardPage): string {
       if (!url) return "";
       return '<li><span class="muted">' + label + ':</span> ' +
         '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(url) + '</a></li>';
+    }
+
+    function sourceFileUrls(item) {
+      const viewUrl =
+        item.file_view_url ?? (item.stored_filename ? "/api/imports/" + item.id + "/view" : null);
+      const fileUrl =
+        item.file_url ?? (item.stored_filename ? "/api/imports/" + item.id + "/file" : null);
+      return { viewUrl, fileUrl };
+    }
+
+    function sourceFilenameLink(item) {
+      const { viewUrl } = sourceFileUrls(item);
+      if (viewUrl) {
+        return (
+          '<a href="' + escapeHtml(viewUrl) + '" target="_blank" rel="noopener">' +
+            escapeHtml(item.filename) +
+          "</a>"
+        );
+      }
+      return escapeHtml(item.filename);
+    }
+
+    function renderSourceFileActions(item) {
+      const { viewUrl, fileUrl } = sourceFileUrls(item);
+      if (!viewUrl && !fileUrl) return "";
+      const links = [];
+      if (viewUrl) {
+        links.push(
+          '<a href="' + escapeHtml(viewUrl) + '" target="_blank" rel="noopener">View</a>',
+        );
+      }
+      if (fileUrl) {
+        links.push(
+          '<a href="' + escapeHtml(fileUrl) + '" target="_blank" rel="noopener">Download</a>',
+        );
+      }
+      return '<div class="source-actions">' + links.join("") + "</div>";
     }
 
     function fmtNbuVerdict(item) {
@@ -1457,22 +1551,17 @@ function dashboardPage(page: DashboardPage): string {
         importsEl.innerHTML = '<div class="empty">No uploads yet.</div>';
         return;
       }
-      importsEl.innerHTML = items.map((item) => {
-        const viewUrl = item.file_view_url ?? (item.stored_filename ? "/api/imports/" + item.id + "/view" : null);
-        const fileLink = viewUrl
-          ? \`<a href="\${viewUrl}" target="_blank" rel="noopener">\${item.filename}</a>\`
-          : item.filename;
-        return \`
+      importsEl.innerHTML = items.map((item) => \`
           <div class="import-row">
             <div>
               <span class="pill \${item.utility}">\${item.utility}</span>
-              \${fileLink}
+              \${sourceFilenameLink(item)}
               <div class="muted">\${item.format} · \${item.reading_count} readings</div>
+              \${renderSourceFileActions(item)}
             </div>
             <div class="muted">\${fmtDate(item.imported_at)}</div>
           </div>
-        \`;
-      }).join("");
+        \`).join("");
     }
 
     function renderChartSources() {
@@ -1494,9 +1583,12 @@ function dashboardPage(page: DashboardPage): string {
             const formatLabel =
               source.format === "hourly_csv" ? "Hourly CSV" : source.format;
             const meta = source.readings_in_view + " readings · " + formatLabel;
-            let html = '<li>' + escapeHtml(source.filename) + '<div class="muted">' + meta + '</div>';
+            let html = '<li>' + sourceFilenameLink(source) + '<div class="muted">' + meta + "</div>";
+            html += renderSourceFileActions(source);
             if (source.nbu_url) {
-              html += '<ul class="source-detail">' + renderLinkRow("NBU CSV", source.nbu_url) + "</ul>";
+              html +=
+                '<ul class="source-detail"><li><a href="' + escapeHtml(source.nbu_url) +
+                '" target="_blank" rel="noopener">NBU CSV</a></li></ul>';
             }
             html += "</li>";
             return html;
@@ -1966,11 +2058,7 @@ function dashboardPage(page: DashboardPage): string {
     on("property", "change", async (event) => {
       const propertyId = event.target.value;
       const property = state.overview?.properties.find((item) => item.id === propertyId);
-      const labelInput = document.getElementById("property-label");
       const objectIdInput = document.getElementById("property-object-id");
-      if (labelInput && property) {
-        labelInput.value = state.overview.settings.property_labels[property.id] ?? property.label ?? "";
-      }
       if (objectIdInput && property) {
         objectIdInput.value = state.overview.settings.property_object_ids?.[property.id] ?? "";
       }
@@ -1978,23 +2066,9 @@ function dashboardPage(page: DashboardPage): string {
       if (objectIdHint) {
         objectIdHint.hidden = Boolean(state.overview.settings.property_object_ids?.[propertyId]);
       }
+      renderPropertyContext(property ?? null);
       await savePropertySelection(propertyId);
       await reloadCurrentPage();
-    });
-    on("save-label", "click", async () => {
-      const propertyId = selectedPropertyId();
-      const label = document.getElementById("property-label").value;
-      if (!propertyId) return;
-      const res = await fetch("/api/settings/property-label", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ property_id: propertyId, label }),
-      });
-      const payload = await res.json();
-      if (payload.settings) {
-        state.overview.settings = payload.settings;
-        await loadOverview();
-      }
     });
     on("save-object-id", "click", async () => {
       const propertyId = selectedPropertyId();
