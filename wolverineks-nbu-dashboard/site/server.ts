@@ -25,7 +25,7 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.18.4";
+const APP_VERSION = "1.18.5";
 
 type DashboardPage =
   | "overview"

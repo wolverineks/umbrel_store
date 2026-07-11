@@ -154,85 +154,6 @@
     };
   }
 
-  function parseYmd(value) {
-    const parts = String(value).split("-").map(Number);
-    if (parts.length !== 3) return null;
-    return new Date(parts[0], parts[1] - 1, parts[2]);
-  }
-
-  function detectPortalViewRange() {
-    const html = document.documentElement.innerHTML;
-    const patterns = [
-      /(?:var|let|const)\s+startDate\s*=\s*parseDate\("([^"]+)"\)/i,
-      /(?:var|let|const)\s+chartStartDate\s*=\s*parseDate\("([^"]+)"\)/i,
-    ];
-    const endPatterns = [
-      /(?:var|let|const)\s+endDate\s*=\s*parseDate\("([^"]+)"\)/i,
-      /(?:var|let|const)\s+chartEndDate\s*=\s*parseDate\("([^"]+)"\)/i,
-    ];
-
-    let startValue = null;
-    let endValue = null;
-    for (const pattern of patterns) {
-      const match = html.match(pattern);
-      if (match?.[1]) {
-        startValue = match[1];
-        break;
-      }
-    }
-    for (const pattern of endPatterns) {
-      const match = html.match(pattern);
-      if (match?.[1]) {
-        endValue = match[1];
-        break;
-      }
-    }
-
-    if (startValue && endValue) {
-      return { start: startValue, end: endValue, source: "portal" };
-    }
-
-    const dateInput = document.querySelector(
-      'input[type="date"], input[name*="date" i], input[id*="date" i]',
-    );
-    if (dateInput?.value) {
-      return { start: dateInput.value, end: dateInput.value, source: "portal-input" };
-    }
-
-    return null;
-  }
-
-  function meterObjectIds() {
-    const objectIds = getObjectIds();
-    if (objectIds.length) return objectIds;
-    const selected = getSelectedObjectId();
-    return selected ? [selected] : [];
-  }
-
-  function buildViewJobs(viewStart, viewEnd) {
-    const start = parseYmd(viewStart);
-    const end = parseYmd(viewEnd);
-    if (!start || !end) return [];
-
-    const utilType = getUtilType();
-    const objectIds = meterObjectIds();
-    if (!objectIds.length) return [];
-
-    const effectiveEnd = end < start ? start : end;
-    const jobs = [];
-
-    for (const objectId of objectIds) {
-      const meterLabel = getMeterLabel(objectId);
-      for (const range of dayRanges(start, effectiveEnd)) {
-        for (const job of csvJobsForRange(range, objectId, utilType, "View")) {
-          jobs.push({ ...job, meterLabel, objectId });
-        }
-      }
-    }
-
-    return jobs;
-  }
-
   function dayRanges(firstDate, lastDate) {
     const ranges = [];
     let cursor = new Date(firstDate.getTime());
@@ -244,9 +165,8 @@
     return ranges;
   }
 
-  function csvJobForRange(range, objectId, utilType, rangeKind) {
-    const effectiveRange =
-      rangeKind === "View" ? range : clampRangeForExport(range);
+  function csvJobForRange(range, objectId, utilType) {
+    const effectiveRange = clampRangeForExport(range);
     if (!effectiveRange) return null;
 
     const base = {
@@ -255,22 +175,21 @@
       View: "usage",
       Type: "all",
     };
-    const times = isoRange(effectiveRange.start, effectiveRange.end, rangeKind === "View");
+    const times = isoRange(effectiveRange.start, effectiveRange.end);
     const util = utilityLabel(utilType);
     const stamp = formatYmd(effectiveRange.start).replace(/-/g, "");
     const meterSuffix = objectId.slice(0, 8);
 
     return {
       kind: "csv",
-      rangeKind,
       label: `${effectiveRange.label} · Hourly CSV`,
-      filename: `nbu-${meterSuffix}-${stamp}_${rangeKind}_HourlyUsage_${util}.csv`,
+      filename: `nbu-${meterSuffix}-${stamp}_Day_HourlyUsage_${util}.csv`,
       url: buildExportUrl("ExportExcelReadData.xml", { ...base, ...times }),
     };
   }
 
-  function csvJobsForRange(range, objectId, utilType, rangeKind) {
-    const hourly = csvJobForRange(range, objectId, utilType, rangeKind);
+  function csvJobsForRange(range, objectId, utilType) {
+    const hourly = csvJobForRange(range, objectId, utilType);
     return hourly ? [hourly] : [];
   }
 
@@ -307,7 +226,7 @@
     for (const objectId of objectIds) {
       const meterLabel = getMeterLabel(objectId);
       for (const range of dayRanges(firstDate, lastDate)) {
-        for (const job of csvJobsForRange(range, objectId, utilType, "Day")) {
+        for (const job of csvJobsForRange(range, objectId, utilType)) {
           jobs.push({ ...job, meterLabel, objectId });
         }
       }
@@ -317,18 +236,6 @@
   }
 
   function pageJobs(options = {}) {
-    if (options.viewStart && options.viewEnd) {
-      return buildViewJobs(options.viewStart, options.viewEnd);
-    }
-
-    if (options.detectPortalView) {
-      const detected = detectPortalViewRange();
-      if (detected) {
-        return buildViewJobs(detected.start, detected.end);
-      }
-      return [];
-    }
-
     if (/Reports\.xml/i.test(window.location.href)) {
       const html = document.documentElement.innerHTML;
       return buildConsumptionJobs(html, options);
@@ -428,43 +335,16 @@
 
     const jobs = pageJobs(options);
     if (!jobs.length) {
-      if (options.viewStart && options.viewEnd) {
-        if (!meterObjectIds().length) {
-          post("SYNC_ERROR", {
-            error:
-              "No meter on this page. Open the Consumption Report, wait for the meter dropdown to load, then retry.",
-          });
-        } else {
-          post("SYNC_ERROR", {
-            error: `Could not build exports for ${options.viewStart}${options.viewEnd !== options.viewStart ? `–${options.viewEnd}` : ""}.`,
-          });
-        }
-      } else if (options.detectPortalView) {
-        post("SYNC_ERROR", {
-          error:
-            "No view to sync. Set a date range on this Consumption Report page, then retry.",
-        });
-      } else {
-        post("SYNC_ERROR", { error: "Open the Consumption Report page first." });
-      }
+      post("SYNC_ERROR", { error: "Open the Consumption Report page first." });
       return;
     }
 
-    let mode = "full";
-    if (options.viewStart && options.viewEnd) {
-      mode = `view:${options.viewStart}${options.viewEnd !== options.viewStart ? `–${options.viewEnd}` : ""}`;
-    } else if (options.detectPortalView) {
-      mode = "portal-view";
-    } else if (options.recentDays) {
-      mode = `recent-${options.recentDays}`;
-    }
+    const mode = options.recentDays ? `recent-${options.recentDays}` : "full";
 
     post("SYNC_START", {
       total: jobs.length,
       page: window.location.href,
       mode,
-      viewStart: options.viewStart ?? null,
-      viewEnd: options.viewEnd ?? null,
     });
     let uploaded = 0;
     let skipped = 0;

@@ -115,31 +115,17 @@
       <div class="nbu-body">
         <div class="nbu-progress"><span id="nbu-progress-bar"></span></div>
         <div class="nbu-status" id="nbu-sync-status">Ready to sync this page to Umbrel.</div>
-        <button class="nbu-primary" id="nbu-sync-view" type="button">Sync current view</button>
-        <button class="nbu-secondary" id="nbu-sync-recent" type="button">Sync last 30 days</button>
+        <button class="nbu-primary" id="nbu-sync-recent" type="button">Sync last 30 days</button>
         <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
         <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
-        <div class="nbu-mini">Consumption sync fetches hourly CSV per day. Sync current view uses the date range shown on this page.</div>
+        <div class="nbu-mini">Consumption sync fetches hourly CSV per day.</div>
         <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
     `;
     document.documentElement.appendChild(panel);
 
     panel.querySelector("#nbu-page-kind").textContent = "Consumption";
-
-    panel.querySelector("#nbu-sync-view").addEventListener("click", () => {
-      setProgress(0);
-      setStatus("Syncing current portal view…");
-      window.postMessage(
-        {
-          source: "nbu-umbrel-content",
-          type: "START_SYNC",
-          options: { detectPortalView: true },
-        },
-        "*",
-      );
-    });
 
     panel.querySelector("#nbu-sync-recent").addEventListener("click", () => {
       setStatus("Starting recent sync…");
@@ -273,11 +259,8 @@
     }
 
     if (event.data.type === "SYNC_START") {
-      const viewHint =
-        event.data.viewStart && event.data.viewEnd
-          ? ` (${event.data.viewStart}${event.data.viewEnd !== event.data.viewStart ? `–${event.data.viewEnd}` : ""})`
-          : "";
-      setStatus(`Syncing ${event.data.total} export${event.data.total === 1 ? "" : "s"}${viewHint}…`);
+      const modeHint = event.data.mode ? ` (${event.data.mode})` : "";
+      setStatus(`Syncing ${event.data.total} export${event.data.total === 1 ? "" : "s"}${modeHint}…`);
       setProgress(0);
       return;
     }
@@ -303,7 +286,6 @@
       setProgress(1);
       const msg = `Done. Uploaded ${event.data.uploaded}, skipped ${event.data.skipped}, failed ${event.data.failed}.`;
       setStatus(msg, event.data.failed ? "err" : "ok");
-      refreshPendingViewLabel();
       if (event.data.errorDetails?.length) {
         void chrome.runtime.sendMessage({
           type: "report-sync-errors",
@@ -337,7 +319,6 @@
   function boot() {
     injectPageBridge();
     ensurePanel();
-    refreshPendingViewLabel();
   }
 
   if (document.readyState === "loading") {
