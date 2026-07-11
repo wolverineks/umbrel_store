@@ -33,11 +33,12 @@ async function countImports(dataDir) {
 async function readObjectIds(dataDir) {
     const settings = await readJsonFile(node_path_1.default.join(dataDir, "settings.json"), {});
     const objectIds = settings.property_object_ids ?? {};
+    const addresses = settings.property_addresses ?? {};
     const labels = settings.property_labels ?? {};
     return Object.entries(objectIds)
         .map(([property_id, object_id]) => ({
         property_id,
-        label: labels[property_id]?.trim() || property_id,
+        label: addresses[property_id]?.trim() || labels[property_id]?.trim() || property_id,
         object_id: String(object_id).trim(),
     }))
         .filter((item) => item.object_id)

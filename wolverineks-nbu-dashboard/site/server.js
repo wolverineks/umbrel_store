@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.18.3";
+const APP_VERSION = "1.18.4";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -286,7 +286,9 @@ async function handleIngest(req, res) {
                 return;
             }
             const parsed = (0, parsers_1.parseNbuExport)(payload.filename, payload.content);
-            const record = await (0, store_1.importParsed)(parsed, payload.content);
+            const record = await (0, store_1.importParsed)(parsed, payload.content, {
+                address: payload.address ?? null,
+            });
             sendJson(res, 200, { ok: true, import: record, parsed_readings: parsed.readings.length });
             return;
         }
@@ -312,10 +314,13 @@ async function handleIngest(req, res) {
             return;
         }
         const filenameHeader = req.headers["x-filename"];
+        const addressHeader = req.headers["x-property-address"];
         const filename = typeof filenameHeader === "string" ? filenameHeader : "upload.csv";
         const rawContent = body.toString("utf8");
         const parsed = (0, parsers_1.parseNbuExport)(filename, rawContent);
-        const record = await (0, store_1.importParsed)(parsed, rawContent);
+        const record = await (0, store_1.importParsed)(parsed, rawContent, {
+            address: typeof addressHeader === "string" ? addressHeader : null,
+        });
         sendJson(res, 200, { ok: true, import: record, parsed_readings: parsed.readings.length });
     }
     catch (error) {

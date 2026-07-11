@@ -213,11 +213,12 @@
     window.postMessage({ source: "nbu-umbrel-content", ...message }, "*");
   }
 
-  async function uploadToUmbrel(filename, content) {
+  async function uploadToUmbrel(filename, content, address = null) {
     const response = await chrome.runtime.sendMessage({
       type: "upload-export",
       filename,
       content,
+      address,
     });
     if (!response?.ok) {
       throw new Error(response?.error || "Upload failed");
@@ -251,7 +252,7 @@
     }
 
     if (event.data.type === "UPLOAD_REQUEST") {
-      void uploadToUmbrel(event.data.filename, event.data.content)
+      void uploadToUmbrel(event.data.filename, event.data.content, event.data.address ?? null)
         .then((result) => {
           postToPage({
             type: "UPLOAD_RESULT",

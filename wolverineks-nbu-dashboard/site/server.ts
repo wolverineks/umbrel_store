@@ -25,7 +25,7 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.18.3";
+const APP_VERSION = "1.18.4";
 
 type DashboardPage =
   | "overview"
@@ -331,13 +331,19 @@ async function handleIngest(req: IncomingMessage, res: ServerResponse): Promise<
 
   try {
     if (contentType.includes("application/json")) {
-      const payload = JSON.parse(body.toString("utf8")) as { filename?: string; content?: string };
+      const payload = JSON.parse(body.toString("utf8")) as {
+        filename?: string;
+        content?: string;
+        address?: string | null;
+      };
       if (!payload.filename || !payload.content) {
         sendJson(res, 400, { error: "filename and content are required" });
         return;
       }
       const parsed = parseNbuExport(payload.filename, payload.content);
-      const record = await importParsed(parsed, payload.content);
+      const record = await importParsed(parsed, payload.content, {
+        address: payload.address ?? null,
+      });
       sendJson(res, 200, { ok: true, import: record, parsed_readings: parsed.readings.length });
       return;
     }
@@ -364,10 +370,13 @@ async function handleIngest(req: IncomingMessage, res: ServerResponse): Promise<
     }
 
     const filenameHeader = req.headers["x-filename"];
+    const addressHeader = req.headers["x-property-address"];
     const filename = typeof filenameHeader === "string" ? filenameHeader : "upload.csv";
     const rawContent = body.toString("utf8");
     const parsed = parseNbuExport(filename, rawContent);
-    const record = await importParsed(parsed, rawContent);
+    const record = await importParsed(parsed, rawContent, {
+      address: typeof addressHeader === "string" ? addressHeader : null,
+    });
     sendJson(res, 200, { ok: true, import: record, parsed_readings: parsed.readings.length });
   } catch (error) {
     sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });

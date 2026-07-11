@@ -63,16 +63,18 @@ async function countImports(dataDir: string): Promise<number> {
 type SettingsSnapshot = {
   property_object_ids?: Record<string, string>;
   property_labels?: Record<string, string>;
+  property_addresses?: Record<string, string>;
 };
 
 async function readObjectIds(dataDir: string): Promise<BackupObjectId[]> {
   const settings = await readJsonFile<SettingsSnapshot>(path.join(dataDir, "settings.json"), {});
   const objectIds = settings.property_object_ids ?? {};
+  const addresses = settings.property_addresses ?? {};
   const labels = settings.property_labels ?? {};
   return Object.entries(objectIds)
     .map(([property_id, object_id]) => ({
       property_id,
-      label: labels[property_id]?.trim() || property_id,
+      label: addresses[property_id]?.trim() || labels[property_id]?.trim() || property_id,
       object_id: String(object_id).trim(),
     }))
     .filter((item) => item.object_id)

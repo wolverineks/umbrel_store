@@ -97,6 +97,47 @@
     return option?.textContent?.trim() || objectId;
   }
 
+  function looksLikeAddress(text) {
+    const value = String(text || "").trim();
+    if (value.length < 8) return false;
+    if (/^account\b/i.test(value)) return false;
+    return /\d/.test(value) && /[a-zA-Z]/.test(value);
+  }
+
+  function cleanMeterLabelAsAddress(label) {
+    if (!label) return null;
+    const cleaned = String(label)
+      .replace(/\s*[-–]\s*(electric|water|electricity)\b.*$/i, "")
+      .replace(/\s*\((electric|water)\)\s*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return looksLikeAddress(cleaned) ? cleaned : null;
+  }
+
+  function getServiceAddress(objectId) {
+    const fromMeter = cleanMeterLabelAsAddress(objectId ? getMeterLabel(objectId) : null);
+    if (fromMeter) return fromMeter;
+
+    const selectors = [
+      "#serviceAddress",
+      ".service-address",
+      '[id*="serviceAddress" i]',
+      '[class*="serviceAddress" i]',
+    ];
+    for (const selector of selectors) {
+      const text = document.querySelector(selector)?.textContent?.trim();
+      if (text && looksLikeAddress(text)) return text.replace(/\s+/g, " ");
+    }
+
+    const bodyText = document.body?.innerText || "";
+    const match = bodyText.match(/Service Address[:\s]+([^\n]+)/i);
+    if (match?.[1] && looksLikeAddress(match[1])) {
+      return match[1].trim().replace(/\s+/g, " ");
+    }
+
+    return null;
+  }
+
   function buildExportUrl(endpoint, params) {
     const url = new URL(`${BASE}${endpoint}`);
     for (const [key, value] of Object.entries(params)) {
@@ -440,7 +481,9 @@
 
       try {
         const result = await fetchJob(job);
-        const upload = await requestUpload(result.filename, result.content);
+        const upload = await requestUpload(result.filename, result.content, {
+          address: getServiceAddress(job.objectId),
+        });
         if (upload?.skipped) skipped += 1;
         else uploaded += 1;
       } catch (error) {
@@ -472,7 +515,7 @@
     });
   }
 
-  function requestUpload(filename, content) {
+  function requestUpload(filename, content, metadata = {}) {
     return new Promise((resolve, reject) => {
       const requestId = `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const timeout = setTimeout(() => {
@@ -490,7 +533,7 @@
       }
 
       window.addEventListener("message", onResponse);
-      post("UPLOAD_REQUEST", { requestId, filename, content });
+      post("UPLOAD_REQUEST", { requestId, filename, content, address: metadata.address ?? null });
     });
   }
 

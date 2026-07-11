@@ -22,6 +22,7 @@ export type Settings = {
   ingest_token: string;
   selected_property_id: string | null;
   property_labels: Record<string, string>;
+  property_addresses: Record<string, string>;
   property_object_ids: Record<string, string>;
 };
 
@@ -367,16 +368,36 @@ export function buildPropertyId(accountId: string | null, usagePoint: string | n
   return null;
 }
 
+function looksLikeAddress(value: string): boolean {
+  const text = value.trim();
+  if (text.length < 8) return false;
+  if (/^account\b/i.test(text)) return false;
+  return /\d/.test(text) && /[a-zA-Z]/.test(text);
+}
+
 function normalizeSettings(raw: Record<string, unknown>): Settings {
+  const property_labels =
+    raw.property_labels && typeof raw.property_labels === "object"
+      ? (raw.property_labels as Record<string, string>)
+      : {};
+  const property_addresses =
+    raw.property_addresses && typeof raw.property_addresses === "object"
+      ? (raw.property_addresses as Record<string, string>)
+      : {};
+
   if ("selected_property_id" in raw) {
+    for (const [propertyId, label] of Object.entries(property_labels)) {
+      const trimmed = label.trim();
+      if (!property_addresses[propertyId] && trimmed && looksLikeAddress(trimmed)) {
+        property_addresses[propertyId] = trimmed;
+      }
+    }
     return {
       ingest_token: String(raw.ingest_token ?? newToken()),
       selected_property_id:
         typeof raw.selected_property_id === "string" ? raw.selected_property_id : null,
-      property_labels:
-        raw.property_labels && typeof raw.property_labels === "object"
-          ? (raw.property_labels as Record<string, string>)
-          : {},
+      property_labels,
+      property_addresses,
       property_object_ids:
         raw.property_object_ids && typeof raw.property_object_ids === "object"
           ? (raw.property_object_ids as Record<string, string>)
@@ -386,15 +407,18 @@ function normalizeSettings(raw: Record<string, unknown>): Settings {
 
   const accountId = typeof raw.account_id === "string" ? raw.account_id : null;
   const usagePoint = typeof raw.usage_point === "string" ? raw.usage_point : null;
-  const address = typeof raw.address === "string" ? raw.address : null;
+  const address = typeof raw.address === "string" ? raw.address.trim() : "";
   const propertyId = buildPropertyId(accountId, usagePoint);
-  const property_labels: Record<string, string> = {};
-  if (propertyId && address) property_labels[propertyId] = address;
+  if (propertyId && address) {
+    property_addresses[propertyId] = address;
+    property_labels[propertyId] = address;
+  }
 
   return {
     ingest_token: String(raw.ingest_token ?? newToken()),
     selected_property_id: propertyId,
     property_labels,
+    property_addresses,
     property_object_ids: {},
   };
 }
@@ -417,6 +441,7 @@ export async function loadSettings(): Promise<Settings> {
       ingest_token: newToken(),
       selected_property_id: null,
       property_labels: {},
+      property_addresses: {},
       property_object_ids: {},
     };
     await saveSettings(settingsCache);
@@ -428,6 +453,16 @@ export async function loadSettings(): Promise<Settings> {
     settingsCache.ingest_token = newToken();
     await saveSettings(settingsCache);
   }
+  const readings = await loadReadings();
+  let backfilled = false;
+  for (const reading of readings) {
+    if (!reading.address) continue;
+    const propertyId = buildPropertyId(reading.account_id, reading.usage_point);
+    if (!propertyId || settingsCache.property_addresses[propertyId]) continue;
+    settingsCache.property_addresses[propertyId] = reading.address.replace(/\s+/g, " ").trim();
+    backfilled = true;
+  }
+  if (backfilled) await saveSettings(settingsCache);
   return settingsCache;
 }
 
@@ -527,6 +562,19 @@ fetch("${escaped}", { credentials: "include", cache: "no-store" }).then(async (r
 });`;
 }
 
+function resolvePropertyAddress(
+  propertyId: string,
+  settings: Settings,
+  readingAddress: string | null,
+): string | null {
+  const stored = settings.property_addresses[propertyId]?.trim();
+  if (stored) return stored.replace(/\s+/g, " ").trim();
+  if (readingAddress) return readingAddress.replace(/\s+/g, " ").trim();
+  const legacy = settings.property_labels[propertyId]?.trim();
+  if (legacy && looksLikeAddress(legacy)) return legacy.replace(/\s+/g, " ").trim();
+  return null;
+}
+
 function propertyLabel(
   propertyId: string,
   address: string | null,
@@ -534,12 +582,36 @@ function propertyLabel(
   accountId: string | null,
   usagePoint: string | null,
 ): string {
+  const resolved = resolvePropertyAddress(propertyId, settings, address);
+  if (resolved) return resolved;
   const custom = settings.property_labels[propertyId]?.trim();
   if (custom) return custom;
-  if (address) return address.replace(/\s+/g, " ").trim();
   if (accountId && usagePoint) return `Account ${accountId}-${usagePoint}`;
   if (accountId) return `Account ${accountId}`;
   return "Unknown property";
+}
+
+export async function setPropertyAddress(
+  propertyId: string,
+  address: string,
+): Promise<Settings> {
+  const settings = await loadSettings();
+  const trimmed = address.trim().replace(/\s+/g, " ");
+  if (trimmed) settings.property_addresses[propertyId] = trimmed;
+  else delete settings.property_addresses[propertyId];
+  await saveSettings(settings);
+  return settings;
+}
+
+function applyPropertyAddress(
+  readings: StoredReading[],
+  propertyId: string,
+  address: string,
+): void {
+  for (const reading of readings) {
+    if (!matchesProperty(propertyId, reading.account_id, reading.usage_point)) continue;
+    if (!reading.address) reading.address = address;
+  }
 }
 
 async function loadImports(): Promise<ImportRecord[]> {
@@ -627,16 +699,19 @@ export async function listProperties(): Promise<Property[]> {
     if (!id) return;
     const existing = map.get(id);
     if (!existing) {
+      const resolvedAddress = resolvePropertyAddress(id, settings, address);
       map.set(id, {
         id,
         account_id: accountId,
         usage_point: usagePoint,
-        address,
-        label: propertyLabel(id, address, settings, accountId, usagePoint),
+        address: resolvedAddress,
+        label: propertyLabel(id, resolvedAddress, settings, accountId, usagePoint),
       });
       return;
     }
-    if (address && !existing.address) existing.address = address;
+    const resolvedAddress = resolvePropertyAddress(id, settings, address ?? existing.address);
+    if (resolvedAddress) existing.address = resolvedAddress;
+    else if (address && !existing.address) existing.address = address;
     existing.label = propertyLabel(id, existing.address, settings, accountId, usagePoint);
   };
 
@@ -674,14 +749,20 @@ async function saveUploadedFile(
   return storedFilename;
 }
 
-export async function importParsed(result: ParseResult, rawContent: string): Promise<ImportRecord> {
+export async function importParsed(
+  result: ParseResult,
+  rawContent: string,
+  metadata: { address?: string | null } = {},
+): Promise<ImportRecord> {
   const settings = await loadSettings();
   const imports = await loadImports();
   const readings = await loadReadings();
   const propertyId = buildPropertyId(result.account_id, result.usage_point);
+  const address = (metadata.address ?? result.address)?.trim().replace(/\s+/g, " ") || null;
 
-  if (propertyId && result.address && !settings.property_labels[propertyId]) {
-    settings.property_labels[propertyId] = result.address.replace(/\s+/g, " ").trim();
+  if (propertyId && address) {
+    settings.property_addresses[propertyId] = address;
+    applyPropertyAddress(readings, propertyId, address);
   }
   if (!settings.selected_property_id && propertyId) {
     settings.selected_property_id = propertyId;
@@ -708,7 +789,11 @@ export async function importParsed(result: ParseResult, rawContent: string): Pro
   for (const reading of result.readings) {
     const key = readingKey(reading);
     if (existingKeys.has(key)) continue;
-    readings.push({ ...reading, import_id: importId });
+    readings.push({
+      ...reading,
+      address: address ?? reading.address,
+      import_id: importId,
+    });
     existingKeys.add(key);
     inserted++;
   }

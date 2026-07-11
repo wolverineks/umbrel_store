@@ -1,6 +1,6 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "upload-export") {
-    void uploadExport(message.filename, message.content)
+    void uploadExport(message.filename, message.content, message.address ?? null)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
@@ -88,9 +88,9 @@ async function verifyIngestToken() {
   await umbrelFetch("/api/ingest/ping", { method: "GET", cache: "no-store" });
 }
 
-async function uploadExport(filename, content) {
+async function uploadExport(filename, content, address = null) {
   try {
-    return await uploadExportPayload(filename, content);
+    return await uploadExportPayload(filename, content, address);
   } catch (error) {
     if (isIngestAuthError(error)) {
       throw new Error("invalid ingest token. Copy the current token from the Umbrel dashboard Setup page.");
@@ -99,11 +99,15 @@ async function uploadExport(filename, content) {
   }
 }
 
-async function uploadExportPayload(filename, content) {
+async function uploadExportPayload(filename, content, address = null) {
   const payload = await umbrelFetch("/api/ingest", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename, content }),
+    body: JSON.stringify({
+      filename,
+      content,
+      address: address || null,
+    }),
   });
 
   const inserted = payload.import?.reading_count ?? payload.imports?.[0]?.reading_count ?? 0;

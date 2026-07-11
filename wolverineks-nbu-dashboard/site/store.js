@@ -21,6 +21,7 @@ exports.buildNbuExportUrl = buildNbuExportUrl;
 exports.jsFetchSnippet = jsFetchSnippet;
 exports.nbuVerifyLogicJs = nbuVerifyLogicJs;
 exports.nbuVerifyFetchSnippet = nbuVerifyFetchSnippet;
+exports.setPropertyAddress = setPropertyAddress;
 exports.listProperties = listProperties;
 exports.importParsed = importParsed;
 exports.listImports = listImports;
@@ -200,14 +201,33 @@ function buildPropertyId(accountId, usagePoint) {
         return accountId;
     return null;
 }
+function looksLikeAddress(value) {
+    const text = value.trim();
+    if (text.length < 8)
+        return false;
+    if (/^account\b/i.test(text))
+        return false;
+    return /\d/.test(text) && /[a-zA-Z]/.test(text);
+}
 function normalizeSettings(raw) {
+    const property_labels = raw.property_labels && typeof raw.property_labels === "object"
+        ? raw.property_labels
+        : {};
+    const property_addresses = raw.property_addresses && typeof raw.property_addresses === "object"
+        ? raw.property_addresses
+        : {};
     if ("selected_property_id" in raw) {
+        for (const [propertyId, label] of Object.entries(property_labels)) {
+            const trimmed = label.trim();
+            if (!property_addresses[propertyId] && trimmed && looksLikeAddress(trimmed)) {
+                property_addresses[propertyId] = trimmed;
+            }
+        }
         return {
             ingest_token: String(raw.ingest_token ?? newToken()),
             selected_property_id: typeof raw.selected_property_id === "string" ? raw.selected_property_id : null,
-            property_labels: raw.property_labels && typeof raw.property_labels === "object"
-                ? raw.property_labels
-                : {},
+            property_labels,
+            property_addresses,
             property_object_ids: raw.property_object_ids && typeof raw.property_object_ids === "object"
                 ? raw.property_object_ids
                 : {},
@@ -215,15 +235,17 @@ function normalizeSettings(raw) {
     }
     const accountId = typeof raw.account_id === "string" ? raw.account_id : null;
     const usagePoint = typeof raw.usage_point === "string" ? raw.usage_point : null;
-    const address = typeof raw.address === "string" ? raw.address : null;
+    const address = typeof raw.address === "string" ? raw.address.trim() : "";
     const propertyId = buildPropertyId(accountId, usagePoint);
-    const property_labels = {};
-    if (propertyId && address)
+    if (propertyId && address) {
+        property_addresses[propertyId] = address;
         property_labels[propertyId] = address;
+    }
     return {
         ingest_token: String(raw.ingest_token ?? newToken()),
         selected_property_id: propertyId,
         property_labels,
+        property_addresses,
         property_object_ids: {},
     };
 }
@@ -244,6 +266,7 @@ async function loadSettings() {
             ingest_token: newToken(),
             selected_property_id: null,
             property_labels: {},
+            property_addresses: {},
             property_object_ids: {},
         };
         await saveSettings(settingsCache);
@@ -255,6 +278,19 @@ async function loadSettings() {
         settingsCache.ingest_token = newToken();
         await saveSettings(settingsCache);
     }
+    const readings = await loadReadings();
+    let backfilled = false;
+    for (const reading of readings) {
+        if (!reading.address)
+            continue;
+        const propertyId = buildPropertyId(reading.account_id, reading.usage_point);
+        if (!propertyId || settingsCache.property_addresses[propertyId])
+            continue;
+        settingsCache.property_addresses[propertyId] = reading.address.replace(/\s+/g, " ").trim();
+        backfilled = true;
+    }
+    if (backfilled)
+        await saveSettings(settingsCache);
     return settingsCache;
 }
 async function saveSettings(settings) {
@@ -343,17 +379,47 @@ fetch("${escaped}", { credentials: "include", cache: "no-store" }).then(async (r
   return { start: ${JSON.stringify(start)}, end: ${JSON.stringify(end)}, verdict: "NBU_FETCH_FAILED", detail: String(e), hasData: false };
 });`;
 }
+function resolvePropertyAddress(propertyId, settings, readingAddress) {
+    const stored = settings.property_addresses[propertyId]?.trim();
+    if (stored)
+        return stored.replace(/\s+/g, " ").trim();
+    if (readingAddress)
+        return readingAddress.replace(/\s+/g, " ").trim();
+    const legacy = settings.property_labels[propertyId]?.trim();
+    if (legacy && looksLikeAddress(legacy))
+        return legacy.replace(/\s+/g, " ").trim();
+    return null;
+}
 function propertyLabel(propertyId, address, settings, accountId, usagePoint) {
+    const resolved = resolvePropertyAddress(propertyId, settings, address);
+    if (resolved)
+        return resolved;
     const custom = settings.property_labels[propertyId]?.trim();
     if (custom)
         return custom;
-    if (address)
-        return address.replace(/\s+/g, " ").trim();
     if (accountId && usagePoint)
         return `Account ${accountId}-${usagePoint}`;
     if (accountId)
         return `Account ${accountId}`;
     return "Unknown property";
+}
+async function setPropertyAddress(propertyId, address) {
+    const settings = await loadSettings();
+    const trimmed = address.trim().replace(/\s+/g, " ");
+    if (trimmed)
+        settings.property_addresses[propertyId] = trimmed;
+    else
+        delete settings.property_addresses[propertyId];
+    await saveSettings(settings);
+    return settings;
+}
+function applyPropertyAddress(readings, propertyId, address) {
+    for (const reading of readings) {
+        if (!matchesProperty(propertyId, reading.account_id, reading.usage_point))
+            continue;
+        if (!reading.address)
+            reading.address = address;
+    }
 }
 async function loadImports() {
     if (importsCache)
@@ -426,16 +492,20 @@ async function listProperties() {
             return;
         const existing = map.get(id);
         if (!existing) {
+            const resolvedAddress = resolvePropertyAddress(id, settings, address);
             map.set(id, {
                 id,
                 account_id: accountId,
                 usage_point: usagePoint,
-                address,
-                label: propertyLabel(id, address, settings, accountId, usagePoint),
+                address: resolvedAddress,
+                label: propertyLabel(id, resolvedAddress, settings, accountId, usagePoint),
             });
             return;
         }
-        if (address && !existing.address)
+        const resolvedAddress = resolvePropertyAddress(id, settings, address ?? existing.address);
+        if (resolvedAddress)
+            existing.address = resolvedAddress;
+        else if (address && !existing.address)
             existing.address = address;
         existing.label = propertyLabel(id, existing.address, settings, accountId, usagePoint);
     };
@@ -466,13 +536,15 @@ async function saveUploadedFile(importId, filename, rawContent) {
     await (0, promises_1.writeFile)(node_path_1.default.join(importDir, storedFilename), rawContent, "utf8");
     return storedFilename;
 }
-async function importParsed(result, rawContent) {
+async function importParsed(result, rawContent, metadata = {}) {
     const settings = await loadSettings();
     const imports = await loadImports();
     const readings = await loadReadings();
     const propertyId = buildPropertyId(result.account_id, result.usage_point);
-    if (propertyId && result.address && !settings.property_labels[propertyId]) {
-        settings.property_labels[propertyId] = result.address.replace(/\s+/g, " ").trim();
+    const address = (metadata.address ?? result.address)?.trim().replace(/\s+/g, " ") || null;
+    if (propertyId && address) {
+        settings.property_addresses[propertyId] = address;
+        applyPropertyAddress(readings, propertyId, address);
     }
     if (!settings.selected_property_id && propertyId) {
         settings.selected_property_id = propertyId;
@@ -498,7 +570,11 @@ async function importParsed(result, rawContent) {
         const key = readingKey(reading);
         if (existingKeys.has(key))
             continue;
-        readings.push({ ...reading, import_id: importId });
+        readings.push({
+            ...reading,
+            address: address ?? reading.address,
+            import_id: importId,
+        });
         existingKeys.add(key);
         inserted++;
     }
