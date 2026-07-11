@@ -9,11 +9,10 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.9.2";
+const APP_VERSION = "1.9.3";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
-    "/usage": "usage",
     "/coverage": "coverage",
     "/missing-sources": "missing-sources",
     "/uploads": "uploads",
@@ -24,7 +23,6 @@ const DASHBOARD_PAGE_ROUTES = {
 };
 const DASHBOARD_PAGE_TITLES = {
     overview: "Overview",
-    usage: "Usage",
     coverage: "Coverage",
     "missing-sources": "Missing sources",
     uploads: "Upload history",
@@ -36,7 +34,6 @@ function resolveDashboardPage(pathname) {
 function renderSideNav(active) {
     const items = [
         { page: "overview", href: "/", label: "Overview" },
-        { page: "usage", href: "/usage", label: "Usage" },
         { page: "coverage", href: "/coverage", label: "Coverage" },
         { page: "missing-sources", href: "/missing-sources", label: "Missing sources" },
         { page: "uploads", href: "/uploads", label: "Upload history" },
@@ -63,13 +60,9 @@ function globalContextBar() {
         </div>
       </div>`;
 }
-function dashboardPageContent(page) {
-    switch (page) {
-        case "overview":
-            return `<div class="grid" id="stats"></div>`;
-        case "usage":
-            return `
-      <div class="chart-wrap">
+function usageChartSection() {
+    return `
+      <div class="chart-wrap" style="margin-top:1rem">
         <div class="toolbar">
           <select id="granularity">
             <option value="hour">Hourly</option>
@@ -97,11 +90,16 @@ function dashboardPageContent(page) {
         <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
         <div class="chart-sources" id="chart-sources" hidden></div>
       </div>`;
+}
+function dashboardPageContent(page) {
+    switch (page) {
+        case "overview":
+            return `<div class="grid" id="stats"></div>${usageChartSection()}`;
         case "coverage":
             return `
       <div class="card">
         <h2>Data coverage</h2>
-        <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to open that day on the Usage page.</p>
+        <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to open that day on Overview.</p>
         <div id="coverage-content">
           <p class="muted">Loading coverage…</p>
         </div>
@@ -1525,7 +1523,7 @@ function dashboardPage(page) {
       if (propertyId) params.set("property", propertyId);
       if (utility) params.set("utility", utility);
       params.set("date", dateKey);
-      window.location.href = "/usage?" + params.toString();
+      window.location.href = "/?" + params.toString();
     }
 
     function initSideNav() {
@@ -1569,8 +1567,6 @@ function dashboardPage(page) {
       switch (APP_PAGE) {
         case "overview":
           renderStats();
-          break;
-        case "usage":
           await loadUsage();
           await loadQueuedSyncView();
           break;
@@ -1598,10 +1594,8 @@ function dashboardPage(page) {
       await loadOverview();
       switch (APP_PAGE) {
         case "overview":
-          renderStats();
-          break;
-        case "usage":
           applyUsageQueryParams();
+          renderStats();
           await loadUsage();
           await loadQueuedSyncView();
           break;
@@ -1863,13 +1857,13 @@ function dashboardPage(page) {
         state.overview.settings = payload.settings;
         const objectIdHint = document.getElementById("object-id-hint");
         if (objectIdHint) objectIdHint.hidden = Boolean(objectId.trim());
-        if (APP_PAGE === "usage") await loadUsage();
+        if (APP_PAGE === "overview") await loadUsage();
         if (APP_PAGE === "missing-sources") await loadMissingSources();
         if (APP_PAGE === "setup") await refreshBackupStatus();
       }
     });
     on("utility", "change", async () => {
-      if (APP_PAGE === "usage") {
+      if (APP_PAGE === "overview") {
         await loadUsage();
         await loadQueuedSyncView();
       }
@@ -2377,6 +2371,12 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             catch (error) {
                 sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
             }
+            return;
+        }
+        if (req.method === "GET" && pathname === "/usage") {
+            const target = "/" + (url.search || "");
+            res.writeHead(302, { Location: target });
+            res.end();
             return;
         }
         const dashboardPageId = resolveDashboardPage(pathname);
