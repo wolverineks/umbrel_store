@@ -9,7 +9,174 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.8.7";
+const APP_VERSION = "1.9.0";
+const DASHBOARD_PAGE_ROUTES = {
+    "/": "overview",
+    "/overview": "overview",
+    "/usage": "usage",
+    "/coverage": "coverage",
+    "/missing-sources": "missing-sources",
+    "/extension": "extension",
+    "/uploads": "uploads",
+    "/upload-history": "uploads",
+    "/backup": "backup",
+};
+const DASHBOARD_PAGE_TITLES = {
+    overview: "Overview",
+    usage: "Usage",
+    coverage: "Coverage",
+    "missing-sources": "Missing sources",
+    extension: "Extension",
+    uploads: "Upload history",
+    backup: "Backup",
+};
+function resolveDashboardPage(pathname) {
+    return DASHBOARD_PAGE_ROUTES[pathname] ?? null;
+}
+function renderSideNav(active) {
+    const items = [
+        { page: "overview", href: "/", label: "Overview" },
+        { page: "usage", href: "/usage", label: "Usage" },
+        { page: "coverage", href: "/coverage", label: "Coverage" },
+        { page: "missing-sources", href: "/missing-sources", label: "Missing sources" },
+        { page: "extension", href: "/extension", label: "Extension" },
+        { page: "uploads", href: "/uploads", label: "Upload history" },
+        { page: "backup", href: "/backup", label: "Backup" },
+    ];
+    return items
+        .map((item) => `<a class="side-nav-link${item.page === active ? " active" : ""}" href="${item.href}">${item.label}</a>`)
+        .join("\n          ");
+}
+function globalContextBar() {
+    return `
+      <div class="global-context card" style="margin-bottom:1rem">
+        <div class="property-bar">
+          <select id="property"></select>
+          <input id="property-label" type="text" placeholder="House name">
+          <button id="save-label" class="secondary">Save name</button>
+          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs">
+          <button id="save-object-id" class="secondary">Save Object ID</button>
+        </div>
+        <p class="object-id-hint" id="object-id-hint" hidden>
+          Set the NBU Object ID to generate per-gap NBU verify snippets (run in Customer Connect console).
+        </p>
+        <div class="toolbar" style="margin-bottom:0">
+          <label class="muted" for="utility" style="font-weight:600">Utility</label>
+          <select id="utility">
+            <option value="electric">Electric</option>
+            <option value="water">Water</option>
+          </select>
+        </div>
+      </div>`;
+}
+function dashboardPageContent(page) {
+    switch (page) {
+        case "overview":
+            return `<div class="grid" id="stats"></div>`;
+        case "usage":
+            return `
+      <div class="chart-wrap">
+        <div class="toolbar">
+          <select id="granularity">
+            <option value="hour">Hourly</option>
+            <option value="day">Daily</option>
+            <option value="billing_period">Billing periods</option>
+          </select>
+          <select id="range">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="365">Last year</option>
+            <option value="">All data</option>
+          </select>
+          <input id="day" type="date" title="View hourly usage for a specific day">
+          <button id="clear-day" class="secondary" hidden>Clear day</button>
+          <button id="refresh" class="secondary">Refresh</button>
+          <button id="queue-extension-sync" class="secondary">Queue for extension</button>
+        </div>
+        <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
+        <p class="day-view-label" id="day-view-label" hidden></p>
+        <div class="chart-shell">
+          <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
+          <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+        </div>
+        <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
+        <div class="chart-sources" id="chart-sources" hidden></div>
+      </div>`;
+        case "coverage":
+            return `
+      <div class="card">
+        <h2>Data coverage</h2>
+        <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to open that day on the Usage page.</p>
+        <div id="coverage-content">
+          <p class="muted">Loading coverage…</p>
+        </div>
+      </div>`;
+        case "missing-sources":
+            return `
+      <div class="card" id="missing-sources-card">
+        <div class="missing-sources-header">
+          <div>
+            <h2 style="margin:0">Missing sources</h2>
+            <p class="muted" style="margin:0.35rem 0 0">Each gap includes a console snippet to fetch NBU servers and check whether the data is missing there too. Run snippets on the Customer Connect site (logged in, DevTools console).</p>
+          </div>
+          <div class="toolbar collapse-card-actions" style="margin:0">
+            <button id="copy-verify-all-script" class="secondary" hidden>Copy verify-all script</button>
+            <button id="copy-probe-script" class="secondary" hidden>Verify all + save</button>
+            <button id="refresh-missing-sources" class="secondary">Refresh</button>
+          </div>
+        </div>
+        <p class="muted" id="missing-sources-summary">Loading…</p>
+        <div id="missing-sources-content">
+          <p class="muted">Loading missing sources…</p>
+        </div>
+      </div>`;
+        case "extension":
+            return `
+      <div class="card">
+        <h2>Chrome extension</h2>
+        <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
+        <div class="token-box" style="margin-top:0.8rem">
+          <code id="token"></code>
+          <button id="copy-token" class="secondary">Copy token</button>
+          <button id="rotate-token" class="secondary">Rotate token</button>
+        </div>
+      </div>`;
+        case "uploads":
+            return `
+      <div class="card">
+        <div class="import-history-header">
+          <h2 style="margin:0">Upload history</h2>
+          <span class="muted" id="import-count"></span>
+        </div>
+        <div class="imports import-history" id="imports"></div>
+      </div>`;
+        case "backup":
+            return `
+      <div class="card">
+        <h2>Backup &amp; restore</h2>
+        <p class="muted">
+          Copy all usage data, upload files, settings, and property names to
+          <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel.
+        </p>
+        <div class="grid" style="margin-top:0.8rem">
+          <div>
+            <h3>Live data</h3>
+            <p class="muted" id="backup-live-summary">Loading…</p>
+          </div>
+          <div>
+            <h3>Backup folder</h3>
+            <p class="muted" id="backup-folder-summary">Loading…</p>
+          </div>
+        </div>
+        <p class="muted" id="backup-status" style="margin-top:0.8rem"></p>
+        <div class="toolbar" style="margin-top:0.8rem; margin-bottom:0">
+          <button id="backup-export-btn">Back up now</button>
+          <button id="backup-import-btn" class="secondary">Restore from backup</button>
+        </div>
+      </div>`;
+    }
+}
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
@@ -330,6 +497,11 @@ function pageStyles() {
       text-overflow: ellipsis;
     }
     .section-anchor { scroll-margin-top: 5.5rem; }
+    .global-context .toolbar {
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      margin-bottom: 0;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -762,13 +934,14 @@ function pageStyles() {
     }
   `;
 }
-function dashboardPage() {
+function dashboardPage(page) {
+    const pageTitle = DASHBOARD_PAGE_TITLES[page];
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NBU Utilities</title>
+  <title>NBU Utilities · ${pageTitle}</title>
   <style>${pageStyles()}</style>
 </head>
 <body>
@@ -777,13 +950,7 @@ function dashboardPage() {
       <div class="side-nav-inner">
         <p class="side-nav-label">Menu</p>
         <nav class="side-nav-links">
-          <a class="side-nav-link" href="#overview" data-section="overview">Overview</a>
-          <a class="side-nav-link" href="#usage" data-section="usage">Usage</a>
-          <a class="side-nav-link" href="#coverage" data-section="coverage">Coverage</a>
-          <a class="side-nav-link" href="#missing-sources-card" data-section="missing-sources-card">Missing sources</a>
-          <a class="side-nav-link" href="#extension" data-section="extension">Extension</a>
-          <a class="side-nav-link" href="#upload-history" data-section="upload-history">Upload history</a>
-          <a class="side-nav-link" href="#backup" data-section="backup">Backup</a>
+          ${renderSideNav(page)}
         </nav>
       </div>
     </aside>
@@ -801,132 +968,19 @@ function dashboardPage() {
           </div>
         </div>
         <div class="app-header-end">
-          <span class="header-section-label" id="header-section">Overview</span>
+          <span class="header-section-label" id="header-section">${pageTitle}</span>
           <span class="header-version">v${APP_VERSION}</span>
           <button type="button" class="secondary header-refresh" id="header-refresh">Refresh</button>
         </div>
       </header>
       <main class="main-content" id="main-content">
-
-    <div class="grid section-anchor" id="overview"></div>
-
-    <div class="chart-wrap section-anchor" id="usage">
-      <div class="property-bar">
-        <select id="property"></select>
-        <input id="property-label" type="text" placeholder="House name">
-        <button id="save-label" class="secondary">Save name</button>
-        <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs">
-        <button id="save-object-id" class="secondary">Save Object ID</button>
-      </div>
-      <p class="object-id-hint" id="object-id-hint" hidden>
-        Set the NBU Object ID to generate per-gap NBU verify snippets (run in Customer Connect console).
-      </p>
-      <div class="toolbar">
-        <select id="utility">
-          <option value="electric">Electric</option>
-          <option value="water">Water</option>
-        </select>
-        <select id="granularity">
-          <option value="hour">Hourly</option>
-          <option value="day">Daily</option>
-          <option value="billing_period">Billing periods</option>
-        </select>
-        <select id="range">
-          <option value="7">Last 7 days</option>
-          <option value="30" selected>Last 30 days</option>
-          <option value="90">Last 90 days</option>
-          <option value="365">Last year</option>
-          <option value="">All data</option>
-        </select>
-        <input id="day" type="date" title="View hourly usage for a specific day">
-        <button id="clear-day" class="secondary" hidden>Clear day</button>
-        <button id="refresh" class="secondary">Refresh</button>
-        <button id="queue-extension-sync" class="secondary">Queue for extension</button>
-      </div>
-      <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
-      <p class="day-view-label" id="day-view-label" hidden></p>
-      <div class="chart-shell">
-        <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
-        <div class="chart-tooltip" id="chart-tooltip" hidden></div>
-      </div>
-      <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
-      <div class="chart-sources" id="chart-sources" hidden></div>
-    </div>
-
-    <div class="card section-anchor" id="coverage" style="margin-top:1rem">
-      <h2>Data coverage</h2>
-      <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to inspect that day.</p>
-      <div id="coverage-content">
-        <p class="muted">Loading coverage…</p>
-      </div>
-    </div>
-
-    <div class="card section-anchor" style="margin-top:1rem" id="missing-sources-card">
-      <div class="collapse-card-header">
-        <details class="collapse-panel" id="missing-sources-panel">
-          <summary class="collapse-summary">
-            <span class="collapse-title">Missing sources</span>
-            <span class="collapse-meta muted" id="missing-sources-summary">Loading…</span>
-          </summary>
-          <div class="collapse-body">
-            <p class="muted" style="margin:0 0 0.75rem">Each gap includes a console snippet to fetch NBU servers and check whether the data is missing there too. Run snippets on the Customer Connect site (logged in, DevTools console).</p>
-            <div id="missing-sources-content">
-              <p class="muted">Loading missing sources…</p>
-            </div>
-          </div>
-        </details>
-        <div class="toolbar collapse-card-actions">
-          <button id="copy-verify-all-script" class="secondary" hidden>Copy verify-all script</button>
-          <button id="copy-probe-script" class="secondary" hidden>Verify all + save</button>
-          <button id="refresh-missing-sources" class="secondary">Refresh</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card section-anchor" id="extension" style="margin-top:1rem">
-      <h2>Chrome extension</h2>
-      <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
-      <div class="token-box" style="margin-top:0.8rem">
-        <code id="token"></code>
-        <button id="copy-token" class="secondary">Copy token</button>
-        <button id="rotate-token" class="secondary">Rotate token</button>
-      </div>
-    </div>
-
-    <div class="card section-anchor" id="upload-history" style="margin-top:1rem">
-      <div class="import-history-header">
-        <h2 style="margin:0">Upload history</h2>
-        <span class="muted" id="import-count"></span>
-      </div>
-      <div class="imports import-history" id="imports"></div>
-    </div>
-
-    <div class="card section-anchor" id="backup" style="margin-top:1rem">
-      <h2>Backup &amp; restore</h2>
-      <p class="muted">
-        Copy all usage data, upload files, settings, and property names to
-        <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel.
-      </p>
-      <div class="grid" style="margin-top:0.8rem">
-        <div>
-          <h3>Live data</h3>
-          <p class="muted" id="backup-live-summary">Loading…</p>
-        </div>
-        <div>
-          <h3>Backup folder</h3>
-          <p class="muted" id="backup-folder-summary">Loading…</p>
-        </div>
-      </div>
-      <p class="muted" id="backup-status" style="margin-top:0.8rem"></p>
-      <div class="toolbar" style="margin-top:0.8rem; margin-bottom:0">
-        <button id="backup-export-btn">Back up now</button>
-        <button id="backup-import-btn" class="secondary">Restore from backup</button>
-      </div>
-    </div>
+        ${globalContextBar()}
+        ${dashboardPageContent(page)}
       </main>
     </div>
   </div>
   <script>
+    const APP_PAGE = ${JSON.stringify(page)};
     const state = {
       overview: null,
       usage: null,
@@ -936,8 +990,17 @@ function dashboardPage() {
       clipboardScripts: { verifyAll: null, probe: null },
     };
 
+    function on(id, event, handler) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener(event, handler);
+    }
+
     function selectedPropertyId() {
-      return document.getElementById("property").value || null;
+      return document.getElementById("property")?.value || null;
+    }
+
+    function selectedUtility() {
+      return document.getElementById("utility")?.value || "electric";
     }
 
     function propertyParams() {
@@ -1197,9 +1260,7 @@ function dashboardPage() {
     function renderStats() {
       const el = document.getElementById("stats");
       const o = state.overview;
-      if (!o) return;
-      renderPropertySelector();
-      document.getElementById("token").textContent = o.settings.ingest_token;
+      if (!el || !o) return;
       el.innerHTML = [
         ["Electric hours", o.electric_hours, "stored"],
         ["Electric days", o.electric_days, "stored"],
@@ -1211,12 +1272,12 @@ function dashboardPage() {
           <div class="metric">\${value} <small>\${suffix}</small></div>
         </div>
       \`).join("");
-      const countEl = document.getElementById("import-count");
-      if (countEl) {
-        const total = state.imports?.total ?? o.import_count ?? 0;
-        countEl.textContent = total ? total + " upload" + (total === 1 ? "" : "s") : "";
-      }
-      renderImports();
+    }
+
+    function renderExtensionToken() {
+      const tokenEl = document.getElementById("token");
+      if (!tokenEl || !state.overview) return;
+      tokenEl.textContent = state.overview.settings.ingest_token;
     }
 
     function renderImports() {
@@ -1294,7 +1355,7 @@ function dashboardPage() {
             html += '</li>';
             return html;
           }).join("") + (missing.length > 12
-            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="#missing-sources-card" class="open-missing-sources">View all ' + missing.length + '</a></li>'
+            ? '<li class="muted">…and ' + (missing.length - 12) + ' more · <a href="/missing-sources">View all ' + missing.length + '</a></li>'
             : "")
         : '<li class="none">No gaps in this view.</li>';
 
@@ -1311,9 +1372,6 @@ function dashboardPage() {
         '</div>';
       el.hidden = false;
 
-      el.querySelectorAll(".open-missing-sources").forEach((link) => {
-        link.addEventListener("click", () => openMissingSourcesPanel());
-      });
       el.querySelectorAll("button[data-date]").forEach((button) => {
         button.addEventListener("click", () => openCoverageDay(button.dataset.date));
       });
@@ -1446,39 +1504,14 @@ function dashboardPage() {
       return label + ": " + range + " (" + gap.days + " day" + (gap.days === 1 ? "" : "s") + ")";
     }
 
-    function openMissingSourcesPanel() {
-      const panel = document.getElementById("missing-sources-panel");
-      if (panel) panel.open = true;
-    }
-
     function openCoverageDay(dateKey) {
-      const dayInput = document.getElementById("day");
-      const granularity = document.getElementById("granularity");
-      if (!dayInput || !granularity) return;
-      dayInput.value = dateKey;
-      granularity.value = "hour";
-      syncDayControls();
-      loadUsage();
-      document.getElementById("usage")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-
-    const SECTION_LABELS = {
-      overview: "Overview",
-      usage: "Usage",
-      coverage: "Coverage",
-      "missing-sources-card": "Missing sources",
-      extension: "Extension",
-      "upload-history": "Upload history",
-      backup: "Backup",
-    };
-
-    function setActiveSection(id) {
-      const label = SECTION_LABELS[id] || "Overview";
-      const headerSection = document.getElementById("header-section");
-      if (headerSection) headerSection.textContent = label;
-      document.querySelectorAll(".side-nav-link").forEach((link) => {
-        link.classList.toggle("active", link.dataset.section === id);
-      });
+      const params = new URLSearchParams();
+      const propertyId = selectedPropertyId();
+      const utility = selectedUtility();
+      if (propertyId) params.set("property", propertyId);
+      if (utility) params.set("utility", utility);
+      params.set("date", dateKey);
+      window.location.href = "/usage?" + params.toString();
     }
 
     function initSideNav() {
@@ -1486,9 +1519,6 @@ function dashboardPage() {
       const toggle = document.getElementById("side-nav-toggle");
       const backdrop = document.getElementById("side-nav-backdrop");
       const links = [...document.querySelectorAll(".side-nav-link")];
-      const sections = links
-        .map((link) => document.getElementById(link.dataset.section || ""))
-        .filter(Boolean);
 
       function setNavOpen(open) {
         nav?.classList.toggle("open", open);
@@ -1499,45 +1529,86 @@ function dashboardPage() {
 
       toggle?.addEventListener("click", () => setNavOpen(!nav?.classList.contains("open")));
       backdrop?.addEventListener("click", () => setNavOpen(false));
+      links.forEach((link) => link.addEventListener("click", () => setNavOpen(false)));
+    }
 
-      links.forEach((link) => {
-        link.addEventListener("click", () => {
-          setNavOpen(false);
-          if (link.dataset.section) setActiveSection(link.dataset.section);
-          if (link.dataset.section === "missing-sources-card") openMissingSourcesPanel();
-        });
-      });
-
-      if (!sections.length || !("IntersectionObserver" in window)) {
-        setActiveSection("overview");
-        return;
+    function applyUsageQueryParams() {
+      const params = new URLSearchParams(window.location.search);
+      const dayInput = document.getElementById("day");
+      const granularity = document.getElementById("granularity");
+      const utility = document.getElementById("utility");
+      const property = document.getElementById("property");
+      const day = params.get("date");
+      const utilityParam = params.get("utility");
+      const propertyParam = params.get("property");
+      if (utility && utilityParam) utility.value = utilityParam;
+      if (property && propertyParam) property.value = propertyParam;
+      if (day && dayInput && granularity) {
+        dayInput.value = day;
+        granularity.value = "hour";
+        syncDayControls();
       }
+    }
 
-      let activeId = null;
-      const observer = new IntersectionObserver(
-        (entries) => {
-          const visible = entries
-            .filter((entry) => entry.isIntersecting)
-            .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
-          if (!visible.length) return;
-          const id = visible[0].target.id;
-          if (!id || id === activeId) return;
-          activeId = id;
-          setActiveSection(id);
-        },
-        { rootMargin: "-88px 0px -55% 0px", threshold: [0, 0.15, 0.4, 0.7] },
-      );
-
-      sections.forEach((section) => observer.observe(section));
-      setActiveSection("overview");
+    async function reloadCurrentPage() {
+      await loadOverview();
+      switch (APP_PAGE) {
+        case "overview":
+          renderStats();
+          break;
+        case "usage":
+          await loadUsage();
+          await loadQueuedSyncView();
+          break;
+        case "coverage":
+          await loadCoverage();
+          break;
+        case "missing-sources":
+          await loadMissingSources();
+          break;
+        case "uploads":
+          await loadImports();
+          break;
+        case "backup":
+          await refreshBackupStatus();
+          break;
+        case "extension":
+          renderExtensionToken();
+          break;
+      }
     }
 
     async function refreshDashboard() {
+      await reloadCurrentPage();
+    }
+
+    async function initPage() {
       await loadOverview();
-      await loadImports();
-      await loadUsage();
-      await loadCoverage();
-      await loadMissingSources();
+      switch (APP_PAGE) {
+        case "overview":
+          renderStats();
+          break;
+        case "usage":
+          applyUsageQueryParams();
+          await loadUsage();
+          await loadQueuedSyncView();
+          break;
+        case "coverage":
+          await loadCoverage();
+          break;
+        case "missing-sources":
+          await loadMissingSources();
+          break;
+        case "uploads":
+          await loadImports();
+          break;
+        case "extension":
+          renderExtensionToken();
+          break;
+        case "backup":
+          await refreshBackupStatus();
+          break;
+      }
     }
 
     function renderCoverage() {
@@ -1583,9 +1654,8 @@ function dashboardPage() {
     }
 
     async function loadCoverage() {
-      const utility = document.getElementById("utility").value;
       const params = propertyParams();
-      params.set("utility", utility);
+      params.set("utility", selectedUtility());
       const res = await fetch("/api/coverage?" + params.toString());
       state.coverage = await res.json();
       renderCoverage();
@@ -1680,9 +1750,8 @@ function dashboardPage() {
     }
 
     async function loadMissingSources() {
-      const utility = document.getElementById("utility").value;
       const params = propertyParams();
-      params.set("utility", utility);
+      params.set("utility", selectedUtility());
       const res = await fetch("/api/missing-sources?" + params.toString());
       state.missingSources = await res.json();
       renderMissingSources();
@@ -1692,7 +1761,9 @@ function dashboardPage() {
       const params = propertyParams();
       const res = await fetch("/api/overview?" + params.toString());
       state.overview = await res.json();
-      renderStats();
+      renderPropertySelector();
+      if (APP_PAGE === "overview") renderStats();
+      if (APP_PAGE === "extension") renderExtensionToken();
     }
 
     async function loadImports() {
@@ -1709,12 +1780,14 @@ function dashboardPage() {
     }
 
     async function loadUsage() {
-      const utility = document.getElementById("utility").value;
-      const granularity = document.getElementById("granularity").value;
-      const days = document.getElementById("range").value;
-      const day = document.getElementById("day").value;
+      const granularityEl = document.getElementById("granularity");
+      const rangeEl = document.getElementById("range");
+      if (!granularityEl || !rangeEl) return;
+      const granularity = granularityEl.value;
+      const days = rangeEl.value;
+      const day = document.getElementById("day")?.value || "";
       const params = propertyParams();
-      params.set("utility", utility);
+      params.set("utility", selectedUtility());
       params.set("granularity", granularity);
       if (day) params.set("date", day);
       else if (days) params.set("days", days);
@@ -1733,7 +1806,7 @@ function dashboardPage() {
       });
     }
 
-    document.getElementById("property").addEventListener("change", async (event) => {
+    on("property", "change", async (event) => {
       const propertyId = event.target.value;
       const property = state.overview?.properties.find((item) => item.id === propertyId);
       const labelInput = document.getElementById("property-label");
@@ -1749,13 +1822,9 @@ function dashboardPage() {
         objectIdHint.hidden = Boolean(state.overview.settings.property_object_ids?.[propertyId]);
       }
       await savePropertySelection(propertyId);
-      await loadOverview();
-      await loadImports();
-      await loadUsage();
-      await loadCoverage();
-      await loadMissingSources();
+      await reloadCurrentPage();
     });
-    document.getElementById("save-label").addEventListener("click", async () => {
+    on("save-label", "click", async () => {
       const propertyId = selectedPropertyId();
       const label = document.getElementById("property-label").value;
       if (!propertyId) return;
@@ -1770,7 +1839,7 @@ function dashboardPage() {
         await loadOverview();
       }
     });
-    document.getElementById("save-object-id").addEventListener("click", async () => {
+    on("save-object-id", "click", async () => {
       const propertyId = selectedPropertyId();
       const objectId = document.getElementById("property-object-id").value;
       if (!propertyId) return;
@@ -1784,25 +1853,28 @@ function dashboardPage() {
         state.overview.settings = payload.settings;
         const objectIdHint = document.getElementById("object-id-hint");
         if (objectIdHint) objectIdHint.hidden = Boolean(objectId.trim());
-        await loadUsage();
-        await loadMissingSources();
+        if (APP_PAGE === "usage") await loadUsage();
+        if (APP_PAGE === "missing-sources") await loadMissingSources();
       }
     });
-    document.getElementById("utility").addEventListener("change", async () => {
-      await loadUsage();
-      await loadCoverage();
-      await loadMissingSources();
+    on("utility", "change", async () => {
+      if (APP_PAGE === "usage") {
+        await loadUsage();
+        await loadQueuedSyncView();
+      }
+      if (APP_PAGE === "coverage") await loadCoverage();
+      if (APP_PAGE === "missing-sources") await loadMissingSources();
     });
-    document.getElementById("granularity").addEventListener("change", loadUsage);
-    document.getElementById("range").addEventListener("change", async () => {
+    on("granularity", "change", loadUsage);
+    on("range", "change", async () => {
       await loadUsage();
       await queueExtensionSync(true);
     });
-    document.getElementById("day").addEventListener("change", async () => {
+    on("day", "change", async () => {
       await loadUsage();
       await queueExtensionSync(true);
     });
-    document.getElementById("clear-day").addEventListener("click", () => {
+    on("clear-day", "click", () => {
       const dayInput = document.getElementById("day");
       if (!dayInput) return;
       dayInput.value = "";
@@ -1888,40 +1960,40 @@ function dashboardPage() {
       }
     }
 
-    document.getElementById("queue-extension-sync").addEventListener("click", () => {
+    on("queue-extension-sync", "click", () => {
       void queueExtensionSync(false);
     });
-    document.getElementById("refresh").addEventListener("click", () => {
+    on("refresh", "click", () => {
       void refreshDashboard();
     });
-    document.getElementById("header-refresh").addEventListener("click", () => {
+    on("header-refresh", "click", () => {
       void refreshDashboard();
     });
-    document.getElementById("refresh-missing-sources").addEventListener("click", loadMissingSources);
-    document.getElementById("copy-verify-all-script").addEventListener("click", async (event) => {
+    on("refresh-missing-sources", "click", loadMissingSources);
+    on("copy-verify-all-script", "click", async (event) => {
       const button = event.currentTarget;
       const script = state.clipboardScripts.verifyAll;
       if (!script) return;
       await copySnippet(button, script);
     });
-    document.getElementById("copy-probe-script").addEventListener("click", async (event) => {
+    on("copy-probe-script", "click", async (event) => {
       const button = event.currentTarget;
       const script = state.clipboardScripts.probe;
       if (!script) return;
       await copySnippet(button, script);
     });
-    document.getElementById("copy-token").addEventListener("click", async () => {
+    on("copy-token", "click", async () => {
       const token = state.overview?.settings?.ingest_token;
       const button = document.getElementById("copy-token");
       if (!token || !button) return;
       await copySnippet(button, token);
     });
-    document.getElementById("rotate-token").addEventListener("click", async () => {
+    on("rotate-token", "click", async () => {
       const res = await fetch("/api/settings/rotate-token", { method: "POST" });
       const payload = await res.json();
       if (payload.settings) {
         state.overview.settings = payload.settings;
-        renderStats();
+        renderExtensionToken();
       }
     });
 
@@ -1983,7 +2055,7 @@ function dashboardPage() {
       }
     }
 
-    document.getElementById("backup-export-btn").addEventListener("click", async () => {
+    on("backup-export-btn", "click", async () => {
       const exportBtn = document.getElementById("backup-export-btn");
       const importBtn = document.getElementById("backup-import-btn");
       if (exportBtn) exportBtn.disabled = true;
@@ -2001,7 +2073,7 @@ function dashboardPage() {
       }
     });
 
-    document.getElementById("backup-import-btn").addEventListener("click", async () => {
+    on("backup-import-btn", "click", async () => {
       if (!confirm("Restore from backup? This replaces all live usage data and settings with the backed-up copy.")) {
         return;
       }
@@ -2014,12 +2086,8 @@ function dashboardPage() {
         const response = await fetch("/api/backup/import", { method: "POST" });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Restore failed.");
-        await loadOverview();
-        await loadImports();
-        await loadUsage();
-        await loadCoverage();
-        await loadMissingSources();
         await refreshBackupStatus("Restore completed.");
+        window.location.href = "/";
       } catch (error) {
         const statusEl = document.getElementById("backup-status");
         if (statusEl) statusEl.textContent = error.message || "Restore failed.";
@@ -2028,17 +2096,7 @@ function dashboardPage() {
     });
 
     initSideNav();
-
-    loadOverview()
-      .then(loadImports)
-      .then(loadUsage)
-      .then(loadCoverage)
-      .then(loadMissingSources)
-      .then(loadQueuedSyncView)
-      .then(() => {
-        if (window.location.hash === "#missing-sources-card") openMissingSourcesPanel();
-      })
-      .then(() => refreshBackupStatus());
+    void initPage();
   </script>
 </body>
 </html>`;
@@ -2280,8 +2338,14 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             }
             return;
         }
-        if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
-            sendText(res, 200, "text/html; charset=utf-8", dashboardPage());
+        const dashboardPageId = resolveDashboardPage(pathname);
+        if (req.method === "GET" && dashboardPageId) {
+            sendText(res, 200, "text/html; charset=utf-8", dashboardPage(dashboardPageId));
+            return;
+        }
+        if (req.method === "GET" && pathname === "/index.html") {
+            res.writeHead(302, { Location: "/" });
+            res.end();
             return;
         }
         sendJson(res, 404, { error: "not found" });
