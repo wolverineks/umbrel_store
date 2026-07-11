@@ -781,6 +781,177 @@ function isFutureHourSlot(dateKey, hour, todayKey) {
         return false;
     return hour > centralLocalHour(new Date().toISOString());
 }
+function formatCompactHour(hour) {
+    if (hour === 0)
+        return "12a";
+    if (hour < 12)
+        return `${hour}a`;
+    if (hour === 12)
+        return "12p";
+    return `${hour - 12}p`;
+}
+function formatDayHeading(dateKey) {
+    const [year, month, day] = dateKey.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+    return date.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+        timeZone: CENTRAL_TZ,
+    });
+}
+function roundUsage(value) {
+    return Math.round(value * 1000) / 1000;
+}
+function findPeakLow(hours) {
+    const present = hours.filter((item) => !item.missing && item.value !== null);
+    if (!present.length)
+        return { peak: null, low: null };
+    let peak = present[0];
+    let low = present[0];
+    for (const item of present) {
+        if (item.value > peak.value)
+            peak = item;
+        if (item.value < low.value)
+            low = item;
+    }
+    return {
+        peak: { hour: peak.hour, label: peak.label, value: roundUsage(peak.value) },
+        low: { hour: low.hour, label: low.label, value: roundUsage(low.value) },
+    };
+}
+function buildEnergyReportDay(dateKey, valuesBySlot, readings, propertyId, utility, todayKey) {
+    const hours = [];
+    let total = 0;
+    let hoursPresent = 0;
+    let hoursMissing = 0;
+    for (let hour = 0; hour < 24; hour++) {
+        if (isFutureHourSlot(dateKey, hour, todayKey))
+            continue;
+        const value = valuesBySlot.get(`${dateKey}:${hour}`);
+        const missing = value === undefined;
+        if (!missing) {
+            total += value;
+            hoursPresent += 1;
+        }
+        else {
+            hoursMissing += 1;
+        }
+        hours.push({
+            hour: hour + 1,
+            label: formatCompactHour(hour),
+            value: missing ? null : roundUsage(value),
+            missing,
+        });
+    }
+    const { peak, low } = findPeakLow(hours);
+    const average = hoursPresent ? roundUsage(total / hoursPresent) : 0;
+    return {
+        date: dateKey,
+        label: formatDayHeading(dateKey),
+        total: roundUsage(total),
+        average,
+        peak,
+        low,
+        hours,
+        hours_present: hoursPresent,
+        hours_missing: hoursMissing,
+        tiers: buildTouSummary(readings, propertyId, utility, dateKey),
+    };
+}
+function buildEnergyReportComparison(days) {
+    if (days.length < 2)
+        return null;
+    let highest = days[0];
+    let lowest = days[0];
+    let sum = 0;
+    for (const day of days) {
+        if (day.total > highest.total)
+            highest = day;
+        if (day.total < lowest.total)
+            lowest = day;
+        sum += day.total;
+    }
+    return {
+        highest_day: { date: highest.date, label: highest.label, total: highest.total },
+        lowest_day: { date: lowest.date, label: lowest.label, total: lowest.total },
+        avg_daily: roundUsage(sum / days.length),
+    };
+}
+function buildEnergyReport(readings, propertyId, utility, granularity, days, date) {
+    const unit = utility === "water" ? "gal" : "kWh";
+    const costNote = utility === "electric"
+        ? "Estimated cost: — (add your NBU tier rates in Settings to enable)"
+        : "Estimated cost: — (water rates not configured)";
+    if (granularity === "billing_period")
+        return null;
+    if (granularity === "day") {
+        const dayReadings = filterReadings(excludeTouReadings(readings), propertyId, utility, "day", days, date);
+        const range = viewRangeKeys(days, date, dayReadings, "day");
+        if (!range)
+            return null;
+        const totalsByDate = new Map();
+        for (const reading of dayReadings) {
+            const dateKey = centralLocalDateKey(reading.period_start);
+            totalsByDate.set(dateKey, roundUsage(reading.value));
+        }
+        const reportDays = iterateDateKeys(range.start, range.end)
+            .filter((dateKey) => totalsByDate.has(dateKey))
+            .map((dateKey) => {
+            const total = totalsByDate.get(dateKey) ?? 0;
+            return {
+                date: dateKey,
+                label: formatDayHeading(dateKey),
+                total,
+                average: total,
+                peak: null,
+                low: null,
+                hours: [],
+                hours_present: 0,
+                hours_missing: 0,
+                tiers: buildTouSummary(readings, propertyId, utility, dateKey),
+            };
+        });
+        if (!reportDays.length)
+            return null;
+        return {
+            unit,
+            range_label: formatRangeLabel(range.start, range.end),
+            days: reportDays,
+            comparison: buildEnergyReportComparison(reportDays),
+            cost_note: costNote,
+            detail_mode: "daily",
+        };
+    }
+    const hourReadings = filterReadings(excludeTouReadings(readings), propertyId, utility, "hour", days, date);
+    const range = viewRangeKeys(days, date, hourReadings, "hour");
+    if (!range)
+        return null;
+    const todayKey = centralTodayKey();
+    const valuesBySlot = new Map();
+    for (const reading of hourReadings) {
+        const dateKey = centralLocalDateKey(reading.period_start);
+        const hour = centralLocalHour(reading.period_start);
+        valuesBySlot.set(`${dateKey}:${hour}`, reading.value);
+    }
+    const reportDays = [];
+    for (const dateKey of iterateDateKeys(range.start, range.end)) {
+        const day = buildEnergyReportDay(dateKey, valuesBySlot, readings, propertyId, utility, todayKey);
+        if (day.hours_present > 0)
+            reportDays.push(day);
+    }
+    if (!reportDays.length)
+        return null;
+    return {
+        unit,
+        range_label: formatRangeLabel(range.start, range.end),
+        days: reportDays,
+        comparison: buildEnergyReportComparison(reportDays),
+        cost_note: costNote,
+        detail_mode: "hourly",
+    };
+}
 function buildHourlyChartPoints(hourReadings, range) {
     const todayKey = centralTodayKey();
     const valuesBySlot = new Map();
@@ -875,6 +1046,7 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
         tou_tier: effectiveTouTier,
         tou_tiers: touTiers,
         tou_summary: buildTouSummary(readings, propertyId, utility, date),
+        report: buildEnergyReport(readings, propertyId, utility, effectiveGranularity, days, date),
     };
 }
 async function getOverview(propertyId = null) {

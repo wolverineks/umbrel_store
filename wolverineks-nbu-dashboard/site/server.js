@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.11.2";
+const APP_VERSION = "1.12.0";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -89,6 +89,16 @@ function usageChartSection() {
         <div class="chart-sources" id="chart-sources" hidden></div>
       </div>`;
 }
+function energyReportSection() {
+    return `
+      <div class="card energy-report-wrap" id="energy-report-wrap" hidden>
+        <div class="energy-report-header">
+          <h2 style="margin:0;color:var(--text);font-size:1.1rem">Energy Report</h2>
+          <p class="muted" id="energy-report-range" style="margin:0.25rem 0 0"></p>
+        </div>
+        <div id="energy-report"></div>
+      </div>`;
+}
 function coverageSection() {
     return `
       <div class="card" style="margin-top:1rem">
@@ -102,7 +112,7 @@ function coverageSection() {
 function dashboardPageContent(page) {
     switch (page) {
         case "overview":
-            return `<div class="grid" id="stats"></div>${usageChartSection()}${coverageSection()}`;
+            return `<div class="grid" id="stats"></div>${usageChartSection()}${energyReportSection()}${coverageSection()}`;
         case "sources":
             return `
       <div class="card" id="missing-sources-card">
@@ -572,6 +582,178 @@ function pageStyles() {
       font-size: 0.88rem;
       line-height: 1.5;
     }
+    .energy-report-wrap {
+      margin-top: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .energy-report-header {
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .energy-compare {
+      margin-bottom: 1.25rem;
+    }
+    .energy-compare-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+    .energy-stat-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.7rem 0.85rem;
+    }
+    .energy-stat-card .label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+    }
+    .energy-stat-card .value {
+      font-size: 1.15rem;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    .energy-stat-card .sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.15rem;
+    }
+    .energy-stat-card.peak { border-color: #f59e0b55; background: #fffbeb; }
+    .energy-stat-card.low { border-color: #0ea5e955; background: #f0f9ff; }
+    .energy-cost-note {
+      font-size: 0.84rem;
+      color: var(--muted);
+      margin: 0.75rem 0 0;
+      padding: 0.55rem 0.75rem;
+      background: var(--bg);
+      border-radius: 10px;
+      border: 1px dashed var(--border);
+    }
+    .energy-compare-table-wrap {
+      overflow-x: auto;
+      margin-top: 0.75rem;
+    }
+    .energy-compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+    .energy-compare-table th,
+    .energy-compare-table td {
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .energy-compare-table th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .energy-compare-table tr:hover td { background: var(--bg); }
+    .energy-compare-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .energy-compare-table .high { color: #b45309; font-weight: 600; }
+    .energy-compare-table .low { color: #0369a1; font-weight: 600; }
+    .energy-day {
+      margin-top: 1.25rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .energy-day:first-of-type {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+    .energy-day h3 {
+      margin: 0 0 0.65rem;
+      font-size: 0.98rem;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .energy-day-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.25rem;
+      font-size: 0.84rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .energy-day-stats strong { color: var(--text); }
+    .energy-day-stats .peak-tag { color: #b45309; }
+    .energy-day-stats .low-tag { color: #0369a1; }
+    .energy-bars {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.95rem;
+      line-height: 1;
+      letter-spacing: 0.02em;
+      overflow-x: auto;
+      padding: 0.35rem 0;
+      white-space: nowrap;
+    }
+    .energy-bar {
+      display: inline-block;
+      width: 1.1em;
+      text-align: center;
+      cursor: default;
+    }
+    .energy-bar.peak { color: #d97706; }
+    .energy-bar.low { color: #0284c7; }
+    .energy-bar.missing { color: #cbd5e1; }
+    .energy-hour-labels {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.62rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+      overflow-x: auto;
+      white-space: nowrap;
+      margin-top: 0.2rem;
+    }
+    .energy-hour-labels span {
+      display: inline-block;
+      width: 1.1em;
+      text-align: center;
+    }
+    .energy-tiers {
+      margin-top: 0.55rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .energy-daily-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      font-size: 0.84rem;
+      margin: 0.35rem 0;
+    }
+    .energy-daily-bar-row .date {
+      min-width: 5.5rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .energy-daily-bar-row .bar {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #f59e0b;
+      letter-spacing: -0.05em;
+    }
+    .energy-daily-bar-row .total {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      min-width: 4rem;
+      text-align: right;
+    }
+    .energy-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.75rem;
+    }
+    .energy-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
     .coverage-summary {
       font-size: 0.92rem;
       color: var(--muted);
@@ -1392,6 +1574,250 @@ function dashboardPage(page) {
       });
     }
 
+    const ENERGY_BLOCKS = "▁▂▃▄▅▆▇█";
+
+    function energyBarChar(value, max, missing) {
+      if (missing) return "░";
+      if (!max || value <= 0) return "▁";
+      const idx = Math.max(0, Math.min(7, Math.round((value / max) * 7)));
+      return ENERGY_BLOCKS[idx];
+    }
+
+    function energyDailyBarChar(value, max) {
+      if (!max || value <= 0) return "▁";
+      const idx = Math.max(0, Math.min(7, Math.round((value / max) * 7)));
+      return ENERGY_BLOCKS[idx].repeat(3);
+    }
+
+    function fmtEnergyValue(value, unit) {
+      return Number(value).toFixed(2) + " " + unit;
+    }
+
+    function renderEnergyComparison(report) {
+      const cmp = report.comparison;
+      if (!cmp) return "";
+
+      const cards = [
+        ["Days", String(report.days.length), report.range_label],
+        ["Avg daily", fmtEnergyValue(cmp.avg_daily, report.unit), "across range"],
+        cmp.highest_day
+          ? ["Highest", fmtEnergyValue(cmp.highest_day.total, report.unit), cmp.highest_day.label.split(",")[0]]
+          : null,
+        cmp.lowest_day
+          ? ["Lowest", fmtEnergyValue(cmp.lowest_day.total, report.unit), cmp.lowest_day.label.split(",")[0]]
+          : null,
+      ]
+        .filter(Boolean)
+        .map((item) => {
+          const [label, value, sub] = item;
+          const cls =
+            label === "Highest" ? " peak" : label === "Lowest" ? " low" : "";
+          return (
+            '<div class="energy-stat-card' + cls + '">' +
+              '<div class="label">' + escapeHtml(label) + "</div>" +
+              '<div class="value">' + escapeHtml(value) + "</div>" +
+              (sub ? '<div class="sub">' + escapeHtml(sub) + "</div>" : "") +
+            "</div>"
+          );
+        })
+        .join("");
+
+      const avgDaily = cmp.avg_daily;
+      const rows = report.days
+        .map((day) => {
+          const delta = avgDaily ? ((day.total - avgDaily) / avgDaily) * 100 : 0;
+          const deltaLabel =
+            report.days.length < 2
+              ? "—"
+              : (delta >= 0 ? "+" : "") + delta.toFixed(0) + "%";
+          const peakLabel = day.peak
+            ? day.peak.label + " · " + day.peak.value.toFixed(2)
+            : "—";
+          const rowClass =
+            cmp.highest_day && day.date === cmp.highest_day.date
+              ? "high"
+              : cmp.lowest_day && day.date === cmp.lowest_day.date
+                ? "low"
+                : "";
+          return (
+            "<tr" + (rowClass ? ' class="' + rowClass + '"' : "") + ">" +
+              "<td>" + escapeHtml(day.label.split(",")[0]) + "</td>" +
+              '<td class="num">' + day.total.toFixed(2) + "</td>" +
+              '<td class="num">' + (day.average ? day.average.toFixed(2) : "—") + "</td>" +
+              '<td class="num">' + escapeHtml(peakLabel) + "</td>" +
+              '<td class="num">' + escapeHtml(deltaLabel) + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+
+      return (
+        '<section class="energy-compare">' +
+          "<h3 style=\"margin:0;font-size:0.92rem;color:var(--muted)\">Multi-day comparison</h3>" +
+          '<div class="energy-compare-grid">' + cards + "</div>" +
+          '<div class="energy-compare-table-wrap"><table class="energy-compare-table">' +
+            "<thead><tr>" +
+              "<th>Day</th><th class=\"num\">Total</th><th class=\"num\">Avg/hr</th>" +
+              "<th class=\"num\">Peak hour</th><th class=\"num\">vs avg</th>" +
+            "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+        "</section>"
+      );
+    }
+
+    function renderEnergyDayHourly(day, unit) {
+      const values = day.hours.filter((h) => !h.missing && h.value !== null).map((h) => h.value);
+      const max = values.length ? Math.max(...values) : 0;
+      const peakVal = day.peak?.value ?? null;
+      const lowVal = day.low?.value ?? null;
+
+      const bars = day.hours
+        .map((hour) => {
+          let cls = "energy-bar";
+          if (hour.missing) cls += " missing";
+          else if (peakVal !== null && hour.value === peakVal) cls += " peak";
+          else if (lowVal !== null && hour.value === lowVal) cls += " low";
+          const title =
+            "Hour " + hour.hour + " (" + hour.label + "): " +
+            (hour.missing ? "missing" : hour.value.toFixed(2) + " " + unit);
+          return (
+            '<span class="' + cls + '" title="' + escapeHtml(title) + '">' +
+              energyBarChar(hour.value ?? 0, max, hour.missing) +
+            "</span>"
+          );
+        })
+        .join("");
+
+      const labels = day.hours
+        .map((hour, index) => {
+          const show = index % 3 === 0 || hour.hour === 12 || hour.hour === 24;
+          return '<span>' + (show ? escapeHtml(hour.label) : "") + "</span>";
+        })
+        .join("");
+
+      const peakLine = day.peak
+        ? '<span class="peak-tag">Peak <strong>' + escapeHtml(day.peak.label) + "</strong> · " +
+          day.peak.value.toFixed(2) + " " + unit + "</span>"
+        : "";
+      const lowLine = day.low
+        ? '<span class="low-tag">Low <strong>' + escapeHtml(day.low.label) + "</strong> · " +
+          day.low.value.toFixed(2) + " " + unit + "</span>"
+        : "";
+      const missingLine = day.hours_missing
+        ? "<span>" + day.hours_missing + " missing hour" + (day.hours_missing === 1 ? "" : "s") + "</span>"
+        : "";
+
+      const tiers =
+        day.tiers?.length
+          ? '<div class="energy-tiers"><strong>TOU tiers</strong> · ' +
+            day.tiers
+              .map((tier) => escapeHtml(tier.tier) + ": " + tier.total.toFixed(2) + " " + unit)
+              .join(" · ") +
+            "</div>"
+          : "";
+
+      return (
+        '<article class="energy-day">' +
+          "<h3>" + escapeHtml(day.label) + "</h3>" +
+          '<div class="energy-day-stats">' +
+            "<span>Total <strong>" + day.total.toFixed(2) + " " + unit + "</strong></span>" +
+            "<span>Avg/hr <strong>" + day.average.toFixed(2) + "</strong></span>" +
+            peakLine + lowLine + missingLine +
+          "</div>" +
+          '<div class="energy-bars">' + bars + "</div>" +
+          '<div class="energy-hour-labels">' + labels + "</div>" +
+          tiers +
+        "</article>"
+      );
+    }
+
+    function renderEnergyDayDaily(day, unit, maxTotal) {
+      const tiers =
+        day.tiers?.length
+          ? " · " + day.tiers.map((tier) => escapeHtml(tier.tier) + ": " + tier.total.toFixed(2)).join(" · ")
+          : "";
+      const shortDate = day.date.slice(5);
+      return (
+        '<div class="energy-daily-bar-row">' +
+          '<span class="date">' + escapeHtml(shortDate) + "</span>" +
+          '<span class="bar">' + energyDailyBarChar(day.total, maxTotal) + "</span>" +
+          '<span class="total">' + day.total.toFixed(2) + " " + unit + "</span>" +
+          (tiers ? '<span class="muted" style="font-size:0.78rem">' + tiers + "</span>" : "") +
+        "</div>"
+      );
+    }
+
+    function renderEnergyReport() {
+      const wrap = document.getElementById("energy-report-wrap");
+      const el = document.getElementById("energy-report");
+      const rangeEl = document.getElementById("energy-report-range");
+      const usage = state.usage;
+      const report = usage?.report;
+
+      if (!wrap || !el) return;
+      if (!report?.days?.length) {
+        wrap.hidden = true;
+        el.innerHTML = "";
+        if (rangeEl) rangeEl.textContent = "";
+        return;
+      }
+
+      wrap.hidden = false;
+      if (rangeEl) rangeEl.textContent = report.range_label;
+
+      const showHourlyDetail =
+        report.detail_mode === "hourly" && report.days.length <= 7;
+      const maxDaily = Math.max(...report.days.map((day) => day.total), 0.001);
+
+      let body = "";
+      if (report.days.length > 1) {
+        body += renderEnergyComparison(report);
+      }
+
+      if (showHourlyDetail) {
+        body += report.days.map((day) => renderEnergyDayHourly(day, report.unit)).join("");
+      } else if (report.detail_mode === "hourly" && report.days.length > 7) {
+        body +=
+          '<section class="energy-compare"><h3 style="margin:0 0 0.5rem;font-size:0.92rem;color:var(--muted)">Daily totals</h3>' +
+          report.days.map((day) => renderEnergyDayDaily(day, report.unit, maxDaily)).join("") +
+          '<p class="muted" style="margin:0.5rem 0 0;font-size:0.82rem">Hourly breakdown hidden for ranges over 7 days — pick a single day to see hour-by-hour bars.</p></section>';
+      } else {
+        body += report.days.map((day) => renderEnergyDayDaily(day, report.unit, maxDaily)).join("");
+      }
+
+      if (report.days.length === 1 && report.detail_mode === "hourly") {
+        const day = report.days[0];
+        body =
+          '<section class="energy-compare"><div class="energy-compare-grid">' +
+            '<div class="energy-stat-card"><div class="label">Daily total</div><div class="value">' +
+              fmtEnergyValue(day.total, report.unit) + "</div></div>" +
+            '<div class="energy-stat-card"><div class="label">Avg per hour</div><div class="value">' +
+              fmtEnergyValue(day.average, report.unit) + "</div><div class=\"sub\">" +
+              day.hours_present + " hours recorded</div></div>" +
+            (day.peak
+              ? '<div class="energy-stat-card peak"><div class="label">Peak hour</div><div class="value">' +
+                day.peak.value.toFixed(2) + " " + report.unit +
+                '</div><div class="sub">Hour ' + day.peak.hour + " · " + escapeHtml(day.peak.label) + "</div></div>"
+              : "") +
+            (day.low
+              ? '<div class="energy-stat-card low"><div class="label">Lowest hour</div><div class="value">' +
+                day.low.value.toFixed(2) + " " + report.unit +
+                '</div><div class="sub">Hour ' + day.low.hour + " · " + escapeHtml(day.low.label) + "</div></div>"
+              : "") +
+          "</div></section>" + renderEnergyDayHourly(day, report.unit);
+      }
+
+      body +=
+        '<div class="energy-legend">' +
+          "<span>█▇▆▅▄▃▂▁ relative usage</span>" +
+          '<span><span class="energy-bar peak">█</span> peak hour</span>' +
+          '<span><span class="energy-bar low">█</span> lowest hour</span>' +
+          '<span><span class="energy-bar missing">░</span> missing data</span>' +
+        "</div>" +
+        '<p class="energy-cost-note">' + escapeHtml(report.cost_note) + "</p>";
+
+      el.innerHTML = body;
+    }
+
     function renderChart() {
       const usage = state.usage;
       const svg = document.getElementById("chart");
@@ -1848,6 +2274,7 @@ function dashboardPage(page) {
       syncTouTierControls(state.usage);
       renderChart();
       renderChartSources();
+      renderEnergyReport();
     }
 
     async function savePropertySelection(propertyId) {
