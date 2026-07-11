@@ -107,10 +107,7 @@
     panel.innerHTML = `
       <div class="nbu-head">
         <span>NBU Utilities</span>
-        <span>
-          <span class="nbu-mini" id="nbu-page-kind"></span>
-          <span class="nbu-version">v${version}</span>
-        </span>
+        <span class="nbu-version">v${version}</span>
       </div>
       <div class="nbu-body">
         <div class="nbu-progress"><span id="nbu-progress-bar"></span></div>
@@ -119,13 +116,11 @@
         <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
         <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
-        <div class="nbu-mini">Consumption sync fetches hourly CSV per day.</div>
+        <div class="nbu-mini">Sync fetches hourly CSV per day.</div>
         <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
     `;
     document.documentElement.appendChild(panel);
-
-    panel.querySelector("#nbu-page-kind").textContent = "Consumption";
 
     panel.querySelector("#nbu-sync-recent").addEventListener("click", () => {
       setStatus("Starting recent sync…");
