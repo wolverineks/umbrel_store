@@ -3,8 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TOU_TIER_PALETTE = exports.NBU_HOURLY_CSV_BASE = void 0;
-exports.touTierColorMap = touTierColorMap;
+exports.NBU_HOURLY_CSV_BASE = void 0;
 exports.centralLocalDateKey = centralLocalDateKey;
 exports.centralTodayKey = centralTodayKey;
 exports.addDaysToDateKey = addDaysToDateKey;
@@ -50,22 +49,6 @@ const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = node_path_1.default.join(DATA_ROOT, "source-errors.json");
 const SYNC_QUEUE_PATH = node_path_1.default.join(DATA_ROOT, "sync-view-queue.json");
 exports.NBU_HOURLY_CSV_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportExcelReadData.xml";
-exports.TOU_TIER_PALETTE = [
-    "#f59e0b",
-    "#ef4444",
-    "#8b5cf6",
-    "#06b6d4",
-    "#22c55e",
-    "#ec4899",
-];
-function touTierColorMap(tiers) {
-    const sorted = [...tiers].sort((a, b) => a.localeCompare(b));
-    const colors = {};
-    sorted.forEach((tier, index) => {
-        colors[tier] = exports.TOU_TIER_PALETTE[index % exports.TOU_TIER_PALETTE.length];
-    });
-    return colors;
-}
 const CENTRAL_TZ = "America/Chicago";
 function centralLocalDateKey(iso) {
     return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
@@ -121,7 +104,7 @@ async function getCoverageSummary(propertyId, utility) {
     const hourReadings = readings.filter((r) => matchesProperty(propertyId, r.account_id, r.usage_point) &&
         r.utility === utility &&
         r.granularity === "hour" &&
-        !r.tou_tier);
+        !legacyTouReading(r));
     const empty = {
         property_id: propertyId,
         utility,
@@ -418,57 +401,16 @@ function readingKey(reading) {
         reading.utility,
         reading.granularity,
         reading.period_start,
-        reading.tou_tier ?? "",
         reading.meter_id ?? "",
         reading.account_id ?? "",
         reading.usage_point ?? "",
     ].join("|");
 }
+function legacyTouReading(reading) {
+    return Boolean(reading.tou_tier);
+}
 function excludeTouReadings(readings) {
-    return readings.filter((reading) => !reading.tou_tier);
-}
-function applyTouTierFilter(readings, touTier) {
-    if (touTier && touTier !== "total") {
-        return readings.filter((reading) => reading.tou_tier === touTier);
-    }
-    return excludeTouReadings(readings);
-}
-function listTouTiers(readings, propertyId, utility, days, date) {
-    const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
-    const tiers = new Set();
-    for (const reading of readings) {
-        if (!reading.tou_tier)
-            continue;
-        if (!matchesProperty(propertyId, reading.account_id, reading.usage_point))
-            continue;
-        if (reading.utility !== utility)
-            continue;
-        if (date && centralLocalDateKey(reading.period_start) !== date)
-            continue;
-        if (cutoff && new Date(reading.period_start).getTime() < cutoff)
-            continue;
-        tiers.add(reading.tou_tier);
-    }
-    return [...tiers].sort((a, b) => a.localeCompare(b));
-}
-function buildTouSummary(readings, propertyId, utility, date) {
-    if (!date)
-        return [];
-    const totals = new Map();
-    for (const reading of readings) {
-        if (!reading.tou_tier || reading.granularity !== "hour")
-            continue;
-        if (!matchesProperty(propertyId, reading.account_id, reading.usage_point))
-            continue;
-        if (reading.utility !== utility)
-            continue;
-        if (centralLocalDateKey(reading.period_start) !== date)
-            continue;
-        totals.set(reading.tou_tier, (totals.get(reading.tou_tier) ?? 0) + reading.value);
-    }
-    return [...totals.entries()]
-        .map(([tier, total]) => ({ tier, total: Math.round(total * 1000) / 1000 }))
-        .sort((a, b) => a.tier.localeCompare(b.tier));
+    return readings.filter((reading) => !legacyTouReading(reading));
 }
 function readingPropertyId(reading) {
     return buildPropertyId(reading.account_id, reading.usage_point);
@@ -838,7 +780,7 @@ function findPeakLow(hours) {
         low: { hour: low.hour, label: low.label, value: roundUsage(low.value) },
     };
 }
-function buildEnergyReportDay(dateKey, valuesBySlot, readings, propertyId, utility, todayKey) {
+function buildEnergyReportDay(dateKey, valuesBySlot, todayKey) {
     const hours = [];
     let total = 0;
     let hoursPresent = 0;
@@ -874,7 +816,6 @@ function buildEnergyReportDay(dateKey, valuesBySlot, readings, propertyId, utili
         hours,
         hours_present: hoursPresent,
         hours_missing: hoursMissing,
-        tiers: buildTouSummary(readings, propertyId, utility, dateKey),
     };
 }
 function buildEnergyReportComparison(days) {
@@ -899,7 +840,7 @@ function buildEnergyReportComparison(days) {
 function buildEnergyReport(readings, propertyId, utility, granularity, days, date) {
     const unit = utility === "water" ? "gal" : "kWh";
     const costNote = utility === "electric"
-        ? "Estimated cost: — (add your NBU tier rates in Settings to enable)"
+        ? "Estimated cost: — (add your electric rates in Settings to enable)"
         : "Estimated cost: — (water rates not configured)";
     if (granularity === "billing_period")
         return null;
@@ -927,7 +868,6 @@ function buildEnergyReport(readings, propertyId, utility, granularity, days, dat
                 hours: [],
                 hours_present: 0,
                 hours_missing: 0,
-                tiers: buildTouSummary(readings, propertyId, utility, dateKey),
             };
         });
         if (!reportDays.length)
@@ -954,7 +894,7 @@ function buildEnergyReport(readings, propertyId, utility, granularity, days, dat
     }
     const reportDays = [];
     for (const dateKey of iterateDateKeys(range.start, range.end)) {
-        const day = buildEnergyReportDay(dateKey, valuesBySlot, readings, propertyId, utility, todayKey);
+        const day = buildEnergyReportDay(dateKey, valuesBySlot, todayKey);
         if (day.hours_present > 0)
             reportDays.push(day);
     }
@@ -1002,63 +942,6 @@ function buildHourlyChartPoints(hourReadings, range) {
     }
     return points;
 }
-function buildHourlyTierChartPoints(totalHourReadings, touHourReadings, range, tierOrder) {
-    const todayKey = centralTodayKey();
-    const totalsBySlot = new Map();
-    for (const reading of totalHourReadings) {
-        totalsBySlot.set(hourSlotKey(reading), reading.value);
-    }
-    const tiersBySlot = new Map();
-    for (const reading of touHourReadings) {
-        if (!reading.tou_tier)
-            continue;
-        const slotKey = hourSlotKey(reading);
-        const tiers = tiersBySlot.get(slotKey) ?? new Map();
-        tiers.set(reading.tou_tier, reading.value);
-        tiersBySlot.set(slotKey, tiers);
-    }
-    const points = [];
-    for (const dateKey of iterateDateKeys(range.start, range.end)) {
-        for (let hour = 0; hour < 24; hour++) {
-            if (isFutureHourSlot(dateKey, hour, todayKey))
-                continue;
-            const slotKey = `${dateKey}:${hour}`;
-            const period_start = (0, parsers_1.centralHourSlotIso)(dateKey, hour);
-            const tierMap = tiersBySlot.get(slotKey);
-            const tierSlices = tierOrder
-                .filter((tier) => tierMap?.has(tier))
-                .map((tier) => ({
-                tier,
-                value: roundUsage(tierMap.get(tier)),
-            }));
-            if (tierSlices.length) {
-                const tierTotal = tierSlices.reduce((sum, slice) => sum + slice.value, 0);
-                const total = totalsBySlot.has(slotKey)
-                    ? roundUsage(totalsBySlot.get(slotKey))
-                    : roundUsage(tierTotal);
-                points.push({
-                    period_start,
-                    value: total,
-                    tiers: tierSlices,
-                    missing: false,
-                });
-                continue;
-            }
-            const total = totalsBySlot.get(slotKey);
-            if (total !== undefined) {
-                points.push({
-                    period_start,
-                    value: roundUsage(total),
-                    missing: false,
-                });
-            }
-            else {
-                points.push({ period_start, value: 0, missing: true });
-            }
-        }
-    }
-    return points;
-}
 function filterReadings(readings, propertyId, utility, granularity, days, date) {
     const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
     return readings
@@ -1078,27 +961,15 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
     const readings = await loadReadings();
     const imports = await loadImports();
     const effectiveGranularity = date ? "hour" : granularity;
-    const touTiers = listTouTiers(readings, propertyId, utility, days, date);
-    const totalReadings = excludeTouReadings(readings);
-    const filtered = filterReadings(totalReadings, propertyId, utility, granularity, days, date);
+    const scopedReadings = excludeTouReadings(readings);
+    const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date);
     const hourReadings = effectiveGranularity === "hour"
-        ? filterReadings(totalReadings, propertyId, utility, "hour", days, date)
-        : [];
-    const touHourReadings = effectiveGranularity === "hour" && utility === "electric"
-        ? filterReadings(readings, propertyId, utility, "hour", days, date).filter((reading) => reading.tou_tier)
+        ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date)
         : [];
     let points;
     if (effectiveGranularity === "hour") {
         const range = viewRangeKeys(days, date, hourReadings, "hour");
-        if (!range) {
-            points = [];
-        }
-        else if (utility === "electric" && touTiers.length) {
-            points = buildHourlyTierChartPoints(hourReadings, touHourReadings, range, touTiers);
-        }
-        else {
-            points = buildHourlyChartPoints(hourReadings, range);
-        }
+        points = range ? buildHourlyChartPoints(hourReadings, range) : [];
     }
     else {
         points = filtered.map((r) => ({
@@ -1116,7 +987,7 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
     const unit = filtered[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
     const utilityImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility);
     const propertyImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
-    const sourceReadings = filterReadings(readings, propertyId, utility, effectiveGranularity, days, date);
+    const sourceReadings = filterReadings(scopedReadings, propertyId, utility, effectiveGranularity, days, date);
     return {
         property_id: propertyId,
         utility,
@@ -1130,9 +1001,6 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
         sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
         missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
         last_import_at: utilityImports[0]?.imported_at ?? null,
-        tou_tiers: touTiers,
-        tou_tier_colors: touTierColorMap(touTiers),
-        tou_summary: buildTouSummary(readings, propertyId, utility, date),
         report: buildEnergyReport(readings, propertyId, utility, effectiveGranularity, days, date),
     };
 }

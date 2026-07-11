@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.13.0";
+const APP_VERSION = "1.14.0";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -76,8 +76,6 @@ function usageChartSection() {
         </div>
         <p class="muted" id="queue-extension-status" style="margin:0 0 0.75rem"></p>
         <p class="day-view-label" id="day-view-label" hidden></p>
-        <div class="chart-tier-legend" id="chart-tier-legend" hidden></div>
-        <div class="tou-summary muted" id="tou-summary" hidden></div>
         <div class="chart-shell">
           <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
           <div class="chart-tooltip" id="chart-tooltip" hidden></div>
@@ -575,32 +573,7 @@ function pageStyles() {
     .day-view-label strong {
       color: var(--text);
     }
-    .tou-summary {
-      margin: 0 0 0.75rem;
-      font-size: 0.88rem;
-      line-height: 1.5;
-    }
-    .chart-tier-legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.85rem;
-      align-items: center;
-      margin: 0 0 0.75rem;
-      font-size: 0.82rem;
-      color: var(--muted);
-    }
-    .chart-tier-legend span {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-    }
-    .chart-tier-swatch {
-      width: 12px;
-      height: 12px;
-      border-radius: 3px;
-      display: inline-block;
-      flex-shrink: 0;
-    }
+
     .energy-report-wrap {
       margin-top: 1rem;
       margin-bottom: 1.5rem;
@@ -736,11 +709,7 @@ function pageStyles() {
       width: 1.1em;
       text-align: center;
     }
-    .energy-tiers {
-      margin-top: 0.55rem;
-      font-size: 0.82rem;
-      color: var(--muted);
-    }
+
     .energy-daily-bar-row {
       display: flex;
       align-items: center;
@@ -1425,25 +1394,13 @@ function dashboardPage(page) {
       });
     }
 
-    function fmtTooltipHtml(point, unit, granularity, tierColors) {
+    function fmtTooltipHtml(point, unit, granularity) {
       const label = fmtTooltipLabel(point.period_start, granularity);
       if (point.missing) {
         return \`\${label}<br><strong>Missing hour</strong>\`;
       }
       const value = Number(point.value).toFixed(2);
-      let html = \`\${label}<br><strong>\${value} \${unit}</strong>\`;
-      if (point.tiers?.length) {
-        html += point.tiers
-          .map((slice) => {
-            const color = tierColors?.[slice.tier] ?? "#94a3b8";
-            return (
-              '<br><span style="color:' + escapeHtml(color) + '">●</span> ' +
-              escapeHtml(slice.tier) + ": " + Number(slice.value).toFixed(2) + " " + unit
-            );
-          })
-          .join("");
-      }
-      return html;
+      return \`\${label}<br><strong>\${value} \${unit}</strong>\`;
     }
 
     function positionChartTooltip(event, tooltip) {
@@ -1463,7 +1420,7 @@ function dashboardPage(page) {
           const index = Number(bar.dataset.index);
           const point = usage.points[index];
           if (!point) return;
-          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity, usage.tou_tier_colors);
+          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity);
           tooltip.hidden = false;
           positionChartTooltip(event, tooltip);
         });
@@ -1512,7 +1469,7 @@ function dashboardPage(page) {
 
     function renderImports() {
       const importsEl = document.getElementById("imports");
-      const items = state.imports?.imports ?? [];
+      const items = (state.imports?.imports ?? []).filter((item) => item.format !== "tou_csv");
       if (!importsEl) return;
       if (!items.length) {
         importsEl.innerHTML = '<div class="empty">No uploads yet.</div>';
@@ -1553,11 +1510,7 @@ function dashboardPage(page) {
       const sourceItems = sources.length
         ? sources.map((source) => {
             const formatLabel =
-              source.format === "tou_csv"
-                ? "TOU CSV"
-                : source.format === "hourly_csv"
-                  ? "Hourly CSV"
-                  : source.format;
+              source.format === "hourly_csv" ? "Hourly CSV" : source.format;
             const meta = source.readings_in_view + " readings · " + formatLabel;
             let html = '<li>' + escapeHtml(source.filename) + '<div class="muted">' + meta + '</div>';
             if (source.nbu_url) {
@@ -1736,15 +1689,6 @@ function dashboardPage(page) {
         ? "<span>" + day.hours_missing + " missing hour" + (day.hours_missing === 1 ? "" : "s") + "</span>"
         : "";
 
-      const tiers =
-        day.tiers?.length
-          ? '<div class="energy-tiers"><strong>TOU tiers</strong> · ' +
-            day.tiers
-              .map((tier) => escapeHtml(tier.tier) + ": " + tier.total.toFixed(2) + " " + unit)
-              .join(" · ") +
-            "</div>"
-          : "";
-
       return (
         '<article class="energy-day">' +
           "<h3>" + escapeHtml(day.label) + "</h3>" +
@@ -1755,23 +1699,17 @@ function dashboardPage(page) {
           "</div>" +
           '<div class="energy-bars">' + bars + "</div>" +
           '<div class="energy-hour-labels">' + labels + "</div>" +
-          tiers +
         "</article>"
       );
     }
 
     function renderEnergyDayDaily(day, unit, maxTotal) {
-      const tiers =
-        day.tiers?.length
-          ? " · " + day.tiers.map((tier) => escapeHtml(tier.tier) + ": " + tier.total.toFixed(2)).join(" · ")
-          : "";
       const shortDate = day.date.slice(5);
       return (
         '<div class="energy-daily-bar-row">' +
           '<span class="date">' + escapeHtml(shortDate) + "</span>" +
           '<span class="bar">' + energyDailyBarChar(day.total, maxTotal) + "</span>" +
           '<span class="total">' + day.total.toFixed(2) + " " + unit + "</span>" +
-          (tiers ? '<span class="muted" style="font-size:0.78rem">' + tiers + "</span>" : "") +
         "</div>"
       );
     }
@@ -1822,7 +1760,6 @@ function dashboardPage(page) {
             hours,
             hours_present: hours.length,
             hours_missing: 0,
-            tiers: usage.tou_summary ?? [],
           };
         });
 
@@ -1849,7 +1786,7 @@ function dashboardPage(page) {
             }
           : null,
         cost_note: usage.utility === "electric"
-          ? "Estimated cost: — (add your NBU tier rates in Settings to enable)"
+          ? "Estimated cost: — (add your electric rates in Settings to enable)"
           : "Estimated cost: — (water rates not configured)",
         detail_mode: "hourly",
       };
@@ -1959,28 +1896,16 @@ function dashboardPage(page) {
       const step = innerW / usage.points.length;
       const barW = Math.max(2, step - 2);
       const showYears = chartSpansYears(usage.points);
-      const defaultColor = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
-      const tierColors = usage.tou_tier_colors ?? {};
+      const color = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
 
       const bars = usage.points.map((point, index) => {
         const x = pad.left + index * step;
         if (point.missing) {
           return \`<rect class="chart-bar chart-bar-missing" data-index="\${index}" x="\${x}" y="\${pad.top}" width="\${barW}" height="\${innerH}" rx="2" fill="#991b1b" opacity="0.82"></rect>\`;
         }
-        if (point.tiers?.length) {
-          let cursorY = pad.top + innerH;
-          return point.tiers
-            .map((slice) => {
-              const h = (slice.value / max) * innerH;
-              cursorY -= h;
-              const fill = tierColors[slice.tier] ?? defaultColor;
-              return \`<rect class="chart-bar chart-bar-tier" data-index="\${index}" x="\${x}" y="\${cursorY}" width="\${barW}" height="\${h}" rx="1" fill="\${fill}" opacity="0.92"></rect>\`;
-            })
-            .join("");
-        }
         const h = (point.value / max) * innerH;
         const y = pad.top + innerH - h;
-        return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${defaultColor}" opacity="0.9"></rect>\`;
+        return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${color}" opacity="0.9"></rect>\`;
       }).join("");
 
       let lastYear = null;
@@ -2338,68 +2263,6 @@ function dashboardPage(page) {
       }
     }
 
-    function renderTouTierLegend(usage) {
-      const legendEl = document.getElementById("chart-tier-legend");
-      const summaryEl = document.getElementById("tou-summary");
-      const utility = selectedUtility();
-      const granularity = document.getElementById("granularity")?.value;
-      const day = document.getElementById("day")?.value;
-      const tiers = usage?.tou_tiers ?? [];
-      const colors = usage?.tou_tier_colors ?? {};
-      const showTiers =
-        utility === "electric" && (granularity === "hour" || Boolean(day)) && tiers.length > 0;
-
-      if (legendEl) {
-        if (!showTiers) {
-          legendEl.hidden = true;
-          legendEl.innerHTML = "";
-        } else {
-          legendEl.hidden = false;
-          legendEl.innerHTML =
-            "<strong>TOU tiers</strong> " +
-            tiers
-              .map((tier) => {
-                const color = colors[tier] ?? "#f59e0b";
-                return (
-                  '<span><span class="chart-tier-swatch" style="background:' +
-                  escapeHtml(color) +
-                  '"></span>' +
-                  escapeHtml(tier) +
-                  "</span>"
-                );
-              })
-              .join("");
-        }
-      }
-
-      if (summaryEl) {
-        const summary = usage?.tou_summary ?? [];
-        if (day && summary.length) {
-          summaryEl.hidden = false;
-          summaryEl.innerHTML =
-            "<strong>Daily TOU totals</strong> · " +
-            summary
-              .map((item) => {
-                const color = colors[item.tier] ?? "#f59e0b";
-                return (
-                  '<span style="color:' +
-                  escapeHtml(color) +
-                  '">●</span> ' +
-                  escapeHtml(item.tier) +
-                  ": " +
-                  item.total.toFixed(2) +
-                  " " +
-                  (usage.unit || "kWh")
-                );
-              })
-              .join(" · ");
-        } else {
-          summaryEl.hidden = true;
-          summaryEl.innerHTML = "";
-        }
-      }
-    }
-
     async function loadUsage() {
       const granularityEl = document.getElementById("granularity");
       const rangeEl = document.getElementById("range");
@@ -2415,7 +2278,6 @@ function dashboardPage(page) {
       syncDayControls();
       const res = await fetch("/api/usage?" + params.toString());
       state.usage = await res.json();
-      renderTouTierLegend(state.usage);
       renderChart();
       renderChartSources();
       renderEnergyReport();

@@ -88,121 +88,26 @@ function parseHourlyCsv(content, filename) {
         readings,
     };
 }
-function resolveHourColumns(header) {
-    let hourStart = 1;
-    const second = header[1]?.trim().toLowerCase() ?? "";
-    if (second === "tier" || (second && !/^\d+$/.test(second) && !/^hour/i.test(second))) {
-        hourStart = 2;
-    }
-    let hourEnd = header.length;
-    for (let index = hourStart; index < header.length; index++) {
-        if (/total/i.test(header[index] ?? "")) {
-            hourEnd = index;
-            break;
-        }
-    }
-    return { hourStart, hourCount: Math.min(24, Math.max(0, hourEnd - hourStart)) };
-}
-function parseTouCsv(content, filename) {
-    const { account_id, usage_point } = filenameIds(filename);
-    const utility = filenameUtility(filename) ?? "electric";
-    const unit = utility === "water" ? "gal" : "kWh";
-    const lines = content.trim().split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) {
-        throw new Error("TOU CSV is empty");
-    }
-    const header = splitCsvLine(lines[0]).map((part) => part.trim());
-    const tierCol = header.findIndex((part) => part.toLowerCase() === "tier");
-    const { hourStart, hourCount } = resolveHourColumns(header);
-    if (hourCount <= 0) {
-        throw new Error("TOU CSV has no hour columns");
-    }
-    const readings = [];
-    for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line || line.startsWith(",") || /total/i.test(line))
-            continue;
-        const parts = splitCsvLine(line);
-        const dateLabel = parts[0]?.trim();
-        if (!dateLabel || !/\d/.test(dateLabel))
-            continue;
-        const dateParts = parseNbuDateParts(dateLabel);
-        if (!dateParts)
-            continue;
-        const tierName = (tierCol >= 0 ? parts[tierCol] : parts[1])?.trim();
-        if (!tierName || /^\d+$/.test(tierName))
-            continue;
-        let tierTotal = 0;
-        for (let hour = 1; hour <= hourCount; hour++) {
-            const raw = parts[hourStart + hour - 1]?.trim().replace(/,/g, "");
-            if (!raw)
-                continue;
-            const value = Number(raw);
-            if (!Number.isFinite(value))
-                continue;
-            tierTotal += value;
-            const periodStart = nbuHourIso(dateParts.year, dateParts.month, dateParts.day, hour);
-            const periodEnd = new Date(new Date(periodStart).getTime() + 3_600_000).toISOString();
-            readings.push({
-                utility,
-                granularity: "hour",
-                period_start: periodStart,
-                period_end: periodEnd,
-                value,
-                unit,
-                meter_id: null,
-                account_id,
-                usage_point,
-                address: null,
-                tou_tier: tierName,
-            });
-        }
-        if (tierTotal > 0) {
-            const dayStart = nbuDayStartIso(dateParts.year, dateParts.month, dateParts.day);
-            const dayEnd = new Date(new Date(dayStart).getTime() + 86_400_000).toISOString();
-            readings.push({
-                utility,
-                granularity: "day",
-                period_start: dayStart,
-                period_end: dayEnd,
-                value: Math.round(tierTotal * 1000) / 1000,
-                unit,
-                meter_id: null,
-                account_id,
-                usage_point,
-                address: null,
-                tou_tier: tierName,
-            });
-        }
-    }
-    return {
-        format: "tou_csv",
-        utility,
-        filename,
-        account_id,
-        usage_point,
-        address: null,
-        readings,
-    };
-}
-function isTouCsv(filename, content) {
+function rejectTouCsv(filename, content) {
     const lower = filename.toLowerCase();
     if (lower.includes("touusage") || lower.includes("tou_usage") || lower.includes("_tou_")) {
-        return true;
+        throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
     }
     const lines = content.trim().split(/\r?\n/).filter(Boolean);
     if (lines.length < 2)
-        return false;
+        return;
     const header = splitCsvLine(lines[0]).map((part) => part.trim().toLowerCase());
-    if (header.includes("tier"))
-        return true;
+    if (header.includes("tier")) {
+        throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
+    }
     const parts = splitCsvLine(lines[1]);
     const second = parts[1]?.trim() ?? "";
     if (second && !/^\d+$/.test(second) && !/^hour/i.test(second)) {
         const dateParts = parseNbuDateParts(parts[0]?.trim() ?? "");
-        return Boolean(dateParts);
+        if (dateParts) {
+            throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
+        }
     }
-    return false;
 }
 function parseHistoryCsv(content, filename) {
     const { account_id, usage_point } = filenameIds(filename);
@@ -339,18 +244,15 @@ function detectFormat(filename, content) {
         return "history_csv";
     }
     if (/^date\/time,/i.test(trimmed) || lower.includes("hourlyusage") || lower.includes("hourly_usage")) {
-        return isTouCsv(filename, content) ? "tou_csv" : "hourly_csv";
+        rejectTouCsv(filename, content);
+        return "hourly_csv";
     }
-    if (isTouCsv(filename, content)) {
-        return "tou_csv";
-    }
+    rejectTouCsv(filename, content);
     throw new Error("unsupported file format (CSV only)");
 }
 function parseNbuExport(filename, content) {
     const format = detectFormat(filename, content);
     if (format === "hourly_csv")
         return parseHourlyCsv(content, filename);
-    if (format === "tou_csv")
-        return parseTouCsv(content, filename);
     return parseHistoryCsv(content, filename);
 }

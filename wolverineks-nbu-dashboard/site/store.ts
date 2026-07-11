@@ -63,35 +63,11 @@ export type StoredReading = ParsedReading & {
   import_id: string;
 };
 
-export type UsageTierSlice = {
-  tier: string;
-  value: number;
-};
-
 export type UsagePoint = {
   period_start: string;
   value: number;
   missing?: boolean;
-  tiers?: UsageTierSlice[];
 };
-
-export const TOU_TIER_PALETTE = [
-  "#f59e0b",
-  "#ef4444",
-  "#8b5cf6",
-  "#06b6d4",
-  "#22c55e",
-  "#ec4899",
-];
-
-export function touTierColorMap(tiers: string[]): Record<string, string> {
-  const sorted = [...tiers].sort((a, b) => a.localeCompare(b));
-  const colors: Record<string, string> = {};
-  sorted.forEach((tier, index) => {
-    colors[tier] = TOU_TIER_PALETTE[index % TOU_TIER_PALETTE.length];
-  });
-  return colors;
-}
 
 export type UsageSourceFile = {
   id: string;
@@ -173,11 +149,6 @@ export type MissingSourcesSummary = {
   probe_script: string | null;
 };
 
-export type TouTierSummary = {
-  tier: string;
-  total: number;
-};
-
 export type EnergyReportHour = {
   hour: number;
   label: string;
@@ -201,7 +172,6 @@ export type EnergyReportDay = {
   hours: EnergyReportHour[];
   hours_present: number;
   hours_missing: number;
-  tiers: TouTierSummary[];
 };
 
 export type EnergyReportComparison = {
@@ -232,9 +202,6 @@ export type UsageSummary = {
   sources: UsageSourceFile[];
   missing: UsageMissingPeriod[];
   last_import_at: string | null;
-  tou_tiers: string[];
-  tou_tier_colors: Record<string, string>;
-  tou_summary: TouTierSummary[];
   report: EnergyReport | null;
 };
 
@@ -335,7 +302,7 @@ export async function getCoverageSummary(
       matchesProperty(propertyId, r.account_id, r.usage_point) &&
       r.utility === utility &&
       r.granularity === "hour" &&
-      !r.tou_tier,
+      !legacyTouReading(r),
   );
 
   const empty: CoverageSummary = {
@@ -669,65 +636,18 @@ function readingKey(reading: ParsedReading): string {
     reading.utility,
     reading.granularity,
     reading.period_start,
-    reading.tou_tier ?? "",
     reading.meter_id ?? "",
     reading.account_id ?? "",
     reading.usage_point ?? "",
   ].join("|");
 }
 
+function legacyTouReading(reading: StoredReading): boolean {
+  return Boolean((reading as StoredReading & { tou_tier?: string | null }).tou_tier);
+}
+
 function excludeTouReadings(readings: StoredReading[]): StoredReading[] {
-  return readings.filter((reading) => !reading.tou_tier);
-}
-
-function applyTouTierFilter(
-  readings: StoredReading[],
-  touTier: string | null,
-): StoredReading[] {
-  if (touTier && touTier !== "total") {
-    return readings.filter((reading) => reading.tou_tier === touTier);
-  }
-  return excludeTouReadings(readings);
-}
-
-function listTouTiers(
-  readings: StoredReading[],
-  propertyId: string | null,
-  utility: Utility,
-  days: number | null,
-  date: string | null,
-): string[] {
-  const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
-  const tiers = new Set<string>();
-  for (const reading of readings) {
-    if (!reading.tou_tier) continue;
-    if (!matchesProperty(propertyId, reading.account_id, reading.usage_point)) continue;
-    if (reading.utility !== utility) continue;
-    if (date && centralLocalDateKey(reading.period_start) !== date) continue;
-    if (cutoff && new Date(reading.period_start).getTime() < cutoff) continue;
-    tiers.add(reading.tou_tier);
-  }
-  return [...tiers].sort((a, b) => a.localeCompare(b));
-}
-
-function buildTouSummary(
-  readings: StoredReading[],
-  propertyId: string | null,
-  utility: Utility,
-  date: string | null,
-): TouTierSummary[] {
-  if (!date) return [];
-  const totals = new Map<string, number>();
-  for (const reading of readings) {
-    if (!reading.tou_tier || reading.granularity !== "hour") continue;
-    if (!matchesProperty(propertyId, reading.account_id, reading.usage_point)) continue;
-    if (reading.utility !== utility) continue;
-    if (centralLocalDateKey(reading.period_start) !== date) continue;
-    totals.set(reading.tou_tier, (totals.get(reading.tou_tier) ?? 0) + reading.value);
-  }
-  return [...totals.entries()]
-    .map(([tier, total]) => ({ tier, total: Math.round(total * 1000) / 1000 }))
-    .sort((a, b) => a.tier.localeCompare(b.tier));
+  return readings.filter((reading) => !legacyTouReading(reading));
 }
 
 function readingPropertyId(reading: ParsedReading): string | null {
@@ -1194,9 +1114,6 @@ function findPeakLow(hours: EnergyReportHour[]): {
 function buildEnergyReportDay(
   dateKey: string,
   valuesBySlot: Map<string, number>,
-  readings: StoredReading[],
-  propertyId: string | null,
-  utility: Utility,
   todayKey: string,
 ): EnergyReportDay {
   const hours: EnergyReportHour[] = [];
@@ -1235,7 +1152,6 @@ function buildEnergyReportDay(
     hours,
     hours_present: hoursPresent,
     hours_missing: hoursMissing,
-    tiers: buildTouSummary(readings, propertyId, utility, dateKey),
   };
 }
 
@@ -1269,7 +1185,7 @@ function buildEnergyReport(
   const unit: "kWh" | "gal" = utility === "water" ? "gal" : "kWh";
   const costNote =
     utility === "electric"
-      ? "Estimated cost: — (add your NBU tier rates in Settings to enable)"
+      ? "Estimated cost: — (add your electric rates in Settings to enable)"
       : "Estimated cost: — (water rates not configured)";
 
   if (granularity === "billing_period") return null;
@@ -1306,7 +1222,6 @@ function buildEnergyReport(
           hours: [],
           hours_present: 0,
           hours_missing: 0,
-          tiers: buildTouSummary(readings, propertyId, utility, dateKey),
         };
       });
 
@@ -1343,7 +1258,7 @@ function buildEnergyReport(
 
   const reportDays: EnergyReportDay[] = [];
   for (const dateKey of iterateDateKeys(range.start, range.end)) {
-    const day = buildEnergyReportDay(dateKey, valuesBySlot, readings, propertyId, utility, todayKey);
+    const day = buildEnergyReportDay(dateKey, valuesBySlot, todayKey);
     if (day.hours_present > 0) reportDays.push(day);
   }
 
@@ -1396,70 +1311,6 @@ function buildHourlyChartPoints(
   return points;
 }
 
-function buildHourlyTierChartPoints(
-  totalHourReadings: StoredReading[],
-  touHourReadings: StoredReading[],
-  range: { start: string; end: string },
-  tierOrder: string[],
-): UsagePoint[] {
-  const todayKey = centralTodayKey();
-  const totalsBySlot = new Map<string, number>();
-  for (const reading of totalHourReadings) {
-    totalsBySlot.set(hourSlotKey(reading), reading.value);
-  }
-
-  const tiersBySlot = new Map<string, Map<string, number>>();
-  for (const reading of touHourReadings) {
-    if (!reading.tou_tier) continue;
-    const slotKey = hourSlotKey(reading);
-    const tiers = tiersBySlot.get(slotKey) ?? new Map<string, number>();
-    tiers.set(reading.tou_tier, reading.value);
-    tiersBySlot.set(slotKey, tiers);
-  }
-
-  const points: UsagePoint[] = [];
-  for (const dateKey of iterateDateKeys(range.start, range.end)) {
-    for (let hour = 0; hour < 24; hour++) {
-      if (isFutureHourSlot(dateKey, hour, todayKey)) continue;
-      const slotKey = `${dateKey}:${hour}`;
-      const period_start = centralHourSlotIso(dateKey, hour);
-      const tierMap = tiersBySlot.get(slotKey);
-      const tierSlices: UsageTierSlice[] = tierOrder
-        .filter((tier) => tierMap?.has(tier))
-        .map((tier) => ({
-          tier,
-          value: roundUsage(tierMap!.get(tier)!),
-        }));
-
-      if (tierSlices.length) {
-        const tierTotal = tierSlices.reduce((sum, slice) => sum + slice.value, 0);
-        const total = totalsBySlot.has(slotKey)
-          ? roundUsage(totalsBySlot.get(slotKey)!)
-          : roundUsage(tierTotal);
-        points.push({
-          period_start,
-          value: total,
-          tiers: tierSlices,
-          missing: false,
-        });
-        continue;
-      }
-
-      const total = totalsBySlot.get(slotKey);
-      if (total !== undefined) {
-        points.push({
-          period_start,
-          value: roundUsage(total),
-          missing: false,
-        });
-      } else {
-        points.push({ period_start, value: 0, missing: true });
-      }
-    }
-  }
-  return points;
-}
-
 function filterReadings(
   readings: StoredReading[],
   propertyId: string | null,
@@ -1492,29 +1343,16 @@ export async function getUsageSummary(
   const readings = await loadReadings();
   const imports = await loadImports();
   const effectiveGranularity = date ? "hour" : granularity;
-  const touTiers = listTouTiers(readings, propertyId, utility, days, date);
-  const totalReadings = excludeTouReadings(readings);
-  const filtered = filterReadings(totalReadings, propertyId, utility, granularity, days, date);
+  const scopedReadings = excludeTouReadings(readings);
+  const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date);
   const hourReadings =
     effectiveGranularity === "hour"
-      ? filterReadings(totalReadings, propertyId, utility, "hour", days, date)
-      : [];
-  const touHourReadings =
-    effectiveGranularity === "hour" && utility === "electric"
-      ? filterReadings(readings, propertyId, utility, "hour", days, date).filter(
-          (reading) => reading.tou_tier,
-        )
+      ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date)
       : [];
   let points: UsagePoint[];
   if (effectiveGranularity === "hour") {
     const range = viewRangeKeys(days, date, hourReadings, "hour");
-    if (!range) {
-      points = [];
-    } else if (utility === "electric" && touTiers.length) {
-      points = buildHourlyTierChartPoints(hourReadings, touHourReadings, range, touTiers);
-    } else {
-      points = buildHourlyChartPoints(hourReadings, range);
-    }
+    points = range ? buildHourlyChartPoints(hourReadings, range) : [];
   } else {
     points = filtered.map((r) => ({
       period_start: r.period_start,
@@ -1538,7 +1376,7 @@ export async function getUsageSummary(
     matchesProperty(propertyId, item.account_id, item.usage_point),
   );
   const sourceReadings = filterReadings(
-    readings,
+    scopedReadings,
     propertyId,
     utility,
     effectiveGranularity,
@@ -1559,9 +1397,6 @@ export async function getUsageSummary(
     sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
     missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
     last_import_at: utilityImports[0]?.imported_at ?? null,
-    tou_tiers: touTiers,
-    tou_tier_colors: touTierColorMap(touTiers),
-    tou_summary: buildTouSummary(readings, propertyId, utility, date),
     report: buildEnergyReport(
       readings,
       propertyId,
