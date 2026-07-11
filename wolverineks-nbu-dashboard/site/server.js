@@ -9,26 +9,26 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "1.9.1";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
     "/usage": "usage",
     "/coverage": "coverage",
     "/missing-sources": "missing-sources",
-    "/extension": "extension",
     "/uploads": "uploads",
     "/upload-history": "uploads",
-    "/backup": "backup",
+    "/setup": "setup",
+    "/extension": "setup",
+    "/backup": "setup",
 };
 const DASHBOARD_PAGE_TITLES = {
     overview: "Overview",
     usage: "Usage",
     coverage: "Coverage",
     "missing-sources": "Missing sources",
-    extension: "Extension",
     uploads: "Upload history",
-    backup: "Backup",
+    setup: "Setup",
 };
 function resolveDashboardPage(pathname) {
     return DASHBOARD_PAGE_ROUTES[pathname] ?? null;
@@ -39,9 +39,8 @@ function renderSideNav(active) {
         { page: "usage", href: "/usage", label: "Usage" },
         { page: "coverage", href: "/coverage", label: "Coverage" },
         { page: "missing-sources", href: "/missing-sources", label: "Missing sources" },
-        { page: "extension", href: "/extension", label: "Extension" },
         { page: "uploads", href: "/uploads", label: "Upload history" },
-        { page: "backup", href: "/backup", label: "Backup" },
+        { page: "setup", href: "/setup", label: "Setup" },
     ];
     return items
         .map((item) => `<a class="side-nav-link${item.page === active ? " active" : ""}" href="${item.href}">${item.label}</a>`)
@@ -54,12 +53,7 @@ function globalContextBar() {
           <select id="property"></select>
           <input id="property-label" type="text" placeholder="House name">
           <button id="save-label" class="secondary">Save name</button>
-          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs">
-          <button id="save-object-id" class="secondary">Save Object ID</button>
         </div>
-        <p class="object-id-hint" id="object-id-hint" hidden>
-          Set the NBU Object ID to generate per-gap NBU verify snippets (run in Customer Connect console).
-        </p>
         <div class="toolbar" style="margin-bottom:0">
           <label class="muted" for="utility" style="font-weight:600">Utility</label>
           <select id="utility">
@@ -131,17 +125,6 @@ function dashboardPageContent(page) {
           <p class="muted">Loading missing sources…</p>
         </div>
       </div>`;
-        case "extension":
-            return `
-      <div class="card">
-        <h2>Chrome extension</h2>
-        <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
-        <div class="token-box" style="margin-top:0.8rem">
-          <code id="token"></code>
-          <button id="copy-token" class="secondary">Copy token</button>
-          <button id="rotate-token" class="secondary">Rotate token</button>
-        </div>
-      </div>`;
         case "uploads":
             return `
       <div class="card">
@@ -151,9 +134,29 @@ function dashboardPageContent(page) {
         </div>
         <div class="imports import-history" id="imports"></div>
       </div>`;
-        case "backup":
+        case "setup":
             return `
       <div class="card">
+        <h2>NBU Object ID</h2>
+        <p class="muted">Customer Connect meter ObjectId for the property selected above. Used for verify snippets, missing-source checks, and extension sync URLs. Copy from the extension panel on Customer Connect.</p>
+        <div class="toolbar" style="margin-top:0.8rem;margin-bottom:0">
+          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs" style="min-width:280px;flex:1">
+          <button id="save-object-id" class="secondary">Save Object ID</button>
+        </div>
+        <p class="object-id-hint" id="object-id-hint" hidden style="margin:0.75rem 0 0">
+          Set the Object ID to generate per-gap NBU verify snippets on the Missing sources page.
+        </p>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h2>Chrome extension</h2>
+        <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
+        <div class="token-box" style="margin-top:0.8rem">
+          <code id="token"></code>
+          <button id="copy-token" class="secondary">Copy token</button>
+          <button id="rotate-token" class="secondary">Rotate token</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:1rem">
         <h2>Backup &amp; restore</h2>
         <p class="muted">
           Copy all usage data, upload files, settings, and property names to
@@ -1569,11 +1572,9 @@ function dashboardPage(page) {
         case "uploads":
           await loadImports();
           break;
-        case "backup":
-          await refreshBackupStatus();
-          break;
-        case "extension":
+        case "setup":
           renderExtensionToken();
+          await refreshBackupStatus();
           break;
       }
     }
@@ -1602,10 +1603,8 @@ function dashboardPage(page) {
         case "uploads":
           await loadImports();
           break;
-        case "extension":
+        case "setup":
           renderExtensionToken();
-          break;
-        case "backup":
           await refreshBackupStatus();
           break;
       }
@@ -1726,7 +1725,7 @@ function dashboardPage(page) {
             linksHtml += '<code class="source-snippet">' + escapeHtml(item.nbu_fetch) + '</code>';
           }
         } else {
-          linksHtml = '<span class="muted">Set Object ID for verify snippet</span>';
+          linksHtml = '<span class="muted"><a href="/setup">Set Object ID on Setup</a> for verify snippet</span>';
         }
 
         return '<div class="' + rowClass + '">' +
@@ -1763,7 +1762,7 @@ function dashboardPage(page) {
       state.overview = await res.json();
       renderPropertySelector();
       if (APP_PAGE === "overview") renderStats();
-      if (APP_PAGE === "extension") renderExtensionToken();
+      if (APP_PAGE === "setup") renderExtensionToken();
     }
 
     async function loadImports() {
