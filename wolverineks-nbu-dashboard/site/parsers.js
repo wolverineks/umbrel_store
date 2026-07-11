@@ -94,19 +94,16 @@ function rejectTouCsv(filename, content) {
         throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
     }
     const lines = content.trim().split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2)
+    if (!lines.length)
         return;
-    const header = splitCsvLine(lines[0]).map((part) => part.trim().toLowerCase());
-    if (header.includes("tier")) {
+    const header = splitCsvLine(lines[0]).map((part) => part.trim());
+    const headerLower = header.map((part) => part.toLowerCase());
+    if (headerLower.includes("tier")) {
         throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
     }
-    const parts = splitCsvLine(lines[1]);
-    const second = parts[1]?.trim() ?? "";
-    if (second && !/^\d+$/.test(second) && !/^hour/i.test(second)) {
-        const dateParts = parseNbuDateParts(parts[0]?.trim() ?? "");
-        if (dateParts) {
-            throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
-        }
+    const first = headerLower[0] ?? "";
+    if (/^tier\b/.test(first) && !first.includes("date")) {
+        throw new Error("TOU CSV is no longer supported; sync hourly CSV only");
     }
 }
 function parseHistoryCsv(content, filename) {

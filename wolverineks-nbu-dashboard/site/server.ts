@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.14.0";
+const APP_VERSION = "1.14.1";
 
 type DashboardPage =
   | "overview"
