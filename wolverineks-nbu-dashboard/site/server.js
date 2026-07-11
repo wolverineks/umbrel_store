@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.12.0";
+const APP_VERSION = "1.12.1";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -1653,14 +1653,14 @@ function dashboardPage(page) {
 
       return (
         '<section class="energy-compare">' +
-          "<h3 style=\"margin:0;font-size:0.92rem;color:var(--muted)\">Multi-day comparison</h3>" +
-          '<div class="energy-compare-grid">' + cards + "</div>" +
+          '<h3 style="margin:0;font-size:0.92rem;color:var(--muted)">Multi-day comparison</h3>' +
+          '<div class="energy-compare-grid">' + cards + '</div>' +
           '<div class="energy-compare-table-wrap"><table class="energy-compare-table">' +
-            "<thead><tr>" +
-              "<th>Day</th><th class=\"num\">Total</th><th class=\"num\">Avg/hr</th>" +
-              "<th class=\"num\">Peak hour</th><th class=\"num\">vs avg</th>" +
-            "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
-        "</section>"
+            '<thead><tr>' +
+              '<th>Day</th><th class="num">Total</th><th class="num">Avg/hr</th>' +
+              '<th class="num">Peak hour</th><th class="num">vs avg</th>' +
+            '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '</section>'
       );
     }
 
@@ -1791,7 +1791,7 @@ function dashboardPage(page) {
             '<div class="energy-stat-card"><div class="label">Daily total</div><div class="value">' +
               fmtEnergyValue(day.total, report.unit) + "</div></div>" +
             '<div class="energy-stat-card"><div class="label">Avg per hour</div><div class="value">' +
-              fmtEnergyValue(day.average, report.unit) + "</div><div class=\"sub\">" +
+              fmtEnergyValue(day.average, report.unit) + '</div><div class="sub">' +
               day.hours_present + " hours recorded</div></div>" +
             (day.peak
               ? '<div class="energy-stat-card peak"><div class="label">Peak hour</div><div class="value">' +
