@@ -858,6 +858,7 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
     const unit = filtered[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
     const utilityImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility);
     const propertyImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
+    const sourceReadings = filterReadings(readings, propertyId, utility, effectiveGranularity, days, date);
     return {
         property_id: propertyId,
         utility,
@@ -868,7 +869,7 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
         average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
         peak,
         points,
-        sources: buildUsageSources(filtered, propertyImports, objectId, utility),
+        sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
         missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
         last_import_at: utilityImports[0]?.imported_at ?? null,
         tou_tier: effectiveTouTier,

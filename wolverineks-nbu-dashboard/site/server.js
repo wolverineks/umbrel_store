@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.11.1";
+const APP_VERSION = "1.11.2";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -1339,21 +1339,19 @@ function dashboardPage(page) {
       }
 
       const sourceItems = sources.length
-        ? sources.map((source, index) => {
-            const meta = source.readings_in_view + " readings · " + source.format;
-            const viewUrl = source.file_view_url ?? source.file_url;
-            const name = viewUrl
-              ? '<a href="' + escapeHtml(viewUrl) + '" target="_blank" rel="noopener">' + escapeHtml(source.filename) + '</a>'
-              : escapeHtml(source.filename);
-            let html = '<li>' + name + '<div class="muted">' + meta + '</div>';
-            html += '<ul class="source-detail">';
-            if (viewUrl) {
-              html += renderLinkRow("View", viewUrl);
-            }
+        ? sources.map((source) => {
+            const formatLabel =
+              source.format === "tou_csv"
+                ? "TOU CSV"
+                : source.format === "hourly_csv"
+                  ? "Hourly CSV"
+                  : source.format;
+            const meta = source.readings_in_view + " readings · " + formatLabel;
+            let html = '<li>' + escapeHtml(source.filename) + '<div class="muted">' + meta + '</div>';
             if (source.nbu_url) {
-              html += renderLinkRow("NBU CSV", source.nbu_url);
+              html += '<ul class="source-detail">' + renderLinkRow("NBU CSV", source.nbu_url) + "</ul>";
             }
-            html += '</ul></li>';
+            html += "</li>";
             return html;
           }).join("")
         : '<li class="none">No source files for this view.</li>';

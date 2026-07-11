@@ -1181,6 +1181,14 @@ export async function getUsageSummary(
   const propertyImports = imports.filter((item) =>
     matchesProperty(propertyId, item.account_id, item.usage_point),
   );
+  const sourceReadings = filterReadings(
+    readings,
+    propertyId,
+    utility,
+    effectiveGranularity,
+    days,
+    date,
+  );
 
   return {
     property_id: propertyId,
@@ -1192,7 +1200,7 @@ export async function getUsageSummary(
     average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
     peak,
     points,
-    sources: buildUsageSources(filtered, propertyImports, objectId, utility),
+    sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
     missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId),
     last_import_at: utilityImports[0]?.imported_at ?? null,
     tou_tier: effectiveTouTier,
