@@ -26,11 +26,10 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.9.3";
+const APP_VERSION = "1.9.4";
 
 type DashboardPage =
   | "overview"
-  | "coverage"
   | "missing-sources"
   | "uploads"
   | "setup";
@@ -38,7 +37,6 @@ type DashboardPage =
 const DASHBOARD_PAGE_ROUTES: Record<string, DashboardPage> = {
   "/": "overview",
   "/overview": "overview",
-  "/coverage": "coverage",
   "/missing-sources": "missing-sources",
   "/uploads": "uploads",
   "/upload-history": "uploads",
@@ -49,7 +47,6 @@ const DASHBOARD_PAGE_ROUTES: Record<string, DashboardPage> = {
 
 const DASHBOARD_PAGE_TITLES: Record<DashboardPage, string> = {
   overview: "Overview",
-  coverage: "Coverage",
   "missing-sources": "Missing sources",
   uploads: "Upload history",
   setup: "Setup",
@@ -62,7 +59,6 @@ function resolveDashboardPage(pathname: string): DashboardPage | null {
 function renderSideNav(active: DashboardPage): string {
   const items: Array<{ page: DashboardPage; href: string; label: string }> = [
     { page: "overview", href: "/", label: "Overview" },
-    { page: "coverage", href: "/coverage", label: "Coverage" },
     { page: "missing-sources", href: "/missing-sources", label: "Missing sources" },
     { page: "uploads", href: "/uploads", label: "Upload history" },
     { page: "setup", href: "/setup", label: "Setup" },
@@ -125,19 +121,21 @@ function usageChartSection(): string {
       </div>`;
 }
 
-function dashboardPageContent(page: DashboardPage): string {
-  switch (page) {
-    case "overview":
-      return `<div class="grid" id="stats"></div>${usageChartSection()}`;
-    case "coverage":
-      return `
-      <div class="card">
+function coverageSection(): string {
+  return `
+      <div class="card" style="margin-top:1rem">
         <h2>Data coverage</h2>
-        <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to open that day on Overview.</p>
+        <p class="muted">Hourly record completeness from first import through yesterday. Click a segment to view that day in the chart above.</p>
         <div id="coverage-content">
           <p class="muted">Loading coverage…</p>
         </div>
       </div>`;
+}
+
+function dashboardPageContent(page: DashboardPage): string {
+  switch (page) {
+    case "overview":
+      return `<div class="grid" id="stats"></div>${usageChartSection()}${coverageSection()}`;
     case "missing-sources":
       return `
       <div class="card" id="missing-sources-card">
@@ -1570,6 +1568,16 @@ function dashboardPage(page: DashboardPage): string {
     }
 
     function openCoverageDay(dateKey) {
+      const dayInput = document.getElementById("day");
+      const granularity = document.getElementById("granularity");
+      if (dayInput && granularity) {
+        dayInput.value = dateKey;
+        granularity.value = "hour";
+        syncDayControls();
+        void loadUsage().then(() => queueExtensionSync(true));
+        document.querySelector(".chart-wrap")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
       const params = new URLSearchParams();
       const propertyId = selectedPropertyId();
       const utility = selectedUtility();
@@ -1622,8 +1630,6 @@ function dashboardPage(page: DashboardPage): string {
           renderStats();
           await loadUsage();
           await loadQueuedSyncView();
-          break;
-        case "coverage":
           await loadCoverage();
           break;
         case "missing-sources":
@@ -1651,8 +1657,6 @@ function dashboardPage(page: DashboardPage): string {
           renderStats();
           await loadUsage();
           await loadQueuedSyncView();
-          break;
-        case "coverage":
           await loadCoverage();
           break;
         case "missing-sources":
@@ -1920,7 +1924,7 @@ function dashboardPage(page: DashboardPage): string {
         await loadUsage();
         await loadQueuedSyncView();
       }
-      if (APP_PAGE === "coverage") await loadCoverage();
+      if (APP_PAGE === "overview") await loadCoverage();
       if (APP_PAGE === "missing-sources") await loadMissingSources();
     });
     on("granularity", "change", loadUsage);
@@ -2524,7 +2528,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && pathname === "/usage") {
+    if (req.method === "GET" && (pathname === "/usage" || pathname === "/coverage")) {
       const target = "/" + (url.search || "");
       res.writeHead(302, { Location: target });
       res.end();
