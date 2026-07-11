@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.9.2";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -137,17 +137,6 @@ function dashboardPageContent(page) {
         case "setup":
             return `
       <div class="card">
-        <h2>NBU Object ID</h2>
-        <p class="muted">Customer Connect meter ObjectId for the property selected above. Used for verify snippets, missing-source checks, and extension sync URLs. Copy from the extension panel on Customer Connect.</p>
-        <div class="toolbar" style="margin-top:0.8rem;margin-bottom:0">
-          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs" style="min-width:280px;flex:1">
-          <button id="save-object-id" class="secondary">Save Object ID</button>
-        </div>
-        <p class="object-id-hint" id="object-id-hint" hidden style="margin:0.75rem 0 0">
-          Set the Object ID to generate per-gap NBU verify snippets on the Missing sources page.
-        </p>
-      </div>
-      <div class="card" style="margin-top:1rem">
         <h2>Chrome extension</h2>
         <p class="muted">Configure the companion extension with your Umbrel URL and ingest token.</p>
         <div class="token-box" style="margin-top:0.8rem">
@@ -159,10 +148,19 @@ function dashboardPageContent(page) {
       <div class="card" style="margin-top:1rem">
         <h2>Backup &amp; restore</h2>
         <p class="muted">
-          Copy all usage data, upload files, settings, and property names to
-          <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel.
+          Copies usage data, uploads, ingest token, property names, and NBU Object IDs to
+          <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel. Restore brings all of that back.
         </p>
-        <div class="grid" style="margin-top:0.8rem">
+        <h3 style="margin:1rem 0 0.35rem;font-size:0.95rem;color:var(--muted)">NBU Object ID</h3>
+        <p class="muted" style="margin:0 0 0.75rem">Per property (selected above). Saved in <code>settings.json</code> and included in backup/restore.</p>
+        <div class="toolbar" style="margin-bottom:0">
+          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for Green Button export URLs" style="min-width:280px;flex:1">
+          <button id="save-object-id" class="secondary">Save Object ID</button>
+        </div>
+        <p class="object-id-hint" id="object-id-hint" hidden style="margin:0.75rem 0 0">
+          Set the Object ID to generate per-gap NBU verify snippets on the Missing sources page.
+        </p>
+        <div class="grid" style="margin-top:1rem">
           <div>
             <h3>Live data</h3>
             <p class="muted" id="backup-live-summary">Loading…</p>
@@ -172,6 +170,7 @@ function dashboardPageContent(page) {
             <p class="muted" id="backup-folder-summary">Loading…</p>
           </div>
         </div>
+        <div id="backup-object-ids" class="backup-object-ids muted" style="margin-top:0.75rem"></div>
         <p class="muted" id="backup-status" style="margin-top:0.8rem"></p>
         <div class="toolbar" style="margin-top:0.8rem; margin-bottom:0">
           <button id="backup-export-btn">Back up now</button>
@@ -504,6 +503,18 @@ function pageStyles() {
       gap: 0.5rem;
       margin-top: 0.75rem;
       margin-bottom: 0;
+    }
+    .backup-object-ids ul {
+      margin: 0.35rem 0 0;
+      padding-left: 1.1rem;
+      font-size: 0.84rem;
+    }
+    .backup-object-ids li { margin: 0.2rem 0; }
+    .backup-object-ids code {
+      font-size: 0.8rem;
+      background: var(--accent-soft);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
     }
     .grid {
       display: grid;
@@ -1854,6 +1865,7 @@ function dashboardPage(page) {
         if (objectIdHint) objectIdHint.hidden = Boolean(objectId.trim());
         if (APP_PAGE === "usage") await loadUsage();
         if (APP_PAGE === "missing-sources") await loadMissingSources();
+        if (APP_PAGE === "setup") await refreshBackupStatus();
       }
     });
     on("utility", "change", async () => {
@@ -2001,6 +2013,28 @@ function dashboardPage(page) {
       return new Date(iso).toLocaleString();
     }
 
+    function formatObjectIdList(items) {
+      if (!items?.length) return "<li>None saved</li>";
+      return items.map((item) =>
+        "<li>" + escapeHtml(item.label) + ": <code>" + escapeHtml(item.object_id) + "</code></li>"
+      ).join("");
+    }
+
+    function renderBackupObjectIds(payload) {
+      const el = document.getElementById("backup-object-ids");
+      if (!el) return;
+      const liveCount = payload.live_object_id_count ?? 0;
+      const backupCount = payload.backup_object_id_count ?? 0;
+      let html = "<strong>Object IDs in backup</strong> · live: " + liveCount +
+        (payload.backup_available ? " · backup: " + backupCount : "");
+      html += "<ul>" + formatObjectIdList(payload.live_object_ids) + "</ul>";
+      if (payload.backup_available && backupCount !== liveCount) {
+        html += '<div style="margin-top:0.5rem"><strong>Object IDs in backup folder</strong><ul>' +
+          formatObjectIdList(payload.backup_object_ids) + "</ul></div>";
+      }
+      el.innerHTML = html;
+    }
+
     async function refreshBackupStatus(message) {
       const liveSummary = document.getElementById("backup-live-summary");
       const folderSummary = document.getElementById("backup-folder-summary");
@@ -2017,17 +2051,20 @@ function dashboardPage(page) {
         if (hostPathEl) hostPathEl.textContent = hostPath;
         if (liveSummary) {
           liveSummary.textContent =
-            payload.live_reading_count + " readings · " + payload.live_import_count + " imports";
+            payload.live_reading_count + " readings · " + payload.live_import_count + " imports · " +
+            (payload.live_object_id_count ?? 0) + " Object ID" + ((payload.live_object_id_count ?? 0) === 1 ? "" : "s");
         }
         if (folderSummary) {
           if (!payload.backup_available) {
             folderSummary.textContent = "No backup yet.";
           } else {
             folderSummary.textContent =
-              payload.backup_reading_count + " readings · " + payload.backup_import_count + " imports";
+              payload.backup_reading_count + " readings · " + payload.backup_import_count + " imports · " +
+              (payload.backup_object_id_count ?? 0) + " Object ID" + ((payload.backup_object_id_count ?? 0) === 1 ? "" : "s");
           }
         }
-        if (statusEl) {
+        renderBackupObjectIds(payload);
+        if (statusEl && !message) {
           if (!payload.backup_writable) {
             statusEl.textContent =
               "Backup folder is not writable" +
@@ -2038,7 +2075,10 @@ function dashboardPage(page) {
             statusEl.textContent =
               "Backup ready with " +
               payload.backup_reading_count +
-              " readings. Last backup: " +
+              " readings and " +
+              (payload.backup_object_id_count ?? 0) +
+              " Object ID" + ((payload.backup_object_id_count ?? 0) === 1 ? "" : "s") +
+              ". Last backup: " +
               formatBackupTimestamp(payload.backup_updated_at) +
               ".";
           }
@@ -2048,6 +2088,8 @@ function dashboardPage(page) {
       } catch (error) {
         if (liveSummary) liveSummary.textContent = "Unavailable";
         if (folderSummary) folderSummary.textContent = "Unavailable";
+        const objectIdsEl = document.getElementById("backup-object-ids");
+        if (objectIdsEl) objectIdsEl.textContent = "";
         if (statusEl) statusEl.textContent = error.message || "Could not load backup status.";
         if (exportBtn) exportBtn.disabled = true;
         if (importBtn) importBtn.disabled = true;

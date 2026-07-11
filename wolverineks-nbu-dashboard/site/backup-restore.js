@@ -30,6 +30,19 @@ async function countImports(dataDir) {
     const parsed = await readJsonFile(node_path_1.default.join(dataDir, "imports.json"), []);
     return Array.isArray(parsed) ? parsed.length : 0;
 }
+async function readObjectIds(dataDir) {
+    const settings = await readJsonFile(node_path_1.default.join(dataDir, "settings.json"), {});
+    const objectIds = settings.property_object_ids ?? {};
+    const labels = settings.property_labels ?? {};
+    return Object.entries(objectIds)
+        .map(([property_id, object_id]) => ({
+        property_id,
+        label: labels[property_id]?.trim() || property_id,
+        object_id: String(object_id).trim(),
+    }))
+        .filter((item) => item.object_id)
+        .sort((a, b) => a.label.localeCompare(b.label));
+}
 async function isWritableDir(dir) {
     try {
         await (0, promises_1.mkdir)(dir, { recursive: true });
@@ -105,6 +118,8 @@ async function getBackupStatus(dataDir, backupDir, backupHostPath) {
     const backupAvailable = (0, node_fs_1.existsSync)(backupDir) && looksLikeNbuBackup(backupDir);
     const manifest = backupAvailable ? await readManifest(backupDir) : null;
     const writable = await isWritableDir(backupDir);
+    const liveObjectIds = await readObjectIds(dataDir);
+    const backupObjectIds = backupAvailable ? await readObjectIds(backupDir) : [];
     return {
         data_dir: dataDir,
         backup_dir: backupDir,
@@ -114,8 +129,12 @@ async function getBackupStatus(dataDir, backupDir, backupHostPath) {
         backup_writable_error: writable.error,
         live_reading_count: await countReadings(dataDir),
         live_import_count: await countImports(dataDir),
+        live_object_id_count: liveObjectIds.length,
+        live_object_ids: liveObjectIds,
         backup_reading_count: backupAvailable ? await countReadings(backupDir) : 0,
         backup_import_count: backupAvailable ? await countImports(backupDir) : 0,
+        backup_object_id_count: backupObjectIds.length,
+        backup_object_ids: backupObjectIds,
         backup_updated_at: manifest?.exported_at ?? null,
     };
 }
@@ -125,11 +144,13 @@ async function exportNbuData(dataDir, backupDir, backupHostPath) {
         throw new Error(`Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}`);
     }
     await syncDirectory(dataDir, backupDir);
+    const liveObjectIds = await readObjectIds(dataDir);
     const manifest = {
         exported_at: new Date().toISOString(),
         source: dataDir,
         reading_count: await countReadings(dataDir),
         import_count: await countImports(dataDir),
+        object_id_count: liveObjectIds.length,
     };
     await (0, promises_1.writeFile)(node_path_1.default.join(backupDir, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     return getBackupStatus(dataDir, backupDir, backupHostPath);
