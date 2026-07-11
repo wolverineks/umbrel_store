@@ -26,7 +26,7 @@ import {
   getSyncViewQueue,
 } from "./store";
 
-const APP_VERSION = "1.11.0";
+const APP_VERSION = "1.11.1";
 
 type DashboardPage =
   | "overview"
@@ -2541,6 +2541,15 @@ const server = createServer(async (req, res) => {
       }
       const settings = await setPropertyObjectId(body.property_id, body.object_id ?? "");
       sendJson(res, 200, { settings });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/ingest/ping") {
+      if (!(await authorizeIngest(req))) {
+        sendJson(res, 401, { error: "invalid ingest token" });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
       return;
     }
 

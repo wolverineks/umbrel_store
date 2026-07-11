@@ -16,16 +16,27 @@ async function loadSettings() {
 
 document.getElementById("save").addEventListener("click", async () => {
   const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
-  await chrome.storage.sync.set({
-    baseUrl,
-    token: tokenInput.value.trim(),
-  });
+  const token = tokenInput.value.trim();
+  if (!baseUrl || !token) {
+    setStatus("Set URL and token first.", "err");
+    return;
+  }
+  await chrome.storage.sync.set({ baseUrl, token });
   try {
     await chrome.runtime.sendMessage({ type: "register-dashboard-bridge", baseUrl });
   } catch {
     // Bridge registration is best-effort.
   }
-  setStatus("Saved.", "ok");
+  setStatus("Checking token…");
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "verify-ingest-token" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "invalid ingest token");
+    }
+    setStatus("Saved. Token verified.", "ok");
+  } catch (error) {
+    setStatus(error.message || String(error), "err");
+  }
 });
 
 document.getElementById("upload").addEventListener("click", async () => {

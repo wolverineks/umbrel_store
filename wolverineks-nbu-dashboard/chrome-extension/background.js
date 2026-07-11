@@ -75,6 +75,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error), queue: null }));
     return true;
   }
+
+  if (message?.type === "verify-ingest-token") {
+    void verifyIngestToken()
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
 });
 
 async function umbrelSettings() {
@@ -114,10 +121,27 @@ async function umbrelFetch(path, init = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.error || `Umbrel request failed (${response.status}).`);
+    const message = payload?.error || `Umbrel request failed (${response.status}).`;
+    const error = new Error(message);
+    error.status = response.status;
+    if (response.status === 401) {
+      error.code = "INGEST_AUTH";
+    }
+    throw error;
   }
 
   return payload;
+}
+
+function isIngestAuthError(error) {
+  return (
+    error?.code === "INGEST_AUTH" ||
+    /invalid ingest token/i.test(error?.message || "")
+  );
+}
+
+async function verifyIngestToken() {
+  await umbrelFetch("/api/ingest/ping", { method: "GET", cache: "no-store" });
 }
 
 async function getSyncViewQueueFromUmbrel() {
@@ -126,6 +150,17 @@ async function getSyncViewQueueFromUmbrel() {
 }
 
 async function uploadExport(filename, content) {
+  try {
+    return await uploadExportPayload(filename, content);
+  } catch (error) {
+    if (isIngestAuthError(error)) {
+      throw new Error("invalid ingest token. Copy the current token from the Umbrel dashboard Setup page.");
+    }
+    throw error;
+  }
+}
+
+async function uploadExportPayload(filename, content) {
   const payload = await umbrelFetch("/api/ingest", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -399,7 +399,40 @@
     throw failure;
   }
 
+  function isIngestAuthError(error) {
+    return /invalid ingest token/i.test(error?.message || "");
+  }
+
+  function verifyIngestToken() {
+    return new Promise((resolve, reject) => {
+      const requestId = `verify-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const timeout = setTimeout(() => {
+        window.removeEventListener("message", onResponse);
+        reject(new Error("token check timeout"));
+      }, 15_000);
+
+      function onResponse(event) {
+        if (event.source !== window || event.data?.source !== "nbu-umbrel-content") return;
+        if (event.data.type !== "VERIFY_INGEST_RESULT" || event.data.requestId !== requestId) return;
+        clearTimeout(timeout);
+        window.removeEventListener("message", onResponse);
+        if (event.data.ok) resolve();
+        else reject(new Error(event.data.error || "invalid ingest token"));
+      }
+
+      window.addEventListener("message", onResponse);
+      post("VERIFY_INGEST_REQUEST", { requestId });
+    });
+  }
+
   async function runSync(options = {}) {
+    try {
+      await verifyIngestToken();
+    } catch (error) {
+      post("SYNC_ERROR", { error: error.message || "invalid ingest token" });
+      return;
+    }
+
     const jobs = pageJobs(options);
     if (!jobs.length) {
       if (options.viewStart && options.viewEnd) {
@@ -460,6 +493,10 @@
         else uploaded += 1;
       } catch (error) {
         const message = error.message || String(error);
+        if (isIngestAuthError(error)) {
+          post("SYNC_ERROR", { error: message });
+          return;
+        }
         errors.push({
           label: `${job.meterLabel}: ${job.label}`,
           url: error.url || job.url || job.urls?.[0] || null,

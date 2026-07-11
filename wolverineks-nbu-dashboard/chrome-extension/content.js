@@ -304,6 +304,28 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.data?.source !== "nbu-umbrel-page") return;
 
+    if (event.data.type === "VERIFY_INGEST_REQUEST") {
+      void chrome.runtime
+        .sendMessage({ type: "verify-ingest-token" })
+        .then((response) => {
+          postToPage({
+            type: "VERIFY_INGEST_RESULT",
+            requestId: event.data.requestId,
+            ok: Boolean(response?.ok),
+            error: response?.error || null,
+          });
+        })
+        .catch((error) => {
+          postToPage({
+            type: "VERIFY_INGEST_RESULT",
+            requestId: event.data.requestId,
+            ok: false,
+            error: error.message || String(error),
+          });
+        });
+      return;
+    }
+
     if (event.data.type === "UPLOAD_REQUEST") {
       void uploadToUmbrel(event.data.filename, event.data.content)
         .then((result) => {

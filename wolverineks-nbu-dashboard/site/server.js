@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.11.0";
+const APP_VERSION = "1.11.1";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -2394,6 +2394,14 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             }
             const settings = await (0, store_1.setPropertyObjectId)(body.property_id, body.object_id ?? "");
             sendJson(res, 200, { settings });
+            return;
+        }
+        if (req.method === "GET" && pathname === "/api/ingest/ping") {
+            if (!(await authorizeIngest(req))) {
+                sendJson(res, 401, { error: "invalid ingest token" });
+                return;
+            }
+            sendJson(res, 200, { ok: true });
             return;
         }
         if (req.method === "POST" && pathname === "/api/ingest") {
