@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.centralHourSlotIso = centralHourSlotIso;
 exports.detectFormat = detectFormat;
 exports.parseNbuExport = parseNbuExport;
 const ESPI_NS = "http://naesb.org/espi";
@@ -286,6 +287,12 @@ function nbuHourIso(year, month, day, hourColumn) {
     const localHour = hourColumn - 1;
     const offset = centralUtcOffsetHours(year, month, day);
     return new Date(Date.UTC(year, month, day, localHour + offset, 0, 0)).toISOString();
+}
+/** Central-time hour slot (hour 0–23) for a YYYY-MM-DD date key. */
+function centralHourSlotIso(dateKey, hour) {
+    const [year, month, day] = dateKey.split("-").map(Number);
+    const offset = centralUtcOffsetHours(year, month - 1, day);
+    return new Date(Date.UTC(year, month - 1, day, hour + offset, 0, 0)).toISOString();
 }
 function nbuDayStartIso(year, month, day) {
     return nbuHourIso(year, month, day, 1);

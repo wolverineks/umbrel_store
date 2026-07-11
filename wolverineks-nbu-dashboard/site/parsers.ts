@@ -329,6 +329,13 @@ function nbuHourIso(year: number, month: number, day: number, hourColumn: number
   return new Date(Date.UTC(year, month, day, localHour + offset, 0, 0)).toISOString();
 }
 
+/** Central-time hour slot (hour 0–23) for a YYYY-MM-DD date key. */
+export function centralHourSlotIso(dateKey: string, hour: number): string {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const offset = centralUtcOffsetHours(year, month - 1, day);
+  return new Date(Date.UTC(year, month - 1, day, hour + offset, 0, 0)).toISOString();
+}
+
 function nbuDayStartIso(year: number, month: number, day: number): string {
   return nbuHourIso(year, month, day, 1);
 }

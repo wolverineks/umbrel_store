@@ -9,7 +9,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.9.6";
+const APP_VERSION = "1.9.7";
 const DASHBOARD_PAGE_ROUTES = {
     "/": "overview",
     "/overview": "overview",
@@ -81,6 +81,7 @@ function usageChartSection() {
           <div class="chart-tooltip" id="chart-tooltip" hidden></div>
         </div>
         <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
+        <p class="chart-missing-legend muted" id="chart-missing-legend" hidden>Red bars mark hours with no data.</p>
         <div class="chart-sources" id="chart-sources" hidden></div>
       </div>`;
 }
@@ -688,6 +689,13 @@ function pageStyles() {
     .chart-bar {
       cursor: crosshair;
     }
+    .chart-bar-missing {
+      cursor: help;
+    }
+    .chart-missing-legend {
+      margin: 0.5rem 0 0;
+      font-size: 0.82rem;
+    }
     .imports {
       display: grid;
       gap: 0.6rem;
@@ -1208,8 +1216,12 @@ function dashboardPage(page) {
     }
 
     function fmtTooltipHtml(point, unit, granularity) {
+      const label = fmtTooltipLabel(point.period_start, granularity);
+      if (point.missing) {
+        return \`\${label}<br><strong>Missing hour</strong>\`;
+      }
       const value = Number(point.value).toFixed(2);
-      return \`\${fmtTooltipLabel(point.period_start, granularity)}<br><strong>\${value} \${unit}</strong>\`;
+      return \`\${label}<br><strong>\${value} \${unit}</strong>\`;
     }
 
     function positionChartTooltip(event, tooltip) {
@@ -1377,29 +1389,38 @@ function dashboardPage(page) {
       const svg = document.getElementById("chart");
       const tooltip = document.getElementById("chart-tooltip");
       const empty = document.getElementById("chart-empty");
+      const missingLegend = document.getElementById("chart-missing-legend");
       if (!usage || !usage.points.length) {
         svg.innerHTML = "";
         if (tooltip) tooltip.hidden = true;
+        if (missingLegend) missingLegend.hidden = true;
         empty.hidden = false;
         renderChartSources();
         return;
       }
+      const hasMissing = usage.points.some((point) => point.missing);
       empty.hidden = true;
+      if (missingLegend) missingLegend.hidden = !hasMissing;
       const width = 1000;
       const height = 300;
       const pad = { top: 20, right: 16, bottom: 52, left: 48 };
       const innerW = width - pad.left - pad.right;
       const innerH = height - pad.top - pad.bottom;
-      const values = usage.points.map((p) => p.value);
-      const max = Math.max(...values, 0.001);
-      const step = innerW / values.length;
+      const dataValues = usage.points.filter((point) => !point.missing).map((point) => point.value);
+      const max = Math.max(...dataValues, 0.001);
+      const step = innerW / usage.points.length;
       const barW = Math.max(2, step - 2);
       const showYears = chartSpansYears(usage.points);
       const color = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
 
       const bars = usage.points.map((point, index) => {
-        const h = (point.value / max) * innerH;
         const x = pad.left + index * step;
+        if (point.missing) {
+          const h = Math.max(4, innerH * 0.08);
+          const y = pad.top + innerH - h;
+          return \`<rect class="chart-bar chart-bar-missing" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="#f87171" opacity="0.85"></rect>\`;
+        }
+        const h = (point.value / max) * innerH;
         const y = pad.top + innerH - h;
         return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${color}" opacity="0.9"></rect>\`;
       }).join("");

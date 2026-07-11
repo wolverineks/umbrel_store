@@ -40,6 +40,7 @@ const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
 const node_crypto_1 = require("node:crypto");
+const parsers_1 = require("./parsers");
 const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const UPLOADS_ROOT = node_path_1.default.join(DATA_ROOT, "uploads");
 const SETTINGS_PATH = node_path_1.default.join(DATA_ROOT, "settings.json");
@@ -726,6 +727,50 @@ function buildUsageMissing(readings, propertyId, utility, granularity, days, dat
     }
     return withNbuLinks(missing, objectId, utility);
 }
+function centralLocalHour(iso) {
+    return Number(new Intl.DateTimeFormat("en-US", {
+        timeZone: CENTRAL_TZ,
+        hour: "2-digit",
+        hour12: false,
+    }).format(new Date(iso)));
+}
+function isFutureHourSlot(dateKey, hour, todayKey) {
+    if (compareDateKeys(dateKey, todayKey) > 0)
+        return true;
+    if (dateKey !== todayKey)
+        return false;
+    return hour > centralLocalHour(new Date().toISOString());
+}
+function buildHourlyChartPoints(hourReadings, range) {
+    const todayKey = centralTodayKey();
+    const valuesBySlot = new Map();
+    for (const reading of hourReadings) {
+        const dateKey = centralLocalDateKey(reading.period_start);
+        const hour = centralLocalHour(reading.period_start);
+        valuesBySlot.set(`${dateKey}:${hour}`, reading.value);
+    }
+    const points = [];
+    for (const dateKey of iterateDateKeys(range.start, range.end)) {
+        for (let hour = 0; hour < 24; hour++) {
+            if (isFutureHourSlot(dateKey, hour, todayKey))
+                continue;
+            const slotKey = `${dateKey}:${hour}`;
+            const value = valuesBySlot.get(slotKey);
+            const period_start = (0, parsers_1.centralHourSlotIso)(dateKey, hour);
+            if (value !== undefined) {
+                points.push({
+                    period_start,
+                    value: Math.round(value * 1000) / 1000,
+                    missing: false,
+                });
+            }
+            else {
+                points.push({ period_start, value: 0, missing: true });
+            }
+        }
+    }
+    return points;
+}
 function filterReadings(readings, propertyId, utility, granularity, days, date) {
     const cutoff = date || !days ? null : Date.now() - days * 86_400_000;
     return readings
@@ -744,18 +789,30 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
     const objectId = propertyId ? settings.property_object_ids[propertyId] ?? null : null;
     const readings = await loadReadings();
     const imports = await loadImports();
+    const effectiveGranularity = date ? "hour" : granularity;
     const filtered = filterReadings(readings, propertyId, utility, granularity, days, date);
-    const points = filtered.map((r) => ({
-        period_start: r.period_start,
-        value: Math.round(r.value * 1000) / 1000,
-    }));
-    const total = points.reduce((sum, p) => sum + p.value, 0);
-    const peak = points.reduce((best, point) => {
+    const hourReadings = effectiveGranularity === "hour"
+        ? filterReadings(readings, propertyId, utility, "hour", days, date)
+        : [];
+    let points;
+    if (effectiveGranularity === "hour") {
+        const range = viewRangeKeys(days, date, hourReadings, "hour");
+        points = range ? buildHourlyChartPoints(hourReadings, range) : [];
+    }
+    else {
+        points = filtered.map((r) => ({
+            period_start: r.period_start,
+            value: Math.round(r.value * 1000) / 1000,
+        }));
+    }
+    const dataPoints = points.filter((point) => !point.missing);
+    const total = dataPoints.reduce((sum, p) => sum + p.value, 0);
+    const peak = dataPoints.reduce((best, point) => {
         if (!best || point.value > best.value)
             return point;
         return best;
     }, null);
-    const unit = filtered[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
+    const unit = filtered[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
     const utilityImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility);
     const propertyImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
     return {
@@ -765,7 +822,7 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
         date,
         unit,
         total: Math.round(total * 1000) / 1000,
-        average: points.length ? Math.round((total / points.length) * 1000) / 1000 : 0,
+        average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
         peak,
         points,
         sources: buildUsageSources(filtered, propertyImports, objectId, utility),
