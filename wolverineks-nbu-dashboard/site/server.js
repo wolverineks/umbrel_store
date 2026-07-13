@@ -160,7 +160,6 @@ function dashboardPageContent(page) {
               <button id="copy-token" class="secondary" type="button">Copy</button>
             </div>
             <div class="setup-copy-actions">
-              <button id="copy-extension-settings" class="secondary" type="button">Copy both</button>
               <button id="rotate-token" class="secondary" type="button">Rotate token</button>
             </div>
           </div>
@@ -1844,12 +1843,6 @@ function dashboardPage(page) {
       return window.location.origin;
     }
 
-    function extensionSettingsText() {
-      const token = state.overview?.settings?.ingest_token;
-      if (!token) return "";
-      return "Umbrel app URL: " + extensionBaseUrl() + "\\nIngest token: " + token;
-    }
-
     function renderExtensionSetup() {
       const tokenEl = document.getElementById("token");
       const baseUrlEl = document.getElementById("extension-base-url");
@@ -2530,12 +2523,6 @@ function dashboardPage(page) {
       const button = event.currentTarget;
       if (!token) return;
       await copySnippet(button, token);
-    });
-    on("copy-extension-settings", "click", async (event) => {
-      const button = event.currentTarget;
-      const text = extensionSettingsText();
-      if (!text) return;
-      await copySnippet(button, text);
     });
     on("rotate-token", "click", async () => {
       const res = await fetch("/api/settings/rotate-token", { method: "POST" });
