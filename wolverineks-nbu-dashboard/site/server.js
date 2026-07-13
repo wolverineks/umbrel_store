@@ -142,90 +142,89 @@ function dashboardPageContent(page) {
       </div>`;
         case "setup":
             return `
-      <div class="card">
-        <h2>NBU Utilities extension</h2>
-        <p class="muted">Configure the Chrome extension with your Umbrel URL and ingest token for Production and, if needed, Development. The selected profile in the popup is used for Customer Connect sync.</p>
-        <h3 class="setup-section-title">Connect</h3>
-        <div class="setup-field">
-          <label for="extension-base-url">Umbrel app URL</label>
-          <p class="muted setup-field-note">Copy from your browser address bar when this dashboard is open (include port, e.g. <code>:4060</code>).</p>
-          <div class="token-box">
-            <code id="extension-base-url">Loading…</code>
-            <button id="copy-base-url" class="secondary" type="button">Copy URL</button>
+      <div class="setup-page">
+        <div class="card setup-card">
+          <h2>Chrome extension</h2>
+          <p class="muted setup-lead">Copy your URL and token into the extension popup, then sync from Customer Connect.</p>
+          <div class="setup-copy-block">
+            <label for="extension-base-url">App URL</label>
+            <div class="setup-copy-row">
+              <code id="extension-base-url">Loading…</code>
+              <button id="copy-base-url" class="secondary" type="button">Copy</button>
+            </div>
           </div>
-        </div>
-        <div class="setup-field">
-          <label for="token">Ingest token</label>
-          <p class="muted setup-field-note">Saved in <code>settings.json</code>. Rotate only if the token was compromised.</p>
-          <div class="token-box">
-            <code id="token"></code>
-            <button id="copy-token" class="secondary" type="button">Copy token</button>
-            <button id="copy-extension-settings" class="secondary" type="button">Copy both</button>
-            <button id="rotate-token" class="secondary" type="button">Rotate token</button>
+          <div class="setup-copy-block">
+            <label for="token">Ingest token</label>
+            <div class="setup-copy-row">
+              <code id="token"></code>
+              <button id="copy-token" class="secondary" type="button">Copy</button>
+            </div>
+            <div class="setup-copy-actions">
+              <button id="copy-extension-settings" class="secondary" type="button">Copy both</button>
+              <button id="rotate-token" class="secondary" type="button">Rotate token</button>
+            </div>
           </div>
+          <details class="collapse-panel setup-more">
+            <summary>Install &amp; sync steps</summary>
+            <div class="collapse-body">
+              <ol class="setup-steps">
+                <li>
+                  Get the extension from
+                  <a href="${EXTENSION_REPO_URL}" target="_blank" rel="noreferrer">GitHub</a>
+                  (<code>${EXTENSION_FOLDER}</code>). Chrome → Extensions → Developer mode → Load unpacked.
+                </li>
+                <li>In the popup, pick Production or Development, paste URL and token, then Save settings.</li>
+                <li>On a Customer Connect consumption report, use <strong>Sync last 30 days</strong> or <strong>Sync full history</strong>.</li>
+              </ol>
+              <p class="muted setup-version-note">Extension v${EXTENSION_VERSION}${IS_LOCAL_DEV ? " · local dev active" : ""}</p>
+            </div>
+          </details>
         </div>
-        <h3 class="setup-section-title">Development</h3>
-        <p class="muted">Load the extension unpacked while working on sync or upload changes.</p>
-        <ol class="setup-steps">
-          <li>
-            Get the extension from
-            <a href="${EXTENSION_REPO_URL}" target="_blank" rel="noreferrer">GitHub</a>
-            (<code>${EXTENSION_FOLDER}</code> in <code>umbrel_store</code>).
-          </li>
-          <li>Chrome → Extensions → enable <strong>Developer mode</strong> → <strong>Load unpacked</strong> → select that folder.</li>
-          <li>In the extension popup, choose <strong>Production</strong> or <strong>Development</strong>, paste this dashboard's URL and ingest token, then click <strong>Save settings</strong> for each profile you use.</li>
-          <li>
-            Open a Customer Connect consumption report. Use the floating sync panel for
-            <strong>Sync last 30 days</strong> or <strong>Sync full history</strong>.
-          </li>
-          <li>After editing extension files, click <strong>Reload</strong> on <code>chrome://extensions</code>.</li>
-        </ol>
-        <p class="muted setup-dev-meta">
-          Extension v${EXTENSION_VERSION} · Dashboard local dev:
-          <code>npm run dev:local</code> in <code>site/</code> (port 4060) or
-          <code>docker compose -f docker-compose.dev.yml up</code>
-          ${IS_LOCAL_DEV ? " · <strong>Local dev mode is active</strong>" : ""}
-        </p>
-      </div>
-      <div class="card" style="margin-top:1rem">
-        <h2>Backup &amp; restore</h2>
-        <p class="muted">
-          Copies usage data, uploads, ingest token, property names, and NBU Object IDs to
-          <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel. Restore brings all of that back.
-        </p>
-        <h3 style="margin:1rem 0 0.35rem;font-size:0.95rem;color:var(--muted)">NBU Object ID</h3>
-        <p class="muted" style="margin:0 0 0.75rem">Per account (selected in the header). Saved in <code>settings.json</code> and included in backup/restore.</p>
-        <div class="toolbar" style="margin-bottom:0">
-          <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for hourly CSV export URLs" style="min-width:280px;flex:1">
-          <button id="save-object-id" class="secondary">Save Object ID</button>
-        </div>
-        <p class="object-id-hint" id="object-id-hint" hidden style="margin:0.75rem 0 0">
-          Set the Object ID to generate per-gap NBU verify snippets on the Sources page.
-        </p>
-        <div class="grid" style="margin-top:1rem">
-          <div>
-            <h3>Live data</h3>
-            <p class="muted" id="backup-live-summary">Loading…</p>
+        <div class="card setup-card">
+          <h2>NBU Object ID</h2>
+          <p class="muted setup-lead">For the account selected in the header. Powers NBU verify on Sources.</p>
+          <div class="setup-object-id-row">
+            <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for hourly CSV export URLs">
+            <button id="save-object-id" class="secondary">Save</button>
           </div>
-          <div>
-            <h3>Backup folder</h3>
-            <p class="muted" id="backup-folder-summary">Loading…</p>
+          <p class="object-id-hint setup-hint" id="object-id-hint" hidden>
+            Set the Object ID to enable NBU verify on the Sources page.
+          </p>
+        </div>
+        <div class="card setup-card">
+          <h2>Backup</h2>
+          <p class="muted setup-lead">Copies usage data and settings to <code id="backup-host-path">${BACKUP_HOST_PATH}</code>.</p>
+          <div class="setup-status-grid">
+            <div class="setup-status-item">
+              <span class="setup-status-label">Live</span>
+              <span class="setup-status-value" id="backup-live-summary">Loading…</span>
+            </div>
+            <div class="setup-status-item">
+              <span class="setup-status-label">Backup</span>
+              <span class="setup-status-value" id="backup-folder-summary">Loading…</span>
+            </div>
           </div>
-        </div>
-        <div id="backup-object-ids" class="backup-object-ids muted" style="margin-top:0.75rem"></div>
-        <p class="muted" id="backup-status" style="margin-top:0.8rem"></p>
-        <div class="toolbar" style="margin-top:0.8rem; margin-bottom:0">
-          <button id="backup-export-btn">Back up now</button>
-          <button id="backup-import-btn" class="secondary">Restore from backup</button>
-        </div>
-        <h3 style="margin:1.25rem 0 0.35rem;font-size:0.95rem;color:var(--muted)">Clear data</h3>
-        <p class="muted" style="margin:0 0 0.75rem">
-          Remove usage records or the backup folder. Clearing live records keeps your ingest token,
-          Object IDs, and property settings so you can resync from the extension.
-        </p>
-        <div class="toolbar" style="margin-bottom:0">
-          <button id="clear-records-btn" class="danger secondary">Clear live records</button>
-          <button id="clear-backup-btn" class="danger secondary">Clear backup folder</button>
+          <details class="collapse-panel setup-object-ids-panel" id="backup-object-ids-panel" hidden>
+            <summary>Object IDs</summary>
+            <div class="collapse-body backup-object-ids muted" id="backup-object-ids"></div>
+          </details>
+          <p class="muted setup-hint" id="backup-status"></p>
+          <div class="setup-action-stack">
+            <button id="backup-export-btn">Back up now</button>
+            <button id="backup-import-btn" class="secondary">Restore from backup</button>
+          </div>
+          <details class="collapse-panel setup-danger-zone">
+            <summary>Clear data</summary>
+            <div class="collapse-body">
+              <p class="muted setup-hint">
+                Clear live records keeps your token, Object IDs, and property settings so you can resync.
+              </p>
+              <div class="setup-action-stack">
+                <button id="clear-records-btn" class="danger secondary">Clear live records</button>
+                <button id="clear-backup-btn" class="danger secondary">Clear backup folder</button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>`;
     }
@@ -923,44 +922,122 @@ function pageStyles() {
       margin-bottom: 0.75rem;
     }
     .muted { color: var(--muted); }
-    .setup-section-title {
-      margin: 1.25rem 0 0.35rem;
-      font-size: 0.95rem;
-      color: var(--muted);
-      font-weight: 600;
+    .setup-page {
+      display: grid;
+      gap: 1rem;
     }
-    .setup-section-title:first-of-type {
-      margin-top: 0.85rem;
+    .setup-card h2 {
+      margin: 0 0 0.35rem;
+      font-size: 1.05rem;
     }
-    .setup-field { margin-top: 1rem; }
-    .setup-field label {
+    .setup-lead {
+      margin: 0 0 1rem;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+    .setup-hint {
+      margin: 0.75rem 0 0;
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+    .setup-copy-block + .setup-copy-block {
+      margin-top: 1rem;
+    }
+    .setup-copy-block label {
       display: block;
       font-size: 0.82rem;
       font-weight: 600;
-      color: var(--text);
-      margin-bottom: 0.25rem;
+      margin-bottom: 0.35rem;
     }
-    .setup-field-note {
-      margin: 0 0 0.5rem;
-      font-size: 0.84rem;
-    }
-    .setup-steps {
-      margin: 0.75rem 0 0;
-      padding-left: 1.25rem;
-      line-height: 1.6;
-      font-size: 0.92rem;
-    }
-    .setup-steps li + li { margin-top: 0.65rem; }
-    .setup-dev-meta {
-      margin: 0.85rem 0 0;
-      font-size: 0.84rem;
-      line-height: 1.55;
-    }
-    .token-box {
+    .setup-copy-row {
       display: flex;
       gap: 0.5rem;
-      align-items: center;
+      align-items: stretch;
+    }
+    .setup-copy-row code {
+      flex: 1;
+      min-width: 0;
+      display: block;
+      padding: 0.65rem 0.75rem;
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+    .setup-copy-row button {
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .setup-copy-actions {
+      display: flex;
       flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+    .setup-object-id-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: stretch;
+    }
+    .setup-object-id-row input {
+      flex: 1;
+      min-width: 0;
+    }
+    .setup-status-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+    .setup-status-item {
+      background: var(--accent-soft);
+      border-radius: 12px;
+      padding: 0.75rem 0.85rem;
+      min-width: 0;
+    }
+    .setup-status-label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+    }
+    .setup-status-value {
+      display: block;
+      font-size: 0.84rem;
+      line-height: 1.4;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .setup-action-stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+    .setup-more,
+    .setup-danger-zone,
+    .setup-object-ids-panel {
+      margin-top: 1rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .setup-more > summary,
+    .setup-danger-zone > summary,
+    .setup-object-ids-panel > summary {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .setup-steps {
+      margin: 0;
+      padding-left: 1.15rem;
+      line-height: 1.5;
+      font-size: 0.88rem;
+    }
+    .setup-steps li + li { margin-top: 0.5rem; }
+    .setup-version-note {
+      margin: 0.65rem 0 0;
+      font-size: 0.82rem;
     }
     code {
       background: var(--accent-soft);
@@ -1148,6 +1225,21 @@ function pageStyles() {
       padding: 0.15rem 0.4rem;
     }
     @media (max-width: 640px) {
+      .setup-copy-row,
+      .setup-copy-actions,
+      .setup-object-id-row,
+      .setup-action-stack {
+        flex-direction: column;
+      }
+      .setup-copy-row button,
+      .setup-copy-actions button,
+      .setup-object-id-row button,
+      .setup-action-stack button {
+        width: 100%;
+      }
+      .setup-status-value {
+        font-size: 0.8rem;
+      }
       .stats-grid .card {
         padding: 0.85rem 0.7rem;
       }
@@ -2468,15 +2560,29 @@ function dashboardPage(page) {
 
     function renderBackupObjectIds(payload) {
       const el = document.getElementById("backup-object-ids");
+      const panel = document.getElementById("backup-object-ids-panel");
       if (!el) return;
-      const liveCount = payload.live_object_id_count ?? 0;
+      const liveItems = payload.live_object_ids ?? [];
+      const backupItems = payload.backup_object_ids ?? [];
       const backupCount = payload.backup_object_id_count ?? 0;
-      let html = "<strong>Object IDs in backup</strong> · live: " + liveCount +
-        (payload.backup_available ? " · backup: " + backupCount : "");
-      html += "<ul>" + formatObjectIdList(payload.live_object_ids) + "</ul>";
-      if (payload.backup_available && backupCount !== liveCount) {
-        html += '<div style="margin-top:0.5rem"><strong>Object IDs in backup folder</strong><ul>' +
-          formatObjectIdList(payload.backup_object_ids) + "</ul></div>";
+      const liveCount = payload.live_object_id_count ?? 0;
+      if (!liveItems.length && !backupItems.length) {
+        el.innerHTML = "";
+        if (panel) panel.hidden = true;
+        return;
+      }
+      if (panel) {
+        panel.hidden = false;
+        const summary = panel.querySelector("summary");
+        if (summary) {
+          summary.textContent = "Object IDs (" + liveCount + " live" +
+            (payload.backup_available ? ", " + backupCount + " in backup" : "") + ")";
+        }
+      }
+      let html = "<ul>" + formatObjectIdList(liveItems) + "</ul>";
+      if (payload.backup_available && backupCount !== liveCount && backupItems.length) {
+        html += '<p class="muted" style="margin:0.5rem 0 0.25rem;font-size:0.82rem">In backup folder</p><ul>' +
+          formatObjectIdList(backupItems) + "</ul>";
       }
       el.innerHTML = html;
     }
@@ -2543,7 +2649,9 @@ function dashboardPage(page) {
         if (liveSummary) liveSummary.textContent = "Unavailable";
         if (folderSummary) folderSummary.textContent = "Unavailable";
         const objectIdsEl = document.getElementById("backup-object-ids");
-        if (objectIdsEl) objectIdsEl.textContent = "";
+        const objectIdsPanel = document.getElementById("backup-object-ids-panel");
+        if (objectIdsEl) objectIdsEl.innerHTML = "";
+        if (objectIdsPanel) objectIdsPanel.hidden = true;
         if (statusEl) statusEl.textContent = error.message || "Could not load backup status.";
         if (exportBtn) exportBtn.disabled = true;
         if (importBtn) importBtn.disabled = true;
