@@ -117,9 +117,11 @@ function usageChartSection(): string {
             <button id="chart-next" class="secondary" type="button" title="Next period">Next →</button>
           </div>
           <button id="refresh" class="secondary">Refresh</button>
+          <button id="chart-fullscreen" class="secondary chart-fullscreen-btn" type="button" title="Expand chart to full screen">Expand</button>
           <input id="range-end" type="hidden">
         </div>
         <p class="day-view-label" id="day-view-label" hidden></p>
+        <p class="chart-fullscreen-title" id="chart-fullscreen-title" hidden></p>
         <div class="chart-shell">
           <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="chart-tooltip" id="chart-tooltip" hidden></div>
@@ -840,6 +842,67 @@ function pageStyles(): string {
       opacity: 0.6;
       pointer-events: none;
     }
+    body.chart-fullscreen-active {
+      overflow: hidden;
+    }
+    .chart-wrap.is-fullscreen {
+      position: fixed;
+      inset: 0;
+      z-index: 1200;
+      margin: 0;
+      border-radius: 0;
+      border: 0;
+      width: 100%;
+      max-width: none;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      padding:
+        max(0.75rem, env(safe-area-inset-top, 0px))
+        max(0.85rem, env(safe-area-inset-right, 0px))
+        max(0.85rem, env(safe-area-inset-bottom, 0px))
+        max(0.85rem, env(safe-area-inset-left, 0px));
+    }
+    .chart-wrap.is-fullscreen .chart-sources {
+      display: none;
+    }
+    .chart-wrap.is-fullscreen .chart-shell {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: stretch;
+    }
+    .chart-wrap.is-fullscreen .chart {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      aspect-ratio: unset;
+      min-height: 0;
+    }
+    .chart-fullscreen-title {
+      display: none;
+      margin: 0 0 0.5rem;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .chart-wrap.is-fullscreen .chart-fullscreen-title {
+      display: block;
+    }
+    .chart-wrap.is-fullscreen .day-view-label {
+      display: none;
+    }
+    .chart-wrap.is-fullscreen .chart-tooltip {
+      font-size: 1rem;
+      padding: 0.7rem 0.9rem;
+    }
+    .chart-wrap.is-fullscreen .chart-tooltip strong {
+      font-size: 1.2rem;
+    }
+    .chart-fullscreen-btn {
+      font-weight: 600;
+    }
     .chart-shell[data-drillable="1"] .chart-bar {
       cursor: pointer;
     }
@@ -1137,10 +1200,10 @@ function pageStyles(): string {
       padding: 0.15rem 0.4rem;
     }
     @media (max-width: 640px) {
-      .chart-wrap {
+      .chart-wrap:not(.is-fullscreen) {
         padding: 0.75rem 0.85rem 1rem;
       }
-      .chart {
+      .chart-wrap:not(.is-fullscreen) .chart {
         max-height: min(38vh, 300px);
       }
       .toolbar {
@@ -1150,6 +1213,9 @@ function pageStyles(): string {
         min-width: 0;
         padding-left: 0.5rem;
         padding-right: 0.5rem;
+      }
+      .chart-fullscreen-btn {
+        padding: 0.6rem 0.9rem;
       }
     }
     @media (max-width: 860px) {
@@ -1831,8 +1897,42 @@ function dashboardPage(page: DashboardPage): string {
       });
     }
 
-    function chartLayoutNarrow() {
-      return window.innerWidth < 640;
+    function chartIsFullscreen() {
+      return document.querySelector(".chart-wrap")?.classList.contains("is-fullscreen") ?? false;
+    }
+
+    function chartLayoutMode() {
+      if (chartIsFullscreen()) return "fullscreen";
+      if (window.innerWidth < 640) return "narrow";
+      return "normal";
+    }
+
+    function chartFullscreenTitle(usage) {
+      if (!usage) return "";
+      const utility = usage.utility === "water" ? "Water" : "Electric";
+      const gran = chartPointGranularity(usage);
+      if (usage.date) {
+        return utility + " · hourly · " + fmtDayHeading(usage.date);
+      }
+      if (usage.range_start && usage.range_end) {
+        const start = fmtShortDate(usage.range_start + "T12:00:00Z", true);
+        const end = fmtShortDate(usage.range_end + "T12:00:00Z", true);
+        return utility + " · " + gran + " · " + start + " – " + end;
+      }
+      return utility + " · " + gran + " usage";
+    }
+
+    function setChartFullscreen(on) {
+      const wrap = document.querySelector(".chart-wrap");
+      const btn = document.getElementById("chart-fullscreen");
+      if (!wrap) return;
+      wrap.classList.toggle("is-fullscreen", on);
+      document.body.classList.toggle("chart-fullscreen-active", on);
+      if (btn) {
+        btn.textContent = on ? "Exit" : "Expand";
+        btn.title = on ? "Exit full screen" : "Expand chart to full screen";
+      }
+      renderChart();
     }
 
     function renderChart() {
@@ -1852,10 +1952,24 @@ function dashboardPage(page: DashboardPage): string {
       const hasMissing = usage.points.some((point) => point.missing);
       empty.hidden = true;
       if (missingLegend) missingLegend.hidden = !hasMissing;
-      const narrow = chartLayoutNarrow();
+      const mode = chartLayoutMode();
+      const fullscreenTitle = document.getElementById("chart-fullscreen-title");
+      if (fullscreenTitle) {
+        const title = chartFullscreenTitle(usage);
+        fullscreenTitle.textContent = title;
+        fullscreenTitle.hidden = mode !== "fullscreen" || !title;
+      }
       const width = 1000;
-      const height = 300;
-      const pad = { top: 20, right: narrow ? 12 : 16, bottom: narrow ? 48 : 52, left: narrow ? 42 : 48 };
+      const height = mode === "fullscreen" ? 540 : 300;
+      const pad =
+        mode === "fullscreen"
+          ? { top: 36, right: 28, bottom: 76, left: 68 }
+          : mode === "narrow"
+            ? { top: 20, right: 12, bottom: 48, left: 42 }
+            : { top: 20, right: 16, bottom: 52, left: 48 };
+      const labelFont = mode === "fullscreen" ? 20 : mode === "narrow" ? 14 : 12;
+      const yearFont = mode === "fullscreen" ? 22 : mode === "narrow" ? 14 : 12;
+      svg.setAttribute("viewBox", "0 0 " + width + " " + height);
       const innerW = width - pad.left - pad.right;
       const innerH = height - pad.top - pad.bottom;
       const dataValues = usage.points.filter((point) => !point.missing).map((point) => point.value);
@@ -1889,22 +2003,26 @@ function dashboardPage(page: DashboardPage): string {
         const x = pad.left + index * step;
         return \`
           <line x1="\${x}" y1="\${pad.top}" x2="\${x}" y2="\${pad.top + innerH}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 4"></line>
-          <text x="\${x + 4}" y="\${height - 8}" fill="#475569" font-size="\${narrow ? 13 : 12}" font-weight="700">\${year}</text>
+          <text x="\${x + 4}" y="\${height - 10}" fill="#475569" font-size="\${yearFont}" font-weight="700">\${year}</text>
         \`;
       }).join("");
 
       let tickIndexes;
       let labelForIndex;
       if (usage.date) {
-        const hourTicks = narrow
-          ? [0, 12, usage.points.length - 1]
-          : [0, 6, 12, 18, usage.points.length - 1];
+        const hourTicks =
+          mode === "fullscreen"
+            ? [0, 6, 12, 18, usage.points.length - 1]
+            : mode === "narrow"
+              ? [0, 12, usage.points.length - 1]
+              : [0, 6, 12, 18, usage.points.length - 1];
         tickIndexes = new Set(hourTicks.filter((index) => index < usage.points.length));
         labelForIndex = (index) => fmtHourLabel(usage.points[index].period_start);
       } else {
-        const rangeTicks = narrow
-          ? [0, usage.points.length - 1]
-          : [0, Math.floor(usage.points.length / 2), usage.points.length - 1];
+        const rangeTicks =
+          mode === "narrow"
+            ? [0, usage.points.length - 1]
+            : [0, Math.floor(usage.points.length / 2), usage.points.length - 1];
         tickIndexes = new Set(
           rangeTicks.concat(yearMarkers.map((marker) => marker.index))
         );
@@ -1921,13 +2039,13 @@ function dashboardPage(page: DashboardPage): string {
         .map((index) => {
           const x = pad.left + index * step;
           const label = labelForIndex(index);
-          const labelY = narrow ? height - 24 : height - 28;
-          return \`<text x="\${x}" y="\${labelY}" fill="#64748b" font-size="\${narrow ? 13 : 12}">\${label}</text>\`;
+          const labelY = mode === "fullscreen" ? height - 34 : mode === "narrow" ? height - 24 : height - 28;
+          return \`<text x="\${x}" y="\${labelY}" fill="#64748b" font-size="\${labelFont}">\${label}</text>\`;
         }).join("");
 
       svg.innerHTML = \`
         <line x1="\${pad.left}" y1="\${pad.top + innerH}" x2="\${width - pad.right}" y2="\${pad.top + innerH}" stroke="#e2e8f0"></line>
-        <text x="12" y="\${pad.top + 12}" fill="#64748b" font-size="\${narrow ? 13 : 12}">\${max.toFixed(1)} \${usage.unit}</text>
+        <text x="14" y="\${pad.top + (mode === "fullscreen" ? 18 : 12)}" fill="#64748b" font-size="\${labelFont}">\${max.toFixed(1)} \${usage.unit}</text>
         \${yearLines}
         \${bars}
         \${labels}
@@ -2329,6 +2447,10 @@ function dashboardPage(page: DashboardPage): string {
     });
     on("chart-prev", "click", () => navigateChart("prev"));
     on("chart-next", "click", () => navigateChart("next"));
+    on("chart-fullscreen", "click", () => setChartFullscreen(!chartIsFullscreen()));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && chartIsFullscreen()) setChartFullscreen(false);
+    });
     on("refresh", "click", () => {
       void refreshDashboard();
     });
@@ -2571,12 +2693,12 @@ function dashboardPage(page: DashboardPage): string {
     });
 
     let chartResizeTimer = null;
-    let chartWasNarrow = chartLayoutNarrow();
+    let chartLastMode = chartLayoutMode();
     window.addEventListener("resize", () => {
       if (APP_PAGE !== "overview" || !state.usage?.points?.length) return;
-      const narrow = chartLayoutNarrow();
-      if (narrow === chartWasNarrow) return;
-      chartWasNarrow = narrow;
+      const mode = chartLayoutMode();
+      if (mode === chartLastMode) return;
+      chartLastMode = mode;
       clearTimeout(chartResizeTimer);
       chartResizeTimer = setTimeout(() => renderChart(), 150);
     });
