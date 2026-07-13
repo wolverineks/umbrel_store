@@ -121,7 +121,7 @@ function usageChartSection(): string {
         </div>
         <p class="day-view-label" id="day-view-label" hidden></p>
         <div class="chart-shell">
-          <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="none"></svg>
+          <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="chart-tooltip" id="chart-tooltip" hidden></div>
         </div>
         <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
@@ -848,8 +848,9 @@ function pageStyles(): string {
     }
     .chart {
       width: 100%;
-      height: min(42vh, 420px);
-      min-height: 280px;
+      height: auto;
+      aspect-ratio: 10 / 3;
+      max-height: min(42vh, 420px);
       display: block;
     }
     .chart-tooltip {
@@ -1069,17 +1070,6 @@ function pageStyles(): string {
     .source-detail li {
       margin: 0.2rem 0;
     }
-    .source-snippet {
-      display: block;
-      margin: 0.2rem 0 0.35rem;
-      padding: 0.35rem 0.5rem;
-      background: var(--accent-soft);
-      border-radius: 6px;
-      font-size: 0.72rem;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
     .copy-snippet {
       font-size: 0.72rem;
       padding: 0.15rem 0.4rem;
@@ -1145,6 +1135,22 @@ function pageStyles(): string {
     .missing-source-actions button {
       font-size: 0.72rem;
       padding: 0.15rem 0.4rem;
+    }
+    @media (max-width: 640px) {
+      .chart-wrap {
+        padding: 0.75rem 0.85rem 1rem;
+      }
+      .chart {
+        max-height: min(38vh, 300px);
+      }
+      .toolbar {
+        gap: 0.5rem;
+      }
+      .chart-nav button {
+        min-width: 0;
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+      }
     }
     @media (max-width: 860px) {
       .missing-source-row {
@@ -1825,6 +1831,10 @@ function dashboardPage(page: DashboardPage): string {
       });
     }
 
+    function chartLayoutNarrow() {
+      return window.innerWidth < 640;
+    }
+
     function renderChart() {
       const usage = state.usage;
       const svg = document.getElementById("chart");
@@ -1842,9 +1852,10 @@ function dashboardPage(page: DashboardPage): string {
       const hasMissing = usage.points.some((point) => point.missing);
       empty.hidden = true;
       if (missingLegend) missingLegend.hidden = !hasMissing;
+      const narrow = chartLayoutNarrow();
       const width = 1000;
       const height = 300;
-      const pad = { top: 20, right: 16, bottom: 52, left: 48 };
+      const pad = { top: 20, right: narrow ? 12 : 16, bottom: narrow ? 48 : 52, left: narrow ? 42 : 48 };
       const innerW = width - pad.left - pad.right;
       const innerH = height - pad.top - pad.bottom;
       const dataValues = usage.points.filter((point) => !point.missing).map((point) => point.value);
@@ -1878,21 +1889,24 @@ function dashboardPage(page: DashboardPage): string {
         const x = pad.left + index * step;
         return \`
           <line x1="\${x}" y1="\${pad.top}" x2="\${x}" y2="\${pad.top + innerH}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 4"></line>
-          <text x="\${x + 4}" y="\${height - 8}" fill="#475569" font-size="12" font-weight="700">\${year}</text>
+          <text x="\${x + 4}" y="\${height - 8}" fill="#475569" font-size="\${narrow ? 13 : 12}" font-weight="700">\${year}</text>
         \`;
       }).join("");
 
       let tickIndexes;
       let labelForIndex;
       if (usage.date) {
-        tickIndexes = new Set(
-          [0, 6, 12, 18, usage.points.length - 1].filter((index) => index < usage.points.length)
-        );
+        const hourTicks = narrow
+          ? [0, 12, usage.points.length - 1]
+          : [0, 6, 12, 18, usage.points.length - 1];
+        tickIndexes = new Set(hourTicks.filter((index) => index < usage.points.length));
         labelForIndex = (index) => fmtHourLabel(usage.points[index].period_start);
       } else {
+        const rangeTicks = narrow
+          ? [0, usage.points.length - 1]
+          : [0, Math.floor(usage.points.length / 2), usage.points.length - 1];
         tickIndexes = new Set(
-          [0, Math.floor(usage.points.length / 2), usage.points.length - 1]
-            .concat(yearMarkers.map((marker) => marker.index))
+          rangeTicks.concat(yearMarkers.map((marker) => marker.index))
         );
         labelForIndex = (index) => {
           const point = usage.points[index];
@@ -1907,12 +1921,13 @@ function dashboardPage(page: DashboardPage): string {
         .map((index) => {
           const x = pad.left + index * step;
           const label = labelForIndex(index);
-          return \`<text x="\${x}" y="\${height - 28}" fill="#64748b" font-size="11">\${label}</text>\`;
+          const labelY = narrow ? height - 24 : height - 28;
+          return \`<text x="\${x}" y="\${labelY}" fill="#64748b" font-size="\${narrow ? 13 : 12}">\${label}</text>\`;
         }).join("");
 
       svg.innerHTML = \`
         <line x1="\${pad.left}" y1="\${pad.top + innerH}" x2="\${width - pad.right}" y2="\${pad.top + innerH}" stroke="#e2e8f0"></line>
-        <text x="12" y="\${pad.top + 12}" fill="#64748b" font-size="12">\${max.toFixed(1)} \${usage.unit}</text>
+        <text x="12" y="\${pad.top + 12}" fill="#64748b" font-size="\${narrow ? 13 : 12}">\${max.toFixed(1)} \${usage.unit}</text>
         \${yearLines}
         \${bars}
         \${labels}
@@ -2141,9 +2156,6 @@ function dashboardPage(page: DashboardPage): string {
           if (item.fetch_status !== null && item.fetch_status !== undefined) {
             fetchHtml += '<div class="muted">HTTP ' + item.fetch_status + '</div>';
           }
-          if (item.fetch_preview) {
-            fetchHtml += '<code class="source-snippet">' + escapeHtml(item.fetch_preview) + '</code>';
-          }
           if (item.fetch_probed_at) {
             fetchHtml += '<div class="muted">' + escapeHtml(item.fetch_source || "probe") +
               " · " + fmtDate(item.fetch_probed_at) + '</div>';
@@ -2161,9 +2173,6 @@ function dashboardPage(page: DashboardPage): string {
             linksHtml += '<button type="button" class="secondary" data-date="' + item.start + '">View day</button>';
           }
           linksHtml += '</div>';
-          if (item.nbu_fetch) {
-            linksHtml += '<code class="source-snippet">' + escapeHtml(item.nbu_fetch) + '</code>';
-          }
         } else {
           linksHtml = '<span class="muted"><a href="/setup">Set Object ID on Setup</a> for verify snippet</span>';
         }
@@ -2559,6 +2568,17 @@ function dashboardPage(page: DashboardPage): string {
         if (statusEl) statusEl.textContent = error.message || "Clear backup failed.";
         await refreshBackupStatus();
       }
+    });
+
+    let chartResizeTimer = null;
+    let chartWasNarrow = chartLayoutNarrow();
+    window.addEventListener("resize", () => {
+      if (APP_PAGE !== "overview" || !state.usage?.points?.length) return;
+      const narrow = chartLayoutNarrow();
+      if (narrow === chartWasNarrow) return;
+      chartWasNarrow = narrow;
+      clearTimeout(chartResizeTimer);
+      chartResizeTimer = setTimeout(() => renderChart(), 150);
     });
 
     initSideNav();
