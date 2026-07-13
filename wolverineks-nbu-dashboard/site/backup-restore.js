@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getBackupStatus = getBackupStatus;
 exports.exportNbuData = exportNbuData;
 exports.importNbuData = importNbuData;
+exports.clearNbuBackup = clearNbuBackup;
 const promises_1 = require("node:fs/promises");
 const node_fs_1 = require("node:fs");
 const node_path_1 = __importDefault(require("node:path"));
@@ -163,5 +164,13 @@ async function importNbuData(dataDir, backupDir, backupHostPath) {
     await clearDirectory(dataDir);
     await syncDirectory(backupDir, dataDir);
     await (0, promises_1.rm)(node_path_1.default.join(dataDir, MANIFEST_FILE), { force: true });
+    return getBackupStatus(dataDir, backupDir, backupHostPath);
+}
+async function clearNbuBackup(dataDir, backupDir, backupHostPath) {
+    const writable = await isWritableDir(backupDir);
+    if (!writable.ok) {
+        throw new Error(`Backup directory is not writable: ${backupDir}${writable.error ? ` (${writable.error})` : ""}`);
+    }
+    await clearDirectory(backupDir);
     return getBackupStatus(dataDir, backupDir, backupHostPath);
 }

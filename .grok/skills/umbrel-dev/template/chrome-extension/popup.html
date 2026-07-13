@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; width: 340px; color: #0f172a; }
+    .wrap { padding: 14px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .version { font-size: 12px; color: #64748b; font-weight: 600; }
+    p { margin: 0 0 12px; color: #64748b; font-size: 12px; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    input, button { width: 100%; box-sizing: border-box; margin-bottom: 10px; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+    button { background: #1d4ed8; color: #fff; border-color: #1d4ed8; cursor: pointer; }
+    .profile-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+    .profile-tabs button { margin: 0; background: #f8fafc; color: #0f172a; border-color: #cbd5e1; font-weight: 600; }
+    .profile-tabs button.active { background: #dbeafe; border-color: #1d4ed8; color: #1d4ed8; }
+    .profile-note { font-size: 12px; color: #64748b; margin: -4px 0 10px; }
+    .status { color: #64748b; min-height: 1.2em; font-size: 12px; }
+    .version-footer { margin: 0.75rem 0 0; font-size: 11px; color: #94a3b8; text-align: center; }
+    .ok { color: #16a34a; }
+    .err { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>__APP_NAME__ <span id="version" class="version"></span></h1>
+    <p>Store Production and Development Umbrel URLs and ingest tokens. The selected profile is used for API calls.</p>
+    <div class="profile-tabs">
+      <button type="button" id="profile-prod" class="active">Production</button>
+      <button type="button" id="profile-dev">Development</button>
+    </div>
+    <p class="profile-note" id="profile-note">Active profile: Production</p>
+    <label for="baseUrl">Umbrel app URL</label>
+    <input id="baseUrl" placeholder="copy from browser address bar">
+    <label for="token">Ingest token</label>
+    <input id="token" placeholder="from dashboard Setup">
+    <button id="save">Save settings</button>
+    <div class="status" id="status"></div>
+    <p class="version-footer" id="version-footer"></p>
+  </div>
+  <script src="settings.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

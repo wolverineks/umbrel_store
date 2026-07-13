@@ -1,0 +1,21 @@
+manifestVersion: 1
+id: __APP_ID__
+name: __APP_NAME__
+tagline: __APP_TAGLINE__
+icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/__APP_ID__/icon.svg
+category: files
+version: "0.1.0"
+port: __APP_PORT__
+description: >-
+  __APP_DESCRIPTION__
+developer: Wolverineks
+website: https://github.com/wolverineks
+repo: https://github.com/wolverineks/umbrel_store
+support: https://github.com/wolverineks/umbrel_store/issues
+gallery: []
+releaseNotes: >-
+  Initial release.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

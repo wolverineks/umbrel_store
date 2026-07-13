@@ -24,6 +24,7 @@ exports.nbuVerifyFetchSnippet = nbuVerifyFetchSnippet;
 exports.setPropertyAddress = setPropertyAddress;
 exports.listProperties = listProperties;
 exports.importParsed = importParsed;
+exports.clearUsageData = clearUsageData;
 exports.listImports = listImports;
 exports.getStoredImportFile = getStoredImportFile;
 exports.getUsageSummary = getUsageSummary;
@@ -48,11 +49,19 @@ const READINGS_PATH = node_path_1.default.join(DATA_ROOT, "readings.json");
 const SOURCE_ERRORS_PATH = node_path_1.default.join(DATA_ROOT, "source-errors.json");
 exports.NBU_HOURLY_CSV_BASE = "https://myinfo.nbutexas.com/CC/connect/users/home/indicators/ExportExcelReadData.xml";
 const CENTRAL_TZ = "America/Chicago";
+const HOURLY_CHART_DAY_LIMIT = 31;
+const centralDateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ });
+const centralHourFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: CENTRAL_TZ,
+    hour: "2-digit",
+    hour12: false,
+});
+const centralTodayFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ });
 function centralLocalDateKey(iso) {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
+    return centralDateFormatter.format(new Date(iso));
 }
 function centralTodayKey() {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date());
+    return centralTodayFormatter.format(new Date());
 }
 function addDaysToDateKey(dateKey, days) {
     const [year, month, day] = dateKey.split("-").map(Number);
@@ -584,6 +593,22 @@ async function importParsed(result, rawContent, metadata = {}) {
     await saveReadings(readings);
     return importRecord;
 }
+async function clearUsageData() {
+    const readings = await loadReadings();
+    const imports = await loadImports();
+    const cleared_reading_count = readings.length;
+    const cleared_import_count = imports.length;
+    await saveReadings([]);
+    await saveImports([]);
+    await saveSourceErrors([]);
+    if ((0, node_fs_1.existsSync)(UPLOADS_ROOT)) {
+        const entries = await (0, promises_1.readdir)(UPLOADS_ROOT, { withFileTypes: true });
+        for (const entry of entries) {
+            await (0, promises_1.rm)(node_path_1.default.join(UPLOADS_ROOT, entry.name), { recursive: true, force: true });
+        }
+    }
+    return { cleared_reading_count, cleared_import_count };
+}
 async function listImports(propertyId = null, limit = 500, offset = 0) {
     const imports = await loadImports();
     const filtered = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
@@ -726,16 +751,15 @@ function buildUsageSources(filtered, imports, objectId, utility) {
     })
         .sort((a, b) => b.readings_in_view - a.readings_in_view || a.filename.localeCompare(b.filename));
 }
-function buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId, endDate = null) {
+function buildUsageMissing(hourInView, dayInView, utility, granularity, days, date, objectId, endDate = null) {
     const effectiveGranularity = date ? "hour" : granularity;
-    const filtered = excludeTouReadings(filterReadings(readings, propertyId, utility, effectiveGranularity, days, date, endDate));
+    const filtered = effectiveGranularity === "hour" ? hourInView : dayInView;
     const range = viewRangeKeys(days, date, filtered, effectiveGranularity, endDate);
     if (!range)
         return [];
     if (effectiveGranularity === "hour") {
-        const hourReadings = excludeTouReadings(filterReadings(readings, propertyId, utility, "hour", days, date, endDate));
         const hoursByDate = new Map();
-        for (const reading of hourReadings) {
+        for (const reading of hourInView) {
             const dateKey = centralLocalDateKey(reading.period_start);
             hoursByDate.set(dateKey, (hoursByDate.get(dateKey) ?? 0) + 1);
         }
@@ -771,11 +795,16 @@ function buildUsageMissing(readings, propertyId, utility, granularity, days, dat
     return [];
 }
 function centralLocalHour(iso) {
-    return Number(new Intl.DateTimeFormat("en-US", {
-        timeZone: CENTRAL_TZ,
-        hour: "2-digit",
-        hour12: false,
-    }).format(new Date(iso)));
+    return Number(centralHourFormatter.format(new Date(iso)));
+}
+function daySpan(start, end) {
+    let count = 0;
+    let cursor = start;
+    while (compareDateKeys(cursor, end) <= 0) {
+        count += 1;
+        cursor = addDaysToDateKey(cursor, 1);
+    }
+    return count;
 }
 function isFutureHourSlot(dateKey, hour, todayKey) {
     if (compareDateKeys(dateKey, todayKey) > 0)
@@ -794,6 +823,7 @@ function hourSlotKey(reading) {
 }
 function buildHourlyChartPoints(hourReadings, range) {
     const todayKey = centralTodayKey();
+    const nowHour = centralLocalHour(new Date().toISOString());
     const valuesBySlot = new Map();
     for (const reading of hourReadings) {
         valuesBySlot.set(hourSlotKey(reading), reading.value);
@@ -801,7 +831,9 @@ function buildHourlyChartPoints(hourReadings, range) {
     const points = [];
     for (const dateKey of iterateDateKeys(range.start, range.end)) {
         for (let hour = 0; hour < 24; hour++) {
-            if (isFutureHourSlot(dateKey, hour, todayKey))
+            if (compareDateKeys(dateKey, todayKey) > 0)
+                continue;
+            if (dateKey === todayKey && hour > nowHour)
                 continue;
             const slotKey = `${dateKey}:${hour}`;
             const value = valuesBySlot.get(slotKey);
@@ -819,6 +851,63 @@ function buildHourlyChartPoints(hourReadings, range) {
         }
     }
     return points;
+}
+function buildDailyChartPointsFromHourly(hourReadings, range) {
+    const totalsByDate = new Map();
+    for (const reading of hourReadings) {
+        const dateKey = centralLocalDateKey(reading.period_start);
+        totalsByDate.set(dateKey, (totalsByDate.get(dateKey) ?? 0) + reading.value);
+    }
+    const points = [];
+    for (const dateKey of iterateDateKeys(range.start, range.end)) {
+        const value = totalsByDate.get(dateKey);
+        const period_start = (0, parsers_1.centralHourSlotIso)(dateKey, 12);
+        if (value !== undefined) {
+            points.push({ period_start, value: roundUsage(value), missing: false });
+        }
+        else {
+            points.push({ period_start, value: 0, missing: true });
+        }
+    }
+    return points;
+}
+function collectUsageReadings(readings, propertyId, utility, viewGranularity, days, date, endDate) {
+    const window = date ? null : days ? resolveUsageWindow(days, null, endDate, []) : null;
+    const chartHour = [];
+    const chartDay = [];
+    const source = [];
+    for (const reading of readings) {
+        if (!matchesProperty(propertyId, reading.account_id, reading.usage_point))
+            continue;
+        if (reading.utility !== utility)
+            continue;
+        const dateKey = centralLocalDateKey(reading.period_start);
+        if (window &&
+            (compareDateKeys(window.start, dateKey) > 0 || compareDateKeys(dateKey, window.end) > 0)) {
+            continue;
+        }
+        if (date) {
+            if (reading.granularity !== "hour" || dateKey !== date)
+                continue;
+            chartHour.push(reading);
+            source.push(reading);
+            continue;
+        }
+        if (reading.granularity === viewGranularity) {
+            source.push(reading);
+        }
+        if (viewGranularity === "hour" && reading.granularity === "hour") {
+            chartHour.push(reading);
+        }
+        else if (viewGranularity === "day" && reading.granularity === "day") {
+            chartDay.push(reading);
+        }
+    }
+    const byPeriod = (a, b) => a.period_start.localeCompare(b.period_start);
+    chartHour.sort(byPeriod);
+    chartDay.sort(byPeriod);
+    source.sort(byPeriod);
+    return { chartHour, chartDay, source };
 }
 function filterReadings(readings, propertyId, utility, granularity, days, date, endDate = null) {
     const window = date ? null : days ? resolveUsageWindow(days, null, endDate, []) : null;
@@ -845,17 +934,24 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
     const imports = await loadImports();
     const effectiveGranularity = date ? "hour" : granularity;
     const scopedReadings = excludeTouReadings(readings);
-    const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date, endDate);
-    const hourReadings = effectiveGranularity === "hour"
-        ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date, endDate)
-        : [];
-    const range = viewRangeKeys(days, date, hourReadings.length ? hourReadings : filtered, effectiveGranularity, endDate);
+    const collected = collectUsageReadings(scopedReadings, propertyId, utility, effectiveGranularity, days, date, endDate);
+    const hourReadings = collected.chartHour;
+    const dayReadings = collected.chartDay;
+    const chartSeed = effectiveGranularity === "hour" ? hourReadings : dayReadings;
+    const range = viewRangeKeys(days, date, chartSeed, effectiveGranularity, endDate);
     let points;
+    let pointGranularity = effectiveGranularity;
     if (effectiveGranularity === "hour") {
-        points = range ? buildHourlyChartPoints(hourReadings, range) : [];
+        if (range && daySpan(range.start, range.end) > HOURLY_CHART_DAY_LIMIT) {
+            points = buildDailyChartPointsFromHourly(hourReadings, range);
+            pointGranularity = "day";
+        }
+        else {
+            points = range ? buildHourlyChartPoints(hourReadings, range) : [];
+        }
     }
     else {
-        points = filtered.map((r) => ({
+        points = dayReadings.map((r) => ({
             period_start: r.period_start,
             value: Math.round(r.value * 1000) / 1000,
         }));
@@ -867,14 +963,21 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
             return point;
         return best;
     }, null);
-    const unit = filtered[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
-    const utilityImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility);
-    const propertyImports = imports.filter((item) => matchesProperty(propertyId, item.account_id, item.usage_point));
-    const sourceReadings = filterReadings(scopedReadings, propertyId, utility, effectiveGranularity, days, date, endDate);
+    const unit = dayReadings[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
+    let utilityImports = [];
+    const propertyImports = [];
+    for (const item of imports) {
+        if (!matchesProperty(propertyId, item.account_id, item.usage_point))
+            continue;
+        propertyImports.push(item);
+        if (item.utility === utility)
+            utilityImports.push(item);
+    }
     return {
         property_id: propertyId,
         utility,
         granularity: date ? "hour" : granularity,
+        point_granularity: pointGranularity,
         date,
         range_start: range?.start ?? null,
         range_end: range?.end ?? null,
@@ -883,8 +986,8 @@ async function getUsageSummary(propertyId, utility, granularity, days, date = nu
         average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
         peak,
         points,
-        sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
-        missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId, endDate),
+        sources: buildUsageSources(collected.source, propertyImports, objectId, utility),
+        missing: buildUsageMissing(hourReadings, dayReadings, utility, granularity, days, date, objectId, endDate),
         last_import_at: utilityImports[0]?.imported_at ?? null,
     };
 }

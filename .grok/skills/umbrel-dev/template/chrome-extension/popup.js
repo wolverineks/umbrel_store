@@ -1,7 +1,6 @@
 const baseUrlInput = document.getElementById("baseUrl");
 const tokenInput = document.getElementById("token");
 const statusEl = document.getElementById("status");
-const filesInput = document.getElementById("files");
 const profileNoteEl = document.getElementById("profile-note");
 const profileButtons = {
   prod: document.getElementById("profile-prod"),
@@ -27,10 +26,10 @@ function showProfile(profile) {
   activeProfile = profile === "dev" ? "dev" : "prod";
   baseUrlInput.value = profiles[activeProfile].baseUrl;
   tokenInput.value = profiles[activeProfile].token;
-  for (const key of NBU_PROFILES) {
+  for (const key of APP_PROFILES) {
     profileButtons[key].classList.toggle("active", key === activeProfile);
   }
-  profileNoteEl.textContent = "Sync target: " + NBU_PROFILE_LABELS[activeProfile];
+  profileNoteEl.textContent = "Active profile: " + APP_PROFILE_LABELS[activeProfile];
 }
 
 async function persistSettings({ verify = false } = {}) {
@@ -51,14 +50,14 @@ async function loadSettings() {
   showProfile(activeProfile);
 }
 
-for (const key of NBU_PROFILES) {
+for (const key of APP_PROFILES) {
   profileButtons[key].addEventListener("click", async () => {
     if (key === activeProfile) return;
     stashFormIntoProfiles();
     showProfile(key);
     try {
       await saveExtensionSettings(activeProfile, profiles);
-      setStatus("Sync target: " + NBU_PROFILE_LABELS[activeProfile] + ".", "ok");
+      setStatus("Active profile: " + APP_PROFILE_LABELS[activeProfile] + ".", "ok");
     } catch (error) {
       setStatus(error.message || String(error), "err");
     }
@@ -66,56 +65,22 @@ for (const key of NBU_PROFILES) {
 }
 
 document.getElementById("save").addEventListener("click", async () => {
-  const baseUrl = normalizeBaseUrl(baseUrlInput.value);
-  const token = normalizeToken(tokenInput.value);
-  if (!baseUrl || !token) {
-    setStatus("Set URL and token for " + NBU_PROFILE_LABELS[activeProfile] + " first.", "err");
+  if (!normalizeBaseUrl(baseUrlInput.value) || !normalizeToken(tokenInput.value)) {
+    setStatus("Set URL and token for " + APP_PROFILE_LABELS[activeProfile] + " first.", "err");
     return;
   }
   try {
     await persistSettings({ verify: true });
-    setStatus(NBU_PROFILE_LABELS[activeProfile] + " saved. Token verified.", "ok");
+    setStatus(APP_PROFILE_LABELS[activeProfile] + " saved. Token verified.", "ok");
   } catch (error) {
     setStatus(error.message || String(error), "err");
   }
 });
 
-document.getElementById("upload").addEventListener("click", async () => {
-  const baseUrl = normalizeBaseUrl(baseUrlInput.value);
-  const token = normalizeToken(tokenInput.value);
-  const files = filesInput.files;
-  if (!baseUrl || !token) {
-    setStatus("Set URL and token for " + NBU_PROFILE_LABELS[activeProfile] + " first.", "err");
-    return;
-  }
-  if (!files?.length) {
-    setStatus("Choose one or more NBU export files.", "err");
-    return;
-  }
-
-  setStatus("Uploading to " + NBU_PROFILE_LABELS[activeProfile] + "…");
-  try {
-    await persistSettings();
-    const form = new FormData();
-    for (const file of files) {
-      form.append("files", file, file.name);
-    }
-    const res = await fetch(baseUrl + "/api/ingest", {
-      method: "POST",
-      headers: { "X-Ingest-Token": token },
-      body: form,
-    });
-    const payload = await res.json();
-    if (!res.ok) {
-      throw new Error(payload.error || "Upload failed");
-    }
-    const count = payload.imports?.length ?? 1;
-    setStatus("Imported " + count + " file(s) to " + NBU_PROFILE_LABELS[activeProfile] + ".", "ok");
-  } catch (error) {
-    setStatus(error.message || String(error), "err");
-  }
-});
-
-document.getElementById("version").textContent = "v" + chrome.runtime.getManifest().version;
-
+const extensionVersion = chrome.runtime.getManifest().version;
+document.getElementById("version").textContent = "v" + extensionVersion;
+const versionFooter = document.getElementById("version-footer");
+if (versionFooter) {
+  versionFooter.textContent = "Extension v" + extensionVersion;
+}
 loadSettings();

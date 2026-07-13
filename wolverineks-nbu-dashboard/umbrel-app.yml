@@ -4,7 +4,7 @@ name: NBU Utilities
 tagline: Electricity and water usage dashboard for New Braunfels Utilities
 icon: https://raw.githubusercontent.com/wolverineks/umbrel_store/master/wolverineks-nbu-dashboard/icon.svg
 category: files
-version: "1.19.0"
+version: "1.21.0"
 port: 4060
 description: >-
   Self-hosted dashboard for New Braunfels Utilities electric and water usage.
@@ -18,8 +18,8 @@ repo: https://github.com/wolverineks/umbrel_store
 support: https://github.com/wolverineks/umbrel_store/issues
 gallery: []
 releaseNotes: >-
-  v1.19.0: Bryant/Carrier-style layout with account selector in header, app branding
-  in sidebar, extension development section on Setup, and compact header controls.
+  v1.21.0: Faster charts for large datasets, Setup controls to clear live records
+  or backup folder, and extension v2.14 with Production/Development profiles.
 dependencies: []
 path: ""
 defaultUsername: ""

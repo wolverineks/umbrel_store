@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -145,6 +145,7 @@ export type UsageSummary = {
   property_id: string | null;
   utility: Utility;
   granularity: Granularity;
+  point_granularity: Granularity;
   date: string | null;
   range_start: string | null;
   range_end: string | null;
@@ -159,9 +160,18 @@ export type UsageSummary = {
 };
 
 const CENTRAL_TZ = "America/Chicago";
+const HOURLY_CHART_DAY_LIMIT = 31;
+
+const centralDateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ });
+const centralHourFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: CENTRAL_TZ,
+  hour: "2-digit",
+  hour12: false,
+});
+const centralTodayFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ });
 
 export function centralLocalDateKey(iso: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date(iso));
+  return centralDateFormatter.format(new Date(iso));
 }
 
 export type CoverageDayStatus = "complete" | "partial" | "missing";
@@ -195,7 +205,7 @@ export type CoverageSummary = {
 };
 
 export function centralTodayKey(): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ }).format(new Date());
+  return centralTodayFormatter.format(new Date());
 }
 
 export function addDaysToDateKey(dateKey: string, days: number): string {
@@ -805,6 +815,31 @@ export async function importParsed(
   return importRecord;
 }
 
+export type ClearUsageResult = {
+  cleared_reading_count: number;
+  cleared_import_count: number;
+};
+
+export async function clearUsageData(): Promise<ClearUsageResult> {
+  const readings = await loadReadings();
+  const imports = await loadImports();
+  const cleared_reading_count = readings.length;
+  const cleared_import_count = imports.length;
+
+  await saveReadings([]);
+  await saveImports([]);
+  await saveSourceErrors([]);
+
+  if (existsSync(UPLOADS_ROOT)) {
+    const entries = await readdir(UPLOADS_ROOT, { withFileTypes: true });
+    for (const entry of entries) {
+      await rm(path.join(UPLOADS_ROOT, entry.name), { recursive: true, force: true });
+    }
+  }
+
+  return { cleared_reading_count, cleared_import_count };
+}
+
 export async function listImports(
   propertyId: string | null = null,
   limit = 500,
@@ -999,8 +1034,8 @@ function buildUsageSources(
 }
 
 function buildUsageMissing(
-  readings: StoredReading[],
-  propertyId: string | null,
+  hourInView: StoredReading[],
+  dayInView: StoredReading[],
   utility: Utility,
   granularity: Granularity,
   days: number | null,
@@ -1009,18 +1044,13 @@ function buildUsageMissing(
   endDate: string | null = null,
 ): UsageMissingPeriod[] {
   const effectiveGranularity = date ? "hour" : granularity;
-  const filtered = excludeTouReadings(
-    filterReadings(readings, propertyId, utility, effectiveGranularity, days, date, endDate),
-  );
+  const filtered = effectiveGranularity === "hour" ? hourInView : dayInView;
   const range = viewRangeKeys(days, date, filtered, effectiveGranularity, endDate);
   if (!range) return [];
 
   if (effectiveGranularity === "hour") {
-    const hourReadings = excludeTouReadings(
-      filterReadings(readings, propertyId, utility, "hour", days, date, endDate),
-    );
     const hoursByDate = new Map<string, number>();
-    for (const reading of hourReadings) {
+    for (const reading of hourInView) {
       const dateKey = centralLocalDateKey(reading.period_start);
       hoursByDate.set(dateKey, (hoursByDate.get(dateKey) ?? 0) + 1);
     }
@@ -1060,13 +1090,17 @@ function buildUsageMissing(
 }
 
 function centralLocalHour(iso: string): number {
-  return Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: CENTRAL_TZ,
-      hour: "2-digit",
-      hour12: false,
-    }).format(new Date(iso)),
-  );
+  return Number(centralHourFormatter.format(new Date(iso)));
+}
+
+function daySpan(start: string, end: string): number {
+  let count = 0;
+  let cursor = start;
+  while (compareDateKeys(cursor, end) <= 0) {
+    count += 1;
+    cursor = addDaysToDateKey(cursor, 1);
+  }
+  return count;
 }
 
 function isFutureHourSlot(dateKey: string, hour: number, todayKey: string): boolean {
@@ -1090,6 +1124,7 @@ function buildHourlyChartPoints(
   range: { start: string; end: string },
 ): UsagePoint[] {
   const todayKey = centralTodayKey();
+  const nowHour = centralLocalHour(new Date().toISOString());
   const valuesBySlot = new Map<string, number>();
   for (const reading of hourReadings) {
     valuesBySlot.set(hourSlotKey(reading), reading.value);
@@ -1098,7 +1133,8 @@ function buildHourlyChartPoints(
   const points: UsagePoint[] = [];
   for (const dateKey of iterateDateKeys(range.start, range.end)) {
     for (let hour = 0; hour < 24; hour++) {
-      if (isFutureHourSlot(dateKey, hour, todayKey)) continue;
+      if (compareDateKeys(dateKey, todayKey) > 0) continue;
+      if (dateKey === todayKey && hour > nowHour) continue;
       const slotKey = `${dateKey}:${hour}`;
       const value = valuesBySlot.get(slotKey);
       const period_start = centralHourSlotIso(dateKey, hour);
@@ -1114,6 +1150,85 @@ function buildHourlyChartPoints(
     }
   }
   return points;
+}
+
+function buildDailyChartPointsFromHourly(
+  hourReadings: StoredReading[],
+  range: { start: string; end: string },
+): UsagePoint[] {
+  const totalsByDate = new Map<string, number>();
+  for (const reading of hourReadings) {
+    const dateKey = centralLocalDateKey(reading.period_start);
+    totalsByDate.set(dateKey, (totalsByDate.get(dateKey) ?? 0) + reading.value);
+  }
+
+  const points: UsagePoint[] = [];
+  for (const dateKey of iterateDateKeys(range.start, range.end)) {
+    const value = totalsByDate.get(dateKey);
+    const period_start = centralHourSlotIso(dateKey, 12);
+    if (value !== undefined) {
+      points.push({ period_start, value: roundUsage(value), missing: false });
+    } else {
+      points.push({ period_start, value: 0, missing: true });
+    }
+  }
+  return points;
+}
+
+type CollectedUsageReadings = {
+  chartHour: StoredReading[];
+  chartDay: StoredReading[];
+  source: StoredReading[];
+};
+
+function collectUsageReadings(
+  readings: StoredReading[],
+  propertyId: string | null,
+  utility: Utility,
+  viewGranularity: Granularity,
+  days: number | null,
+  date: string | null,
+  endDate: string | null,
+): CollectedUsageReadings {
+  const window = date ? null : days ? resolveUsageWindow(days, null, endDate, []) : null;
+  const chartHour: StoredReading[] = [];
+  const chartDay: StoredReading[] = [];
+  const source: StoredReading[] = [];
+
+  for (const reading of readings) {
+    if (!matchesProperty(propertyId, reading.account_id, reading.usage_point)) continue;
+    if (reading.utility !== utility) continue;
+
+    const dateKey = centralLocalDateKey(reading.period_start);
+    if (
+      window &&
+      (compareDateKeys(window.start, dateKey) > 0 || compareDateKeys(dateKey, window.end) > 0)
+    ) {
+      continue;
+    }
+
+    if (date) {
+      if (reading.granularity !== "hour" || dateKey !== date) continue;
+      chartHour.push(reading);
+      source.push(reading);
+      continue;
+    }
+
+    if (reading.granularity === viewGranularity) {
+      source.push(reading);
+    }
+    if (viewGranularity === "hour" && reading.granularity === "hour") {
+      chartHour.push(reading);
+    } else if (viewGranularity === "day" && reading.granularity === "day") {
+      chartDay.push(reading);
+    }
+  }
+
+  const byPeriod = (a: StoredReading, b: StoredReading) => a.period_start.localeCompare(b.period_start);
+  chartHour.sort(byPeriod);
+  chartDay.sort(byPeriod);
+  source.sort(byPeriod);
+  return { chartHour, chartDay, source };
 }
 
 function filterReadings(
@@ -1155,38 +1270,7 @@ export async function getUsageSummary(
   const imports = await loadImports();
   const effectiveGranularity = date ? "hour" : granularity;
   const scopedReadings = excludeTouReadings(readings);
-  const filtered = filterReadings(scopedReadings, propertyId, utility, granularity, days, date, endDate);
-  const hourReadings =
-    effectiveGranularity === "hour"
-      ? filterReadings(scopedReadings, propertyId, utility, "hour", days, date, endDate)
-      : [];
-  const range = viewRangeKeys(days, date, hourReadings.length ? hourReadings : filtered, effectiveGranularity, endDate);
-  let points: UsagePoint[];
-  if (effectiveGranularity === "hour") {
-    points = range ? buildHourlyChartPoints(hourReadings, range) : [];
-  } else {
-    points = filtered.map((r) => ({
-      period_start: r.period_start,
-      value: Math.round(r.value * 1000) / 1000,
-    }));
-  }
-  const dataPoints = points.filter((point) => !point.missing);
-  const total = dataPoints.reduce((sum, p) => sum + p.value, 0);
-  const peak = dataPoints.reduce<UsagePoint | null>((best, point) => {
-    if (!best || point.value > best.value) return point;
-    return best;
-  }, null);
-  const unit =
-    filtered[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
-  const utilityImports = imports.filter(
-    (item) =>
-      matchesProperty(propertyId, item.account_id, item.usage_point) && item.utility === utility,
-  );
-
-  const propertyImports = imports.filter((item) =>
-    matchesProperty(propertyId, item.account_id, item.usage_point),
-  );
-  const sourceReadings = filterReadings(
+  const collected = collectUsageReadings(
     scopedReadings,
     propertyId,
     utility,
@@ -1195,11 +1279,49 @@ export async function getUsageSummary(
     date,
     endDate,
   );
+  const hourReadings = collected.chartHour;
+  const dayReadings = collected.chartDay;
+  const chartSeed = effectiveGranularity === "hour" ? hourReadings : dayReadings;
+  const range = viewRangeKeys(days, date, chartSeed, effectiveGranularity, endDate);
+
+  let points: UsagePoint[];
+  let pointGranularity: Granularity = effectiveGranularity;
+  if (effectiveGranularity === "hour") {
+    if (range && daySpan(range.start, range.end) > HOURLY_CHART_DAY_LIMIT) {
+      points = buildDailyChartPointsFromHourly(hourReadings, range);
+      pointGranularity = "day";
+    } else {
+      points = range ? buildHourlyChartPoints(hourReadings, range) : [];
+    }
+  } else {
+    points = dayReadings.map((r) => ({
+      period_start: r.period_start,
+      value: Math.round(r.value * 1000) / 1000,
+    }));
+  }
+
+  const dataPoints = points.filter((point) => !point.missing);
+  const total = dataPoints.reduce((sum, p) => sum + p.value, 0);
+  const peak = dataPoints.reduce<UsagePoint | null>((best, point) => {
+    if (!best || point.value > best.value) return point;
+    return best;
+  }, null);
+  const unit =
+    dayReadings[0]?.unit ?? hourReadings[0]?.unit ?? (utility === "water" ? "gal" : "kWh");
+
+  let utilityImports: ImportRecord[] = [];
+  const propertyImports: ImportRecord[] = [];
+  for (const item of imports) {
+    if (!matchesProperty(propertyId, item.account_id, item.usage_point)) continue;
+    propertyImports.push(item);
+    if (item.utility === utility) utilityImports.push(item);
+  }
 
   return {
     property_id: propertyId,
     utility,
     granularity: date ? "hour" : granularity,
+    point_granularity: pointGranularity,
     date,
     range_start: range?.start ?? null,
     range_end: range?.end ?? null,
@@ -1208,8 +1330,8 @@ export async function getUsageSummary(
     average: dataPoints.length ? Math.round((total / dataPoints.length) * 1000) / 1000 : 0,
     peak,
     points,
-    sources: buildUsageSources(sourceReadings, propertyImports, objectId, utility),
-    missing: buildUsageMissing(readings, propertyId, utility, granularity, days, date, objectId, endDate),
+    sources: buildUsageSources(collected.source, propertyImports, objectId, utility),
+    missing: buildUsageMissing(hourReadings, dayReadings, utility, granularity, days, date, objectId, endDate),
     last_import_at: utilityImports[0]?.imported_at ?? null,
   };
 }

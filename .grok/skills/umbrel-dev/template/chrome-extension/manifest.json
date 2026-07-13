@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "__APP_NAME__",
+  "version": "0.1.0",
+  "description": "Companion extension for __APP_NAME__ on Umbrel.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "__APP_NAME__",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

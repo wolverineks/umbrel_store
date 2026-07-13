@@ -5,18 +5,10 @@ import path from "node:path";
 const MANIFEST_FILE = "backup-manifest.json";
 const SKIP_NAMES = new Set([".gitkeep"]);
 
-export type BackupObjectId = {
-  property_id: string;
-  label: string;
-  object_id: string;
-};
-
 export type BackupManifest = {
   exported_at: string;
   source: string;
-  reading_count: number;
-  import_count: number;
-  object_id_count: number;
+  file_count: number;
 };
 
 export type BackupStatus = {
@@ -26,59 +18,15 @@ export type BackupStatus = {
   backup_available: boolean;
   backup_writable: boolean;
   backup_writable_error: string | null;
-  live_reading_count: number;
-  live_import_count: number;
-  live_object_id_count: number;
-  live_object_ids: BackupObjectId[];
-  backup_reading_count: number;
-  backup_import_count: number;
-  backup_object_id_count: number;
-  backup_object_ids: BackupObjectId[];
+  live_file_count: number;
+  backup_file_count: number;
   backup_updated_at: string | null;
 };
 
-async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
-  if (!existsSync(filePath)) return fallback;
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-async function countReadings(dataDir: string): Promise<number> {
-  const parsed = await readJsonFile<{ readings?: unknown[] }>(
-    path.join(dataDir, "readings.json"),
-    { readings: [] },
-  );
-  return Array.isArray(parsed.readings) ? parsed.readings.length : 0;
-}
-
-async function countImports(dataDir: string): Promise<number> {
-  const parsed = await readJsonFile<unknown[]>(path.join(dataDir, "imports.json"), []);
-  return Array.isArray(parsed) ? parsed.length : 0;
-}
-
-type SettingsSnapshot = {
-  property_object_ids?: Record<string, string>;
-  property_labels?: Record<string, string>;
-  property_addresses?: Record<string, string>;
-};
-
-async function readObjectIds(dataDir: string): Promise<BackupObjectId[]> {
-  const settings = await readJsonFile<SettingsSnapshot>(path.join(dataDir, "settings.json"), {});
-  const objectIds = settings.property_object_ids ?? {};
-  const addresses = settings.property_addresses ?? {};
-  const labels = settings.property_labels ?? {};
-  return Object.entries(objectIds)
-    .map(([property_id, object_id]) => ({
-      property_id,
-      label: addresses[property_id]?.trim() || labels[property_id]?.trim() || property_id,
-      object_id: String(object_id).trim(),
-    }))
-    .filter((item) => item.object_id)
-    .sort((a, b) => a.label.localeCompare(b.label));
+async function countDataFiles(dataDir: string): Promise<number> {
+  if (!existsSync(dataDir)) return 0;
+  const entries = await readdir(dataDir, { withFileTypes: true });
+  return entries.filter((entry) => entry.isFile() && !SKIP_NAMES.has(entry.name)).length;
 }
 
 async function isWritableDir(dir: string): Promise<{ ok: boolean; error: string | null }> {
@@ -151,11 +99,8 @@ async function syncDirectory(source: string, destination: string): Promise<void>
   }
 }
 
-function looksLikeNbuBackup(backupDir: string): boolean {
-  return (
-    existsSync(path.join(backupDir, "readings.json")) ||
-    existsSync(path.join(backupDir, "settings.json"))
-  );
+function looksLikeBackup(backupDir: string): boolean {
+  return existsSync(path.join(backupDir, "settings.json"));
 }
 
 export async function getBackupStatus(
@@ -163,12 +108,9 @@ export async function getBackupStatus(
   backupDir: string,
   backupHostPath: string,
 ): Promise<BackupStatus> {
-  const backupAvailable = existsSync(backupDir) && looksLikeNbuBackup(backupDir);
+  const backupAvailable = existsSync(backupDir) && looksLikeBackup(backupDir);
   const manifest = backupAvailable ? await readManifest(backupDir) : null;
   const writable = await isWritableDir(backupDir);
-
-  const liveObjectIds = await readObjectIds(dataDir);
-  const backupObjectIds = backupAvailable ? await readObjectIds(backupDir) : [];
 
   return {
     data_dir: dataDir,
@@ -177,19 +119,13 @@ export async function getBackupStatus(
     backup_available: backupAvailable,
     backup_writable: writable.ok,
     backup_writable_error: writable.error,
-    live_reading_count: await countReadings(dataDir),
-    live_import_count: await countImports(dataDir),
-    live_object_id_count: liveObjectIds.length,
-    live_object_ids: liveObjectIds,
-    backup_reading_count: backupAvailable ? await countReadings(backupDir) : 0,
-    backup_import_count: backupAvailable ? await countImports(backupDir) : 0,
-    backup_object_id_count: backupObjectIds.length,
-    backup_object_ids: backupObjectIds,
+    live_file_count: await countDataFiles(dataDir),
+    backup_file_count: backupAvailable ? await countDataFiles(backupDir) : 0,
     backup_updated_at: manifest?.exported_at ?? null,
   };
 }
 
-export async function exportNbuData(
+export async function exportAppData(
   dataDir: string,
   backupDir: string,
   backupHostPath: string,
@@ -202,26 +138,22 @@ export async function exportNbuData(
   }
 
   await syncDirectory(dataDir, backupDir);
-
-  const liveObjectIds = await readObjectIds(dataDir);
   const manifest: BackupManifest = {
     exported_at: new Date().toISOString(),
     source: dataDir,
-    reading_count: await countReadings(dataDir),
-    import_count: await countImports(dataDir),
-    object_id_count: liveObjectIds.length,
+    file_count: await countDataFiles(dataDir),
   };
   await writeFile(path.join(backupDir, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
   return getBackupStatus(dataDir, backupDir, backupHostPath);
 }
 
-export async function importNbuData(
+export async function importAppData(
   dataDir: string,
   backupDir: string,
   backupHostPath: string,
 ): Promise<BackupStatus> {
-  if (!existsSync(backupDir) || !looksLikeNbuBackup(backupDir)) {
+  if (!existsSync(backupDir) || !looksLikeBackup(backupDir)) {
     throw new Error("No backup found. Run Back up now first.");
   }
 
@@ -231,7 +163,7 @@ export async function importNbuData(
   return getBackupStatus(dataDir, backupDir, backupHostPath);
 }
 
-export async function clearNbuBackup(
+export async function clearAppBackup(
   dataDir: string,
   backupDir: string,
   backupHostPath: string,

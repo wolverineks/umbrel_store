@@ -1,0 +1,4 @@
+.local-data/
+.local-backup/
+node_modules/
+dist/

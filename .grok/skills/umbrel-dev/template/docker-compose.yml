@@ -1,0 +1,28 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: __APP_ID___server_1
+      APP_PORT: 3000
+
+  server:
+    image: node:22-alpine
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /data /backup
+        chown -R 1000:1000 /data /backup
+        exec su -s /bin/sh node -c "node /app/server.js"
+    volumes:
+      - ${APP_DATA_DIR}/site:/app:ro
+      - ${APP_DATA_DIR}/data:/data
+      - ${__ENV_PREFIX___BACKUP_HOST_DIR:-__BACKUP_HOST_PATH__}:/backup
+    environment:
+      __ENV_PREFIX___DATA_DIR: /data
+      __ENV_PREFIX___BACKUP_DIR: /backup
+      __ENV_PREFIX___BACKUP_HOST_PATH: ${__ENV_PREFIX___BACKUP_HOST_DIR:-__BACKUP_HOST_PATH__}
+      NODE_ENV: production
+    restart: on-failure
+    init: true

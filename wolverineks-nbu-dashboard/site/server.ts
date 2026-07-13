@@ -1,10 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { exportNbuData, getBackupStatus, importNbuData } from "./backup-restore";
+import { clearNbuBackup, exportNbuData, getBackupStatus, importNbuData } from "./backup-restore";
 import { parseNbuExport, type Granularity, type Utility } from "./parsers";
 import {
+  clearUsageData,
   getCoverageSummary,
   getMissingSources,
   getOverview,
@@ -26,7 +28,7 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.19.0";
+const APP_VERSION = "1.21.0";
 const IS_LOCAL_DEV = process.env.NBU_DEV === "1";
 const EXTENSION_REPO_URL =
   "https://github.com/wolverineks/umbrel_store/tree/master/wolverineks-nbu-dashboard/chrome-extension";
@@ -173,7 +175,7 @@ function dashboardPageContent(page: DashboardPage): string {
       return `
       <div class="card">
         <h2>NBU Utilities extension</h2>
-        <p class="muted">Configure the Chrome extension with your Umbrel URL and ingest token, then sync from Customer Connect.</p>
+        <p class="muted">Configure the Chrome extension with your Umbrel URL and ingest token for Production and, if needed, Development. The selected profile in the popup is used for Customer Connect sync.</p>
         <h3 class="setup-section-title">Connect</h3>
         <div class="setup-field">
           <label for="extension-base-url">Umbrel app URL</label>
@@ -202,7 +204,7 @@ function dashboardPageContent(page: DashboardPage): string {
             (<code>${EXTENSION_FOLDER}</code> in <code>umbrel_store</code>).
           </li>
           <li>Chrome → Extensions → enable <strong>Developer mode</strong> → <strong>Load unpacked</strong> → select that folder.</li>
-          <li>Paste the Umbrel URL and ingest token into the extension popup, then click <strong>Save settings</strong>.</li>
+          <li>In the extension popup, choose <strong>Production</strong> or <strong>Development</strong>, paste this dashboard's URL and ingest token, then click <strong>Save settings</strong> for each profile you use.</li>
           <li>
             Open a Customer Connect consumption report. Use the floating sync panel for
             <strong>Sync last 30 days</strong> or <strong>Sync full history</strong>.
@@ -246,6 +248,15 @@ function dashboardPageContent(page: DashboardPage): string {
         <div class="toolbar" style="margin-top:0.8rem; margin-bottom:0">
           <button id="backup-export-btn">Back up now</button>
           <button id="backup-import-btn" class="secondary">Restore from backup</button>
+        </div>
+        <h3 style="margin:1.25rem 0 0.35rem;font-size:0.95rem;color:var(--muted)">Clear data</h3>
+        <p class="muted" style="margin:0 0 0.75rem">
+          Remove usage records or the backup folder. Clearing live records keeps your ingest token,
+          Object IDs, and property settings so you can resync from the extension.
+        </p>
+        <div class="toolbar" style="margin-bottom:0">
+          <button id="clear-records-btn" class="danger secondary">Clear live records</button>
+          <button id="clear-backup-btn" class="danger secondary">Clear backup folder</button>
         </div>
       </div>`;
   }
@@ -807,6 +818,15 @@ function pageStyles(): string {
       color: var(--text);
       border-color: var(--border);
     }
+    button.danger {
+      color: #b91c1c;
+      border-color: #fecaca;
+      background: #fef2f2;
+    }
+    button.danger:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .chart-wrap {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -815,6 +835,13 @@ function pageStyles(): string {
       box-shadow: var(--shadow);
       margin-bottom: 1.5rem;
       width: 100%;
+    }
+    .chart-wrap.loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+    .chart-shell[data-drillable="1"] .chart-bar {
+      cursor: pointer;
     }
     .chart-shell {
       position: relative;
@@ -1598,10 +1625,15 @@ function dashboardPage(page: DashboardPage): string {
       });
     }
 
+    function chartPointGranularity(usage) {
+      return usage.point_granularity || usage.granularity;
+    }
+
     function fmtTooltipHtml(point, unit, granularity) {
       const label = fmtTooltipLabel(point.period_start, granularity);
       if (point.missing) {
-        return \`\${label}<br><strong>Missing hour</strong>\`;
+        const missingLabel = granularity === "hour" ? "Missing hour" : "Missing day";
+        return \`\${label}<br><strong>\${missingLabel}</strong>\`;
       }
       const value = Number(point.value).toFixed(2);
       return \`\${label}<br><strong>\${value} \${unit}</strong>\`;
@@ -1615,38 +1647,51 @@ function dashboardPage(page: DashboardPage): string {
       tooltip.style.top = (event.clientY - rect.top) + "px";
     }
 
-    function bindChartHover(usage) {
+    let chartInteractionsReady = false;
+
+    function ensureChartInteractions() {
+      if (chartInteractionsReady) return;
+      const shell = document.querySelector(".chart-shell");
+      if (!shell) return;
+      chartInteractionsReady = true;
       const tooltip = document.getElementById("chart-tooltip");
-      const granularity = usage.granularity;
-      const bars = document.querySelectorAll(".chart-bar");
-      bars.forEach((bar) => {
-        bar.addEventListener("mouseenter", (event) => {
-          const index = Number(bar.dataset.index);
-          const point = usage.points[index];
-          if (!point) return;
-          tooltip.innerHTML = fmtTooltipHtml(point, usage.unit, granularity);
-          tooltip.hidden = false;
-          positionChartTooltip(event, tooltip);
-        });
-        bar.addEventListener("mousemove", (event) => positionChartTooltip(event, tooltip));
-        bar.addEventListener("mouseleave", () => {
-          tooltip.hidden = true;
-        });
-        if (granularity === "day" && !usage.date) {
-          bar.style.cursor = "pointer";
-          bar.addEventListener("click", () => {
-            const index = Number(bar.dataset.index);
-            const point = usage.points[index];
-            if (!point) return;
-            const dayInput = document.getElementById("day");
-            if (!dayInput) return;
-            clearRangeEnd();
-            dayInput.value = centralLocalDateKey(point.period_start);
-            syncDayControls();
-            loadUsage();
-          });
-        }
+
+      shell.addEventListener("mousemove", (event) => {
+        const bar = event.target.closest?.(".chart-bar");
+        if (!bar || !state.usage) return;
+        const index = Number(bar.dataset.index);
+        const point = state.usage.points[index];
+        if (!point || !tooltip) return;
+        tooltip.innerHTML = fmtTooltipHtml(point, state.usage.unit, chartPointGranularity(state.usage));
+        tooltip.hidden = false;
+        positionChartTooltip(event, tooltip);
       });
+
+      shell.addEventListener("mouseleave", () => {
+        if (tooltip) tooltip.hidden = true;
+      });
+
+      shell.addEventListener("click", (event) => {
+        const bar = event.target.closest?.(".chart-bar");
+        if (!bar || !state.usage) return;
+        if (chartPointGranularity(state.usage) !== "day" || state.usage.date) return;
+        const index = Number(bar.dataset.index);
+        const point = state.usage.points[index];
+        if (!point) return;
+        const dayInput = document.getElementById("day");
+        if (!dayInput) return;
+        clearRangeEnd();
+        dayInput.value = centralLocalDateKey(point.period_start);
+        syncDayControls();
+        loadUsage();
+      });
+    }
+
+    function scheduleChartSources() {
+      const run = window.requestIdleCallback
+        ? (cb) => window.requestIdleCallback(cb, { timeout: 1200 })
+        : (cb) => window.setTimeout(cb, 16);
+      run(() => renderChartSources());
     }
 
     function renderStats() {
@@ -1872,7 +1917,11 @@ function dashboardPage(page: DashboardPage): string {
         \${bars}
         \${labels}
       \`;
-      bindChartHover(usage);
+      const shell = document.querySelector(".chart-shell");
+      if (shell) {
+        shell.dataset.drillable =
+          chartPointGranularity(usage) === "day" && !usage.date ? "1" : "0";
+      }
     }
 
     function fmtCoverageDate(dateKey) {
@@ -1964,8 +2013,7 @@ function dashboardPage(page: DashboardPage): string {
       switch (APP_PAGE) {
         case "overview":
           renderStats();
-          await loadUsage();
-          await loadCoverage();
+          await Promise.all([loadUsage(), loadCoverage()]);
           break;
         case "sources":
           await loadMissingSources();
@@ -1988,8 +2036,8 @@ function dashboardPage(page: DashboardPage): string {
         case "overview":
           applyUsageQueryParams();
           renderStats();
-          await loadUsage();
-          await loadCoverage();
+          ensureChartInteractions();
+          await Promise.all([loadUsage(), loadCoverage()]);
           break;
         case "sources":
           await loadMissingSources();
@@ -2188,10 +2236,16 @@ function dashboardPage(page: DashboardPage): string {
         if (rangeEnd) params.set("end", rangeEnd);
       }
       syncDayControls();
-      const res = await fetch("/api/usage?" + params.toString());
-      state.usage = await res.json();
-      renderChart();
-      renderChartSources();
+      const chartWrap = document.querySelector(".chart-wrap");
+      if (chartWrap) chartWrap.classList.add("loading");
+      try {
+        const res = await fetch("/api/usage?" + params.toString());
+        state.usage = await res.json();
+        renderChart();
+        scheduleChartSources();
+      } finally {
+        if (chartWrap) chartWrap.classList.remove("loading");
+      }
     }
 
     async function savePropertySelection(propertyId) {
@@ -2344,6 +2398,8 @@ function dashboardPage(page: DashboardPage): string {
       const statusEl = document.getElementById("backup-status");
       const exportBtn = document.getElementById("backup-export-btn");
       const importBtn = document.getElementById("backup-import-btn");
+      const clearRecordsBtn = document.getElementById("clear-records-btn");
+      const clearBackupBtn = document.getElementById("clear-backup-btn");
       if (message && statusEl) statusEl.textContent = message;
       try {
         const response = await fetch("/api/backup/status");
@@ -2387,6 +2443,12 @@ function dashboardPage(page: DashboardPage): string {
         }
         if (exportBtn) exportBtn.disabled = !payload.backup_writable;
         if (importBtn) importBtn.disabled = !payload.backup_available;
+        if (clearRecordsBtn) {
+          clearRecordsBtn.disabled = !(payload.live_reading_count || payload.live_import_count);
+        }
+        if (clearBackupBtn) {
+          clearBackupBtn.disabled = !payload.backup_writable || !payload.backup_available;
+        }
       } catch (error) {
         if (liveSummary) liveSummary.textContent = "Unavailable";
         if (folderSummary) folderSummary.textContent = "Unavailable";
@@ -2395,6 +2457,8 @@ function dashboardPage(page: DashboardPage): string {
         if (statusEl) statusEl.textContent = error.message || "Could not load backup status.";
         if (exportBtn) exportBtn.disabled = true;
         if (importBtn) importBtn.disabled = true;
+        if (clearRecordsBtn) clearRecordsBtn.disabled = true;
+        if (clearBackupBtn) clearBackupBtn.disabled = true;
       }
     }
 
@@ -2434,6 +2498,65 @@ function dashboardPage(page: DashboardPage): string {
       } catch (error) {
         const statusEl = document.getElementById("backup-status");
         if (statusEl) statusEl.textContent = error.message || "Restore failed.";
+        await refreshBackupStatus();
+      }
+    });
+
+    on("clear-records-btn", "click", async () => {
+      if (
+        !confirm(
+          "Clear all live usage records, imports, and uploaded files? Your ingest token, Object IDs, and property settings will be kept. You can resync from the extension.",
+        )
+      ) {
+        return;
+      }
+      const clearRecordsBtn = document.getElementById("clear-records-btn");
+      const clearBackupBtn = document.getElementById("clear-backup-btn");
+      if (clearRecordsBtn) clearRecordsBtn.disabled = true;
+      if (clearBackupBtn) clearBackupBtn.disabled = true;
+      await refreshBackupStatus("Clearing live records…");
+      try {
+        const response = await fetch("/api/data/clear", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Clear failed.");
+        await refreshBackupStatus(
+          "Cleared " +
+            payload.cleared_reading_count +
+            " readings and " +
+            payload.cleared_import_count +
+            " imports.",
+        );
+        window.location.href = "/";
+      } catch (error) {
+        const statusEl = document.getElementById("backup-status");
+        if (statusEl) statusEl.textContent = error.message || "Clear failed.";
+        await refreshBackupStatus();
+      }
+    });
+
+    on("clear-backup-btn", "click", async () => {
+      const hostPath =
+        document.getElementById("backup-host-path")?.textContent?.trim() || "/home/umbrel/nbu-backup";
+      if (
+        !confirm(
+          "Delete everything in the backup folder at " + hostPath + "? This cannot be undone.",
+        )
+      ) {
+        return;
+      }
+      const clearRecordsBtn = document.getElementById("clear-records-btn");
+      const clearBackupBtn = document.getElementById("clear-backup-btn");
+      if (clearRecordsBtn) clearRecordsBtn.disabled = true;
+      if (clearBackupBtn) clearBackupBtn.disabled = true;
+      await refreshBackupStatus("Clearing backup folder…");
+      try {
+        const response = await fetch("/api/backup/clear", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Clear backup failed.");
+        await refreshBackupStatus("Backup folder cleared.");
+      } catch (error) {
+        const statusEl = document.getElementById("backup-status");
+        if (statusEl) statusEl.textContent = error.message || "Clear backup failed.";
         await refreshBackupStatus();
       }
     });
@@ -2664,7 +2787,15 @@ const server = createServer(async (req, res) => {
       const date = parseDateParam(url.searchParams.get("date"));
       const days = date ? null : parseDays(url.searchParams.get("days"));
       const endDate = date || !days ? null : parseDateParam(url.searchParams.get("end"));
-      sendJson(res, 200, await getUsageSummary(propertyId, utility, granularity, days, date, endDate));
+      const started = performance.now();
+      const summary = await getUsageSummary(propertyId, utility, granularity, days, date, endDate);
+      const elapsed = performance.now() - started;
+      if (elapsed >= 750) {
+        console.warn(
+          `[nbu] slow /api/usage ${Math.round(elapsed)}ms property=${propertyId ?? "all"} days=${days ?? "n/a"} granularity=${granularity} points=${summary.points.length}`,
+        );
+      }
+      sendJson(res, 200, summary);
       return;
     }
 
@@ -2749,6 +2880,26 @@ const server = createServer(async (req, res) => {
         const status = await importNbuData(DATA_ROOT, BACKUP_ROOT, BACKUP_HOST_PATH);
         resetStoreCaches();
         sendJson(res, 200, status);
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/backup/clear") {
+      try {
+        const status = await clearNbuBackup(DATA_ROOT, BACKUP_ROOT, BACKUP_HOST_PATH);
+        sendJson(res, 200, status);
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/data/clear") {
+      try {
+        const result = await clearUsageData();
+        sendJson(res, 200, result);
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }

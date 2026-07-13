@@ -6,7 +6,7 @@
     body {
       font: 14px/1.4 system-ui, sans-serif;
       margin: 0;
-      width: 320px;
+      width: 340px;
       color: #0f172a;
     }
     .wrap { padding: 14px; }
@@ -33,6 +33,29 @@
       background: #fff;
       color: #0f172a;
     }
+    .profile-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .profile-tabs button {
+      margin-bottom: 0;
+      background: #f8fafc;
+      color: #0f172a;
+      border-color: #cbd5e1;
+      font-weight: 600;
+    }
+    .profile-tabs button.active {
+      background: #dbeafe;
+      border-color: #1d4ed8;
+      color: #1d4ed8;
+    }
+    .profile-note {
+      font-size: 12px;
+      color: #64748b;
+      margin: -4px 0 10px;
+    }
     .status { color: #64748b; min-height: 1.2em; font-size: 12px; }
     .ok { color: #16a34a; }
     .err { color: #dc2626; }
@@ -43,11 +66,16 @@
 <body>
   <div class="wrap">
     <h1>NBU Utilities <span id="version" class="version"></span></h1>
-    <p>On Customer Connect, use the floating sync panel on report pages to pull hourly CSV exports. Umbrel URL must match your browser address bar when the dashboard is open (not a redirect).</p>
+    <p>Store both production and development Umbrel endpoints. The selected profile is used for Customer Connect sync and manual uploads.</p>
+    <div class="profile-tabs">
+      <button type="button" id="profile-prod" class="active">Production</button>
+      <button type="button" id="profile-dev">Development</button>
+    </div>
+    <p class="profile-note" id="profile-note">Sync target: Production</p>
     <label for="baseUrl">Umbrel app URL</label>
     <input id="baseUrl" placeholder="copy from browser address bar">
     <label for="token">Ingest token</label>
-    <input id="token" placeholder="from dashboard settings">
+    <input id="token" placeholder="from dashboard Setup">
     <button id="save">Save settings</button>
     <button id="upload" class="secondary">Upload files manually</button>
     <input id="files" type="file" multiple accept=".xml,.csv,text/xml,text/csv">
@@ -58,6 +86,7 @@
     </ol>
     <div class="status" id="status"></div>
   </div>
+  <script src="settings.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -116,6 +116,7 @@
         <button class="nbu-secondary" id="nbu-sync-all" type="button">Sync full history</button>
         <button class="nbu-secondary" id="nbu-sync-plan" type="button">Preview sync plan</button>
         <button class="nbu-secondary" id="nbu-copy-object-id" type="button">Copy Object ID</button>
+        <div class="nbu-mini" id="nbu-sync-target">Sync target: …</div>
         <div class="nbu-mini">Sync fetches hourly CSV per day.</div>
         <div class="nbu-mini">Copy Object ID and paste it into the Umbrel dashboard for verify snippets.</div>
       </div>
@@ -311,10 +312,39 @@
     }
   });
 
+  async function refreshSyncTargetLabel() {
+    const el = document.getElementById("nbu-sync-target");
+    if (!el) return;
+    try {
+      const stored = await chrome.storage.sync.get(["activeProfile", "profiles", "baseUrl", "token"]);
+      let activeProfile = stored.activeProfile === "dev" ? "dev" : "prod";
+      let profile = stored.profiles?.[activeProfile];
+      if (!profile && (stored.baseUrl || stored.token)) {
+        profile = { baseUrl: stored.baseUrl, token: stored.token };
+        activeProfile = "prod";
+      }
+      const label = activeProfile === "dev" ? "Development" : "Production";
+      const baseUrl = profile?.baseUrl?.trim().replace(/\/$/, "") || "";
+      el.textContent = baseUrl
+        ? `Sync target: ${label} · ${baseUrl}`
+        : `Sync target: ${label} (not configured)`;
+    } catch {
+      el.textContent = "Sync target: unavailable";
+    }
+  }
+
   function boot() {
     injectPageBridge();
     ensurePanel();
+    void refreshSyncTargetLabel();
   }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "sync") return;
+    if (changes.activeProfile || changes.profiles || changes.baseUrl || changes.token) {
+      void refreshSyncTargetLabel();
+    }
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", boot);

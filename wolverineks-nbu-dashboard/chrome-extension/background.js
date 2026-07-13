@@ -1,3 +1,5 @@
+importScripts("settings.js");
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "upload-export") {
     void uploadExport(message.filename, message.content, message.address ?? null)
@@ -29,13 +31,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function umbrelSettings() {
-  const stored = await chrome.storage.sync.get(["baseUrl", "token"]);
-  const baseUrl = stored.baseUrl?.trim().replace(/\/$/, "") ?? "";
-  const token = stored.token?.trim() ?? "";
-  if (!baseUrl || !token) {
-    throw new Error("Configure Umbrel URL and ingest token in the extension popup.");
-  }
-  return { baseUrl, token };
+  return getActiveUmbrelSettings();
 }
 
 async function umbrelFetch(path, init = {}) {
@@ -93,7 +89,10 @@ async function uploadExport(filename, content, address = null) {
     return await uploadExportPayload(filename, content, address);
   } catch (error) {
     if (isIngestAuthError(error)) {
-      throw new Error("invalid ingest token. Copy the current token from the Umbrel dashboard Setup page.");
+      const { profileLabel } = await getActiveUmbrelSettings().catch(() => ({ profileLabel: "the active profile" }));
+      throw new Error(
+        `invalid ingest token for ${profileLabel}. Copy the current token from that dashboard's Setup page.`,
+      );
     }
     throw error;
   }

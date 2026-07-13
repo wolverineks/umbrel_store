@@ -1,0 +1,16 @@
+{
+  "name": "__APP_ID__",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc && cp dist/server.js server.js && cp dist/store.js store.js && cp dist/backup-restore.js backup-restore.js && cp icon.svg dist/icon.svg 2>/dev/null || cp icon.svg .",
+    "start": "node server.js",
+    "dev": "tsc --watch",
+    "dev:local": "__ENV_PREFIX___DEV=1 __ENV_PREFIX___DATA_DIR=./.local-data __ENV_PREFIX___BACKUP_DIR=./.local-backup PORT=__APP_PORT__ tsx watch server.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}

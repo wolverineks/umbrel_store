@@ -1,0 +1,18 @@
+# Local development — faster iteration than Umbrel deployment.
+# From __APP_ID__/: docker compose -f docker-compose.dev.yml up
+version: "3.7"
+
+services:
+  server:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev:local"
+    ports:
+      - "__APP_PORT__:__APP_PORT__"
+    volumes:
+      - ./site:/app
+    environment:
+      __ENV_PREFIX___DEV: "1"
+      __ENV_PREFIX___DATA_DIR: /app/.local-data
+      PORT: "__APP_PORT__"
+    init: true
