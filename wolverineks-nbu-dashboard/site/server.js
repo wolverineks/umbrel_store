@@ -113,7 +113,7 @@ function coverageSection() {
 function dashboardPageContent(page) {
     switch (page) {
         case "overview":
-            return `<div class="grid" id="stats"></div>${usageChartSection()}${coverageSection()}`;
+            return `<div class="grid stats-grid" id="stats"></div>${usageChartSection()}${coverageSection()}`;
         case "sources":
             return `
       <div class="card" id="missing-sources-card">
@@ -624,6 +624,9 @@ function pageStyles() {
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 1rem;
       margin-bottom: 1.5rem;
+    }
+    .stats-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .card {
       background: var(--panel);
@@ -1145,6 +1148,18 @@ function pageStyles() {
       padding: 0.15rem 0.4rem;
     }
     @media (max-width: 640px) {
+      .stats-grid .card {
+        padding: 0.85rem 0.7rem;
+      }
+      .stats-grid .card h3 {
+        font-size: 0.8rem;
+      }
+      .stats-grid .metric {
+        font-size: 1.5rem;
+      }
+      .stats-grid .metric small {
+        font-size: 0.78rem;
+      }
       .chart-wrap:not(.is-fullscreen) {
         padding: 0.75rem 0.85rem 1rem;
       }
