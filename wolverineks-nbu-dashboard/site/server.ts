@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { exportNbuData, getBackupStatus, importNbuData } from "./backup-restore";
@@ -25,7 +26,24 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.18.7";
+const APP_VERSION = "1.19.0";
+const IS_LOCAL_DEV = process.env.NBU_DEV === "1";
+const EXTENSION_REPO_URL =
+  "https://github.com/wolverineks/umbrel_store/tree/master/wolverineks-nbu-dashboard/chrome-extension";
+const EXTENSION_FOLDER = "wolverineks-nbu-dashboard/chrome-extension";
+
+function loadExtensionVersion(): string {
+  const manifestPath = path.join(__dirname, "..", "chrome-extension", "manifest.json");
+  if (!existsSync(manifestPath)) return "2.13.0";
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: string };
+    return manifest.version?.trim() || "2.13.0";
+  } catch {
+    return "2.13.0";
+  }
+}
+
+const EXTENSION_VERSION = loadExtensionVersion();
 
 type DashboardPage =
   | "overview"
@@ -65,30 +83,14 @@ function renderSideNav(active: DashboardPage): string {
     .join("\n          ");
 }
 
-function globalContextBar(page: DashboardPage): string {
-  const utilityToolbar =
-    page === "setup"
-      ? ""
-      : `
-        <div class="toolbar" style="margin-bottom:0">
-          <label class="muted" for="utility" style="font-weight:600">Utility</label>
-          <select id="utility">
+function headerUtilitySelect(page: DashboardPage): string {
+  if (page === "setup") return "";
+  return `
+          <label class="header-utility-label muted" for="utility">Utility</label>
+          <select id="utility" class="header-utility-select" aria-label="Select utility">
             <option value="electric">Electric</option>
             <option value="water">Water</option>
-          </select>
-        </div>`;
-  const accountLine =
-    page === "setup"
-      ? '<p class="property-account muted" id="property-account">Account —</p>'
-      : "";
-  return `
-      <div class="global-context card" style="margin-bottom:1rem">
-        <div class="property-bar">
-          <select id="property"></select>
-          ${accountLine}
-        </div>
-        ${utilityToolbar}
-      </div>`;
+          </select>`;
 }
 
 function usageChartSection(): string {
@@ -171,12 +173,48 @@ function dashboardPageContent(page: DashboardPage): string {
       return `
       <div class="card">
         <h2>NBU Utilities extension</h2>
-        <p class="muted">Configure the NBU Utilities Chrome extension with your Umbrel URL and ingest token.</p>
-        <div class="token-box" style="margin-top:0.8rem">
-          <code id="token"></code>
-          <button id="copy-token" class="secondary">Copy token</button>
-          <button id="rotate-token" class="secondary">Rotate token</button>
+        <p class="muted">Configure the Chrome extension with your Umbrel URL and ingest token, then sync from Customer Connect.</p>
+        <h3 class="setup-section-title">Connect</h3>
+        <div class="setup-field">
+          <label for="extension-base-url">Umbrel app URL</label>
+          <p class="muted setup-field-note">Copy from your browser address bar when this dashboard is open (include port, e.g. <code>:4060</code>).</p>
+          <div class="token-box">
+            <code id="extension-base-url">Loading…</code>
+            <button id="copy-base-url" class="secondary" type="button">Copy URL</button>
+          </div>
         </div>
+        <div class="setup-field">
+          <label for="token">Ingest token</label>
+          <p class="muted setup-field-note">Saved in <code>settings.json</code>. Rotate only if the token was compromised.</p>
+          <div class="token-box">
+            <code id="token"></code>
+            <button id="copy-token" class="secondary" type="button">Copy token</button>
+            <button id="copy-extension-settings" class="secondary" type="button">Copy both</button>
+            <button id="rotate-token" class="secondary" type="button">Rotate token</button>
+          </div>
+        </div>
+        <h3 class="setup-section-title">Development</h3>
+        <p class="muted">Load the extension unpacked while working on sync or upload changes.</p>
+        <ol class="setup-steps">
+          <li>
+            Get the extension from
+            <a href="${EXTENSION_REPO_URL}" target="_blank" rel="noreferrer">GitHub</a>
+            (<code>${EXTENSION_FOLDER}</code> in <code>umbrel_store</code>).
+          </li>
+          <li>Chrome → Extensions → enable <strong>Developer mode</strong> → <strong>Load unpacked</strong> → select that folder.</li>
+          <li>Paste the Umbrel URL and ingest token into the extension popup, then click <strong>Save settings</strong>.</li>
+          <li>
+            Open a Customer Connect consumption report. Use the floating sync panel for
+            <strong>Sync last 30 days</strong> or <strong>Sync full history</strong>.
+          </li>
+          <li>After editing extension files, click <strong>Reload</strong> on <code>chrome://extensions</code>.</li>
+        </ol>
+        <p class="muted setup-dev-meta">
+          Extension v${EXTENSION_VERSION} · Dashboard local dev:
+          <code>npm run dev:local</code> in <code>site/</code> (port 4060) or
+          <code>docker compose -f docker-compose.dev.yml up</code>
+          ${IS_LOCAL_DEV ? " · <strong>Local dev mode is active</strong>" : ""}
+        </p>
       </div>
       <div class="card" style="margin-top:1rem">
         <h2>Backup &amp; restore</h2>
@@ -185,7 +223,7 @@ function dashboardPageContent(page: DashboardPage): string {
           <code id="backup-host-path">${BACKUP_HOST_PATH}</code> on your Umbrel. Restore brings all of that back.
         </p>
         <h3 style="margin:1rem 0 0.35rem;font-size:0.95rem;color:var(--muted)">NBU Object ID</h3>
-        <p class="muted" style="margin:0 0 0.75rem">Per property (selected above). Saved in <code>settings.json</code> and included in backup/restore.</p>
+        <p class="muted" style="margin:0 0 0.75rem">Per account (selected in the header). Saved in <code>settings.json</code> and included in backup/restore.</p>
         <div class="toolbar" style="margin-bottom:0">
           <input id="property-object-id" type="text" placeholder="NBU Object ID" title="Customer Connect ObjectId for hourly CSV export URLs" style="min-width:280px;flex:1">
           <button id="save-object-id" class="secondary">Save Object ID</button>
@@ -426,22 +464,44 @@ function pageStyles(): string {
       display: flex;
       flex-direction: column;
       min-height: 100%;
-      padding: 1rem 0.85rem 1.25rem;
+      padding: 1.5rem 1rem 1.25rem;
     }
-    .side-nav-label {
-      margin: 0 0 0.65rem;
-      padding: 0 0.4rem;
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+    .brand {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      padding: 0 0.5rem;
+    }
+    .brand img {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+    .brand h1 {
+      font-size: 1rem;
+      margin: 0;
+      line-height: 1.2;
+    }
+    .brand p {
+      margin: 0.15rem 0 0;
       color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.35;
     }
     .side-nav-links {
       display: flex;
       flex-direction: column;
       gap: 0.2rem;
       flex: 1;
+    }
+    .sidebar-version {
+      margin-top: auto;
+      padding: 0.75rem 0.85rem 0;
+      font-size: 0.7rem;
+      color: var(--muted);
+      opacity: 0.65;
     }
     .side-nav-link {
       display: block;
@@ -508,38 +568,77 @@ function pageStyles(): string {
       align-items: center;
       gap: 0.85rem;
       min-width: 0;
+      flex: 0 1 auto;
     }
-    .app-header-brand img {
-      width: 38px;
-      height: 38px;
-      border-radius: 11px;
+    .app-header-copy {
+      min-width: 0;
+      flex: 0 1 auto;
+    }
+    .header-account-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      white-space: nowrap;
       flex-shrink: 0;
     }
-    .app-header-text { min-width: 0; }
+    .account-selector {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid transparent;
+      border-radius: 0.5rem;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      padding: 0.1rem 1.4rem 0.1rem 0;
+      margin: 0;
+      width: auto;
+      max-width: min(14rem, 42vw);
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0 center;
+      background-size: 0.9rem;
+    }
+    .account-selector:hover:not(:disabled) {
+      border-color: var(--border);
+      background-color: var(--panel);
+    }
+    .account-selector:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .account-selector:disabled {
+      cursor: default;
+      opacity: 0.85;
+      background-image: none;
+      padding-right: 0;
+    }
+    .header-account-select {
+      font-size: 1.05rem;
+      font-weight: 700;
+      min-width: 4.5rem;
+    }
     .app-header-end {
       display: flex;
       align-items: center;
       gap: 0.6rem;
       flex-shrink: 0;
     }
-    .header-section-label {
-      font-size: 0.82rem;
-      color: var(--muted);
+    .header-utility-label {
+      font-size: 0.78rem;
       font-weight: 600;
-      padding-right: 0.35rem;
-      border-right: 1px solid var(--border);
-      margin-right: 0.15rem;
       white-space: nowrap;
     }
-    .header-version {
-      font-size: 0.75rem;
-      color: var(--muted);
-      padding: 0.22rem 0.55rem;
-      background: var(--bg);
+    .header-utility-select {
+      font-size: 0.88rem;
+      font-weight: 600;
       border: 1px solid var(--border);
-      border-radius: 999px;
-      white-space: nowrap;
+      border-radius: 0.5rem;
+      background: var(--panel);
+      color: var(--text);
+      padding: 0.35rem 0.55rem;
     }
+
+
     .header-refresh {
       padding: 0.45rem 0.75rem;
       font-size: 0.85rem;
@@ -549,21 +648,7 @@ function pageStyles(): string {
       min-width: 0;
       padding: 1.25rem 1.5rem 2rem;
     }
-    h1 { margin: 0; font-size: 1.2rem; line-height: 1.2; }
-    .subtitle {
-      margin: 0.15rem 0 0;
-      color: var(--muted);
-      font-size: 0.88rem;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
     .section-anchor { scroll-margin-top: 5.5rem; }
-    .global-context .toolbar {
-      gap: 0.5rem;
-      margin-top: 0.75rem;
-      margin-bottom: 0;
-    }
     .backup-object-ids ul {
       margin: 0.35rem 0 0;
       padding-left: 1.1rem;
@@ -599,23 +684,7 @@ function pageStyles(): string {
       align-items: center;
       margin-bottom: 1rem;
     }
-    .property-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      align-items: center;
-      margin-bottom: 1rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-    }
-    .property-account {
-      margin: 0;
-      font-size: 0.92rem;
-    }
-    .property-account strong {
-      color: var(--text);
-      font-weight: 600;
-    }
+
     input[type="text"], input[type="date"] {
       font: inherit;
       border: 1px solid var(--border);
@@ -815,6 +884,39 @@ function pageStyles(): string {
       margin-bottom: 0.75rem;
     }
     .muted { color: var(--muted); }
+    .setup-section-title {
+      margin: 1.25rem 0 0.35rem;
+      font-size: 0.95rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .setup-section-title:first-of-type {
+      margin-top: 0.85rem;
+    }
+    .setup-field { margin-top: 1rem; }
+    .setup-field label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.25rem;
+    }
+    .setup-field-note {
+      margin: 0 0 0.5rem;
+      font-size: 0.84rem;
+    }
+    .setup-steps {
+      margin: 0.75rem 0 0;
+      padding-left: 1.25rem;
+      line-height: 1.6;
+      font-size: 0.92rem;
+    }
+    .setup-steps li + li { margin-top: 0.65rem; }
+    .setup-dev-meta {
+      margin: 0.85rem 0 0;
+      font-size: 0.84rem;
+      line-height: 1.55;
+    }
     .token-box {
       display: flex;
       gap: 0.5rem;
@@ -1034,7 +1136,9 @@ function pageStyles(): string {
       .side-nav.open { transform: translateX(0); }
       .side-nav-toggle { display: inline-flex; }
       .app-header { padding: 0.75rem 1rem; }
-      .header-section-label { display: none; }
+      .header-account-label,
+      .header-utility-label { display: none; }
+      .header-account-select { font-size: 0.95rem; }
       .main-content { padding: 1rem 1rem 1.75rem; }
     }
     @media (min-width: 961px) {
@@ -1062,10 +1166,17 @@ function dashboardPage(page: DashboardPage): string {
   <div class="app-shell">
     <aside class="side-nav" id="side-nav" aria-label="Dashboard sections">
       <div class="side-nav-inner">
-        <p class="side-nav-label">Menu</p>
+        <div class="brand">
+          <img src="/icon.svg" alt="">
+          <div>
+            <h1>NBU Utilities</h1>
+            <p>New Braunfels Utilities usage dashboard</p>
+          </div>
+        </div>
         <nav class="side-nav-links">
           ${renderSideNav(page)}
         </nav>
+        <p class="sidebar-version">v${APP_VERSION}</p>
       </div>
     </aside>
     <button class="side-nav-backdrop" id="side-nav-backdrop" type="button" aria-label="Close menu" hidden></button>
@@ -1073,22 +1184,19 @@ function dashboardPage(page: DashboardPage): string {
       <header class="app-header">
         <div class="app-header-start">
           <button type="button" class="side-nav-toggle secondary" id="side-nav-toggle" aria-controls="side-nav" aria-expanded="false" aria-label="Open menu">☰</button>
-          <div class="app-header-brand">
-            <img src="/icon.svg" alt="">
-          </div>
-          <div class="app-header-text">
-            <h1>NBU Utilities</h1>
-            <p class="subtitle" id="address">New Braunfels Utilities usage dashboard</p>
+          <label class="header-account-label muted" for="account">Account</label>
+          <div class="app-header-copy">
+            <select id="account" class="header-account-select account-selector" data-account-select aria-label="Select account">
+              <option value="">Loading accounts…</option>
+            </select>
           </div>
         </div>
         <div class="app-header-end">
-          <span class="header-section-label" id="header-section">${pageTitle}</span>
-          <span class="header-version">v${APP_VERSION}</span>
+          ${headerUtilitySelect(page)}
           <button type="button" class="secondary header-refresh" id="header-refresh">Refresh</button>
         </div>
       </header>
       <main class="main-content" id="main-content">
-        ${globalContextBar(page)}
         ${dashboardPageContent(page)}
       </main>
     </div>
@@ -1109,8 +1217,45 @@ function dashboardPage(page: DashboardPage): string {
       if (el) el.addEventListener(event, handler);
     }
 
+    function accountProperties(accountId) {
+      return (state.overview?.properties ?? []).filter((property) => property.account_id === accountId);
+    }
+
+    function selectedAccountId() {
+      return document.getElementById("account")?.value || null;
+    }
+
     function selectedPropertyId() {
-      return document.getElementById("property")?.value || null;
+      const accountId = selectedAccountId();
+      if (!accountId) return state.overview?.selected_property?.id ?? null;
+      const properties = accountProperties(accountId);
+      if (!properties.length) return null;
+      const selectedId = state.overview?.selected_property?.id;
+      if (selectedId && properties.some((property) => property.id === selectedId)) {
+        return selectedId;
+      }
+      return properties[0].id;
+    }
+
+    function propertyForAccount(accountId) {
+      const properties = accountProperties(accountId);
+      if (!properties.length) return null;
+      const selectedId = state.overview?.selected_property?.id;
+      if (selectedId && properties.some((property) => property.id === selectedId)) {
+        return properties.find((property) => property.id === selectedId) ?? properties[0];
+      }
+      return properties[0];
+    }
+
+    function uniqueAccountIds(properties) {
+      const seen = new Set();
+      const accounts = [];
+      for (const property of properties) {
+        if (!property.account_id || seen.has(property.account_id)) continue;
+        seen.add(property.account_id);
+        accounts.push(property.account_id);
+      }
+      return accounts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     }
 
     function selectedUtility() {
@@ -1124,72 +1269,55 @@ function dashboardPage(page: DashboardPage): string {
       return params;
     }
 
-    function propertyAddressLabel(property) {
-      if (property?.address) return property.address.replace(/\\s+/g, " ").trim();
-      return "Address unknown";
-    }
-
-    function propertyAccountLabel(property) {
-      if (property?.account_id && property?.usage_point) {
-        return "Account " + property.account_id + "-" + property.usage_point;
-      }
-      if (property?.account_id) return "Account " + property.account_id;
-      return "Account unknown";
-    }
-
-    function propertySelectorLabel(property) {
-      return APP_PAGE === "setup" ? propertyAccountLabel(property) : propertyAddressLabel(property);
-    }
-
-    function renderPropertyContext(property) {
-      const addressEl = document.getElementById("address");
-      const accountEl = document.getElementById("property-account");
-      if (!property) {
-        if (addressEl && APP_PAGE !== "setup") {
-          addressEl.textContent = "New Braunfels Utilities usage dashboard";
-        }
-        if (accountEl) accountEl.textContent = "Account —";
-        return;
-      }
-      if (addressEl && APP_PAGE !== "setup") {
-        addressEl.textContent = propertyAddressLabel(property);
-      }
-      if (accountEl) {
-        accountEl.innerHTML =
-          "<strong>Account</strong> " + escapeHtml(propertyAccountLabel(property).replace(/^Account\\s+/, ""));
-      }
-    }
-
-    function renderPropertySelector() {
-      const select = document.getElementById("property");
+    function renderAccountSelector() {
+      const selects = document.querySelectorAll("[data-account-select]");
       const objectIdInput = document.getElementById("property-object-id");
       const objectIdHint = document.getElementById("object-id-hint");
       const o = state.overview;
-      if (!select || !o) return;
+      if (!selects.length || !o) return;
 
-      if (!o.properties.length) {
-        select.innerHTML = '<option value="">No properties yet</option>';
+      const accounts = uniqueAccountIds(o.properties);
+      if (!accounts.length) {
+        selects.forEach((select) => {
+          select.innerHTML = '<option value="">No accounts yet</option>';
+          select.disabled = true;
+        });
         if (objectIdInput) objectIdInput.value = "";
         if (objectIdHint) objectIdHint.hidden = true;
-        renderPropertyContext(null);
         return;
       }
 
-      const selectedId = o.selected_property?.id ?? o.properties[0].id;
       const selectedProperty =
-        o.properties.find((property) => property.id === selectedId) ?? o.properties[0];
-      select.innerHTML = o.properties.map((property) =>
-        \`<option value="\${property.id}">\${escapeHtml(propertySelectorLabel(property))}</option>\`
+        o.selected_property ??
+        propertyForAccount(accounts[0]) ??
+        o.properties[0];
+      const selectedAccount = selectedProperty?.account_id ?? accounts[0];
+      const optionsHtml = accounts.map(
+        (accountId) => \`<option value="\${accountId}">\${escapeHtml(accountId)}</option>\`,
       ).join("");
-      select.value = selectedId;
-      if (objectIdInput && selectedProperty) {
-        objectIdInput.value = o.settings.property_object_ids?.[selectedProperty.id] ?? "";
+      selects.forEach((select) => {
+        select.innerHTML = optionsHtml;
+        select.value = selectedAccount;
+        select.disabled = false;
+      });
+      const activeProperty = propertyForAccount(selectedAccount) ?? selectedProperty;
+      if (objectIdInput && activeProperty) {
+        objectIdInput.value = o.settings.property_object_ids?.[activeProperty.id] ?? "";
       }
-      if (objectIdHint) {
-        const hasObjectId = Boolean(o.settings.property_object_ids?.[selectedId]);
+      if (objectIdHint && activeProperty) {
+        const hasObjectId = Boolean(o.settings.property_object_ids?.[activeProperty.id]);
         objectIdHint.hidden = hasObjectId;
       }
-      renderPropertyContext(selectedProperty);
+    }
+
+    function syncAccountSelectFromPropertyParam() {
+      const propertyParam = new URLSearchParams(window.location.search).get("property");
+      if (!propertyParam || !state.overview) return;
+      const property = state.overview.properties.find((item) => item.id === propertyParam);
+      if (!property?.account_id) return;
+      document.querySelectorAll("[data-account-select]").forEach((select) => {
+        select.value = property.account_id;
+      });
     }
 
     function escapeHtml(text) {
@@ -1544,10 +1672,22 @@ function dashboardPage(page: DashboardPage): string {
       \`).join("");
     }
 
-    function renderExtensionToken() {
+    function extensionBaseUrl() {
+      return window.location.origin;
+    }
+
+    function extensionSettingsText() {
+      const token = state.overview?.settings?.ingest_token;
+      if (!token) return "";
+      return "Umbrel app URL: " + extensionBaseUrl() + "\\nIngest token: " + token;
+    }
+
+    function renderExtensionSetup() {
       const tokenEl = document.getElementById("token");
-      if (!tokenEl || !state.overview) return;
-      tokenEl.textContent = state.overview.settings.ingest_token;
+      const baseUrlEl = document.getElementById("extension-base-url");
+      if (!state.overview) return;
+      if (tokenEl) tokenEl.textContent = state.overview.settings.ingest_token;
+      if (baseUrlEl) baseUrlEl.textContent = extensionBaseUrl();
     }
 
     function renderImports() {
@@ -1809,12 +1949,9 @@ function dashboardPage(page: DashboardPage): string {
       const dayInput = document.getElementById("day");
       const granularity = document.getElementById("granularity");
       const utility = document.getElementById("utility");
-      const property = document.getElementById("property");
       const day = params.get("date");
       const utilityParam = params.get("utility");
-      const propertyParam = params.get("property");
       if (utility && utilityParam) utility.value = utilityParam;
-      if (property && propertyParam) property.value = propertyParam;
       if (day && dayInput && granularity) {
         dayInput.value = day;
         granularity.value = "hour";
@@ -1835,7 +1972,7 @@ function dashboardPage(page: DashboardPage): string {
           await loadImports();
           break;
         case "setup":
-          renderExtensionToken();
+          renderExtensionSetup();
           await refreshBackupStatus();
           break;
       }
@@ -1859,7 +1996,7 @@ function dashboardPage(page: DashboardPage): string {
           await loadImports();
           break;
         case "setup":
-          renderExtensionToken();
+          renderExtensionSetup();
           await refreshBackupStatus();
           break;
       }
@@ -2015,9 +2152,10 @@ function dashboardPage(page: DashboardPage): string {
       const params = propertyParams();
       const res = await fetch("/api/overview?" + params.toString());
       state.overview = await res.json();
-      renderPropertySelector();
+      renderAccountSelector();
+      syncAccountSelectFromPropertyParam();
       if (APP_PAGE === "overview") renderStats();
-      if (APP_PAGE === "setup") renderExtensionToken();
+      if (APP_PAGE === "setup") renderExtensionSetup();
     }
 
     async function loadImports() {
@@ -2064,19 +2202,19 @@ function dashboardPage(page: DashboardPage): string {
       });
     }
 
-    on("property", "change", async (event) => {
-      const propertyId = event.target.value;
-      const property = state.overview?.properties.find((item) => item.id === propertyId);
+    on("account", "change", async (event) => {
+      const accountId = event.target.value;
+      const property = propertyForAccount(accountId);
+      if (!property) return;
       const objectIdInput = document.getElementById("property-object-id");
-      if (objectIdInput && property) {
+      if (objectIdInput) {
         objectIdInput.value = state.overview.settings.property_object_ids?.[property.id] ?? "";
       }
       const objectIdHint = document.getElementById("object-id-hint");
       if (objectIdHint) {
-        objectIdHint.hidden = Boolean(state.overview.settings.property_object_ids?.[propertyId]);
+        objectIdHint.hidden = Boolean(state.overview.settings.property_object_ids?.[property.id]);
       }
-      renderPropertyContext(property ?? null);
-      await savePropertySelection(propertyId);
+      await savePropertySelection(property.id);
       await reloadCurrentPage();
     });
     on("save-object-id", "click", async () => {
@@ -2147,18 +2285,28 @@ function dashboardPage(page: DashboardPage): string {
       if (!script) return;
       await copySnippet(button, script);
     });
-    on("copy-token", "click", async () => {
+    on("copy-base-url", "click", async (event) => {
+      const button = event.currentTarget;
+      await copySnippet(button, extensionBaseUrl());
+    });
+    on("copy-token", "click", async (event) => {
       const token = state.overview?.settings?.ingest_token;
-      const button = document.getElementById("copy-token");
-      if (!token || !button) return;
+      const button = event.currentTarget;
+      if (!token) return;
       await copySnippet(button, token);
+    });
+    on("copy-extension-settings", "click", async (event) => {
+      const button = event.currentTarget;
+      const text = extensionSettingsText();
+      if (!text) return;
+      await copySnippet(button, text);
     });
     on("rotate-token", "click", async () => {
       const res = await fetch("/api/settings/rotate-token", { method: "POST" });
       const payload = await res.json();
       if (payload.settings) {
         state.overview.settings = payload.settings;
-        renderExtensionToken();
+        renderExtensionSetup();
       }
     });
 
