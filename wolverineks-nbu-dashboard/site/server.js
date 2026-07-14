@@ -11,7 +11,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.21.0";
+const APP_VERSION = "1.22.0";
 const IS_LOCAL_DEV = process.env.NBU_DEV === "1";
 const EXTENSION_REPO_URL = "https://github.com/wolverineks/umbrel_store/tree/master/wolverineks-nbu-dashboard/chrome-extension";
 const EXTENSION_FOLDER = "wolverineks-nbu-dashboard/chrome-extension";
@@ -92,8 +92,7 @@ function usageChartSection() {
         <p class="day-view-label" id="day-view-label" hidden></p>
         <p class="chart-fullscreen-title" id="chart-fullscreen-title" hidden></p>
         <div class="chart-shell">
-          <svg class="chart" id="chart" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet"></svg>
-          <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+          <canvas class="chart" id="chart" aria-label="Usage chart" role="img"></canvas>
         </div>
         <div class="empty" id="chart-empty" hidden>No readings for this view yet. Sync from Customer Connect using the Chrome extension.</div>
         <p class="chart-missing-legend muted" id="chart-missing-legend" hidden>Red bars mark hours with no data.</p>
@@ -233,6 +232,7 @@ const DATA_ROOT = process.env.NBU_DATA_DIR ?? "/data";
 const BACKUP_ROOT = process.env.NBU_BACKUP_DIR ?? "/backup";
 const BACKUP_HOST_PATH = process.env.NBU_BACKUP_HOST_PATH ?? "/home/umbrel/nbu-backup";
 const ICON_PATH = node_path_1.default.join(__dirname, "icon.svg");
+const CHARTJS_PATH = node_path_1.default.join(__dirname, "vendor", "chart.umd.js");
 function sendJson(res, statusCode, payload) {
     const body = Buffer.from(JSON.stringify(payload));
     res.writeHead(statusCode, {
@@ -813,15 +813,16 @@ function pageStyles() {
       display: none;
     }
     .chart-wrap.is-fullscreen .chart-shell {
+      position: relative;
       flex: 1;
       min-height: 0;
+      height: auto;
       display: flex;
       align-items: stretch;
     }
     .chart-wrap.is-fullscreen .chart {
-      flex: 1;
-      width: 100%;
-      height: 100%;
+      width: 100% !important;
+      height: 100% !important;
       max-height: none;
       aspect-ratio: unset;
       min-height: 0;
@@ -839,52 +840,22 @@ function pageStyles() {
     .chart-wrap.is-fullscreen .day-view-label {
       display: none;
     }
-    .chart-wrap.is-fullscreen .chart-tooltip {
-      font-size: 1rem;
-      padding: 0.7rem 0.9rem;
-    }
-    .chart-wrap.is-fullscreen .chart-tooltip strong {
-      font-size: 1.2rem;
-    }
     .chart-fullscreen-btn {
       font-weight: 600;
     }
-    .chart-shell[data-drillable="1"] .chart-bar {
-      cursor: pointer;
-    }
     .chart-shell {
       position: relative;
+      width: 100%;
+      height: min(42vh, 420px);
+      min-height: 220px;
+    }
+    .chart-shell[data-drillable="1"] {
+      cursor: pointer;
     }
     .chart {
-      width: 100%;
-      height: auto;
-      aspect-ratio: 10 / 3;
-      max-height: min(42vh, 420px);
+      width: 100% !important;
+      height: 100% !important;
       display: block;
-    }
-    .chart-tooltip {
-      position: absolute;
-      pointer-events: none;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 0.55rem 0.75rem;
-      font-size: 0.85rem;
-      line-height: 1.35;
-      box-shadow: var(--shadow);
-      z-index: 2;
-      transform: translate(-50%, calc(-100% - 10px));
-      white-space: nowrap;
-    }
-    .chart-tooltip strong {
-      color: var(--text);
-      font-size: 0.95rem;
-    }
-    .chart-bar {
-      cursor: crosshair;
-    }
-    .chart-bar-missing {
-      cursor: help;
     }
     .chart-missing-legend {
       margin: 0.5rem 0 0;
@@ -1254,8 +1225,9 @@ function pageStyles() {
       .chart-wrap:not(.is-fullscreen) {
         padding: 0.75rem 0.85rem 1rem;
       }
-      .chart-wrap:not(.is-fullscreen) .chart {
-        max-height: min(38vh, 300px);
+      .chart-wrap:not(.is-fullscreen) .chart-shell {
+        height: min(38vh, 300px);
+        min-height: 200px;
       }
       .toolbar {
         gap: 0.5rem;
@@ -1310,6 +1282,7 @@ function dashboardPage(page) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NBU Utilities · ${pageTitle}</title>
   <style>${pageStyles()}</style>
+  ${page === "overview" ? '<script src="/vendor/chart.umd.js"></script>' : ""}
 </head>
 <body>
   <div class="app-shell">
@@ -1751,62 +1724,24 @@ function dashboardPage(page) {
       return usage.point_granularity || usage.granularity;
     }
 
-    function fmtTooltipHtml(point, unit, granularity) {
-      const label = fmtTooltipLabel(point.period_start, granularity);
-      if (point.missing) {
-        const missingLabel = granularity === "hour" ? "Missing hour" : "Missing day";
-        return \`\${label}<br><strong>\${missingLabel}</strong>\`;
+    let usageChart = null;
+
+    function destroyUsageChart() {
+      if (usageChart) {
+        usageChart.destroy();
+        usageChart = null;
       }
-      const value = Number(point.value).toFixed(2);
-      return \`\${label}<br><strong>\${value} \${unit}</strong>\`;
     }
 
-    function positionChartTooltip(event, tooltip) {
-      const shell = document.querySelector(".chart-shell");
-      if (!shell) return;
-      const rect = shell.getBoundingClientRect();
-      tooltip.style.left = (event.clientX - rect.left) + "px";
-      tooltip.style.top = (event.clientY - rect.top) + "px";
-    }
-
-    let chartInteractionsReady = false;
-
-    function ensureChartInteractions() {
-      if (chartInteractionsReady) return;
-      const shell = document.querySelector(".chart-shell");
-      if (!shell) return;
-      chartInteractionsReady = true;
-      const tooltip = document.getElementById("chart-tooltip");
-
-      shell.addEventListener("mousemove", (event) => {
-        const bar = event.target.closest?.(".chart-bar");
-        if (!bar || !state.usage) return;
-        const index = Number(bar.dataset.index);
-        const point = state.usage.points[index];
-        if (!point || !tooltip) return;
-        tooltip.innerHTML = fmtTooltipHtml(point, state.usage.unit, chartPointGranularity(state.usage));
-        tooltip.hidden = false;
-        positionChartTooltip(event, tooltip);
-      });
-
-      shell.addEventListener("mouseleave", () => {
-        if (tooltip) tooltip.hidden = true;
-      });
-
-      shell.addEventListener("click", (event) => {
-        const bar = event.target.closest?.(".chart-bar");
-        if (!bar || !state.usage) return;
-        if (chartPointGranularity(state.usage) !== "day" || state.usage.date) return;
-        const index = Number(bar.dataset.index);
-        const point = state.usage.points[index];
-        if (!point) return;
-        const dayInput = document.getElementById("day");
-        if (!dayInput) return;
-        clearRangeEnd();
-        dayInput.value = centralLocalDateKey(point.period_start);
-        syncDayControls();
-        loadUsage();
-      });
+    function drillIntoChartPoint(point) {
+      if (!point || !state.usage) return;
+      if (chartPointGranularity(state.usage) !== "day" || state.usage.date) return;
+      const dayInput = document.getElementById("day");
+      if (!dayInput) return;
+      clearRangeEnd();
+      dayInput.value = centralLocalDateKey(point.period_start);
+      syncDayControls();
+      loadUsage();
     }
 
     function scheduleChartSources() {
@@ -1979,23 +1914,40 @@ function dashboardPage(page) {
       renderChart();
     }
 
+    function chartAxisLabel(point, usage, showYears) {
+      if (usage.date || chartPointGranularity(usage) === "hour") {
+        return fmtHourLabel(point.period_start);
+      }
+      return fmtShortDate(point.period_start, showYears);
+    }
+
     function renderChart() {
       const usage = state.usage;
-      const svg = document.getElementById("chart");
-      const tooltip = document.getElementById("chart-tooltip");
+      const canvas = document.getElementById("chart");
       const empty = document.getElementById("chart-empty");
       const missingLegend = document.getElementById("chart-missing-legend");
+      if (!canvas) return;
+
       if (!usage || !usage.points.length) {
-        svg.innerHTML = "";
-        if (tooltip) tooltip.hidden = true;
+        destroyUsageChart();
         if (missingLegend) missingLegend.hidden = true;
-        empty.hidden = false;
+        if (empty) empty.hidden = false;
         renderChartSources();
         return;
       }
+
+      if (typeof Chart === "undefined") {
+        if (empty) {
+          empty.hidden = false;
+          empty.textContent = "Chart.js failed to load.";
+        }
+        return;
+      }
+
       const hasMissing = usage.points.some((point) => point.missing);
-      empty.hidden = true;
+      if (empty) empty.hidden = true;
       if (missingLegend) missingLegend.hidden = !hasMissing;
+
       const mode = chartLayoutMode();
       const fullscreenTitle = document.getElementById("chart-fullscreen-title");
       if (fullscreenTitle) {
@@ -2003,102 +1955,147 @@ function dashboardPage(page) {
         fullscreenTitle.textContent = title;
         fullscreenTitle.hidden = mode !== "fullscreen" || !title;
       }
-      const width = 1000;
-      const height = mode === "fullscreen" ? 540 : 300;
-      const pad =
-        mode === "fullscreen"
-          ? { top: 36, right: 28, bottom: 76, left: 68 }
-          : mode === "narrow"
-            ? { top: 20, right: 12, bottom: 48, left: 42 }
-            : { top: 20, right: 16, bottom: 52, left: 48 };
-      const labelFont = mode === "fullscreen" ? 20 : mode === "narrow" ? 14 : 12;
-      const yearFont = mode === "fullscreen" ? 22 : mode === "narrow" ? 14 : 12;
-      svg.setAttribute("viewBox", "0 0 " + width + " " + height);
-      const innerW = width - pad.left - pad.right;
-      const innerH = height - pad.top - pad.bottom;
-      const dataValues = usage.points.filter((point) => !point.missing).map((point) => point.value);
-      const max = Math.max(...dataValues, 0.001);
-      const step = innerW / usage.points.length;
-      const barW = Math.max(2, step - 2);
+
+      const shell = document.querySelector(".chart-shell");
+      const drillable = chartPointGranularity(usage) === "day" && !usage.date;
+      if (shell) shell.dataset.drillable = drillable ? "1" : "0";
+
       const showYears = chartSpansYears(usage.points);
       const color = usage.utility === "water" ? "#0ea5e9" : "#f59e0b";
+      const missingColor = "#991b1b";
+      const dataValues = usage.points
+        .filter((point) => !point.missing)
+        .map((point) => Number(point.value) || 0);
+      const max = Math.max(...dataValues, 0.001);
+      const labels = usage.points.map((point) => chartAxisLabel(point, usage, showYears));
+      const values = usage.points.map((point) =>
+        point.missing ? max : Number(point.value) || 0,
+      );
+      const backgroundColors = usage.points.map((point) =>
+        point.missing ? missingColor : color,
+      );
+      const borderColors = usage.points.map((point) =>
+        point.missing ? "#7f1d1d" : color,
+      );
+      const fontSize = mode === "fullscreen" ? 14 : mode === "narrow" ? 11 : 12;
+      const tickMax =
+        mode === "narrow"
+          ? 4
+          : usage.date
+            ? 6
+            : usage.points.length > 90
+              ? 8
+              : 12;
 
-      const bars = usage.points.map((point, index) => {
-        const x = pad.left + index * step;
-        if (point.missing) {
-          return \`<rect class="chart-bar chart-bar-missing" data-index="\${index}" x="\${x}" y="\${pad.top}" width="\${barW}" height="\${innerH}" rx="2" fill="#991b1b" opacity="0.82"></rect>\`;
-        }
-        const h = (point.value / max) * innerH;
-        const y = pad.top + innerH - h;
-        return \`<rect class="chart-bar" data-index="\${index}" x="\${x}" y="\${y}" width="\${barW}" height="\${h}" rx="2" fill="\${color}" opacity="0.9"></rect>\`;
-      }).join("");
+      const chartConfig = {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            {
+              label: usage.utility === "water" ? "Water" : "Electric",
+              data: values,
+              backgroundColor: backgroundColors,
+              borderColor: borderColors,
+              borderWidth: 0,
+              borderRadius: 2,
+              borderSkipped: false,
+              maxBarThickness: mode === "fullscreen" ? 28 : 18,
+              categoryPercentage: 0.9,
+              barPercentage: 0.92,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: mode === "fullscreen" ? 200 : 250 },
+          interaction: {
+            mode: "index",
+            intersect: false,
+          },
+          onHover: (event, elements) => {
+            const target = event.native?.target;
+            if (!target) return;
+            target.style.cursor =
+              elements.length && drillable ? "pointer" : elements.length ? "crosshair" : "default";
+          },
+          onClick: (_event, elements) => {
+            if (!elements.length || !drillable) return;
+            const index = elements[0].index;
+            drillIntoChartPoint(usage.points[index]);
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: "rgba(15, 23, 42, 0.92)",
+              titleColor: "#f8fafc",
+              bodyColor: "#e2e8f0",
+              borderColor: "#334155",
+              borderWidth: 1,
+              padding: mode === "fullscreen" ? 12 : 10,
+              titleFont: { size: fontSize, weight: "600" },
+              bodyFont: { size: fontSize },
+              displayColors: false,
+              callbacks: {
+                title: (items) => {
+                  const index = items[0]?.dataIndex;
+                  const point = usage.points[index];
+                  if (!point) return "";
+                  return fmtTooltipLabel(point.period_start, chartPointGranularity(usage));
+                },
+                label: (item) => {
+                  const point = usage.points[item.dataIndex];
+                  if (!point) return "";
+                  if (point.missing) {
+                    return chartPointGranularity(usage) === "hour"
+                      ? "Missing hour"
+                      : "Missing day";
+                  }
+                  return Number(point.value).toFixed(2) + " " + usage.unit;
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: {
+                color: "#64748b",
+                font: { size: fontSize },
+                maxRotation: 0,
+                autoSkip: true,
+                maxTicksLimit: tickMax,
+              },
+              border: { color: "#e2e8f0" },
+            },
+            y: {
+              beginAtZero: true,
+              suggestedMax: max * 1.05,
+              grid: { color: "rgba(148, 163, 184, 0.25)" },
+              ticks: {
+                color: "#64748b",
+                font: { size: fontSize },
+                callback: (value) => {
+                  const num = Number(value);
+                  if (!Number.isFinite(num)) return value;
+                  return num >= 10 ? num.toFixed(0) : num.toFixed(1);
+                },
+              },
+              title: {
+                display: true,
+                text: usage.unit,
+                color: "#64748b",
+                font: { size: fontSize },
+              },
+              border: { display: false },
+            },
+          },
+        },
+      };
 
-      let lastYear = null;
-      const yearMarkers = [];
-      usage.points.forEach((point, index) => {
-        const year = new Date(point.period_start).getFullYear();
-        if (year !== lastYear) {
-          yearMarkers.push({ year, index });
-          lastYear = year;
-        }
-      });
-
-      const yearLines = yearMarkers.map(({ year, index }) => {
-        const x = pad.left + index * step;
-        return \`
-          <line x1="\${x}" y1="\${pad.top}" x2="\${x}" y2="\${pad.top + innerH}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 4"></line>
-          <text x="\${x + 4}" y="\${height - 10}" fill="#475569" font-size="\${yearFont}" font-weight="700">\${year}</text>
-        \`;
-      }).join("");
-
-      let tickIndexes;
-      let labelForIndex;
-      if (usage.date) {
-        const hourTicks =
-          mode === "fullscreen"
-            ? [0, 6, 12, 18, usage.points.length - 1]
-            : mode === "narrow"
-              ? [0, 12, usage.points.length - 1]
-              : [0, 6, 12, 18, usage.points.length - 1];
-        tickIndexes = new Set(hourTicks.filter((index) => index < usage.points.length));
-        labelForIndex = (index) => fmtHourLabel(usage.points[index].period_start);
-      } else {
-        const rangeTicks =
-          mode === "narrow"
-            ? [0, usage.points.length - 1]
-            : [0, Math.floor(usage.points.length / 2), usage.points.length - 1];
-        tickIndexes = new Set(
-          rangeTicks.concat(yearMarkers.map((marker) => marker.index))
-        );
-        labelForIndex = (index) => {
-          const point = usage.points[index];
-          const isYearStart = yearMarkers.some((marker) => marker.index === index);
-          return isYearStart
-            ? fmtShortDate(point.period_start, true)
-            : fmtShortDate(point.period_start, showYears);
-        };
-      }
-      const labels = [...tickIndexes]
-        .sort((a, b) => a - b)
-        .map((index) => {
-          const x = pad.left + index * step;
-          const label = labelForIndex(index);
-          const labelY = mode === "fullscreen" ? height - 34 : mode === "narrow" ? height - 24 : height - 28;
-          return \`<text x="\${x}" y="\${labelY}" fill="#64748b" font-size="\${labelFont}">\${label}</text>\`;
-        }).join("");
-
-      svg.innerHTML = \`
-        <line x1="\${pad.left}" y1="\${pad.top + innerH}" x2="\${width - pad.right}" y2="\${pad.top + innerH}" stroke="#e2e8f0"></line>
-        <text x="14" y="\${pad.top + (mode === "fullscreen" ? 18 : 12)}" fill="#64748b" font-size="\${labelFont}">\${max.toFixed(1)} \${usage.unit}</text>
-        \${yearLines}
-        \${bars}
-        \${labels}
-      \`;
-      const shell = document.querySelector(".chart-shell");
-      if (shell) {
-        shell.dataset.drillable =
-          chartPointGranularity(usage) === "day" && !usage.date ? "1" : "0";
-      }
+      destroyUsageChart();
+      usageChart = new Chart(canvas.getContext("2d"), chartConfig);
     }
 
     function fmtCoverageDate(dateKey) {
@@ -2213,7 +2210,6 @@ function dashboardPage(page) {
         case "overview":
           applyUsageQueryParams();
           renderStats();
-          ensureChartInteractions();
           await Promise.all([loadUsage(), loadCoverage()]);
           break;
         case "sources":
@@ -2810,6 +2806,15 @@ const server = (0, node_http_1.createServer)(async (req, res) => {
             const icon = await (0, promises_1.readFile)(ICON_PATH);
             res.writeHead(200, { "Content-Type": "image/svg+xml" });
             res.end(icon);
+            return;
+        }
+        if (req.method === "GET" && pathname === "/vendor/chart.umd.js") {
+            const chartJs = await (0, promises_1.readFile)(CHARTJS_PATH);
+            res.writeHead(200, {
+                "Content-Type": "application/javascript; charset=utf-8",
+                "Cache-Control": "public, max-age=604800",
+            });
+            res.end(chartJs);
             return;
         }
         if (req.method === "GET" && pathname === "/api/properties") {
