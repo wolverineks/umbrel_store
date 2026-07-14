@@ -160,7 +160,7 @@ export type UsageSummary = {
 };
 
 const CENTRAL_TZ = "America/Chicago";
-const HOURLY_CHART_DAY_LIMIT = 31;
+
 
 const centralDateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: CENTRAL_TZ });
 const centralHourFormatter = new Intl.DateTimeFormat("en-US", {
@@ -1093,22 +1093,6 @@ function centralLocalHour(iso: string): number {
   return Number(centralHourFormatter.format(new Date(iso)));
 }
 
-function daySpan(start: string, end: string): number {
-  let count = 0;
-  let cursor = start;
-  while (compareDateKeys(cursor, end) <= 0) {
-    count += 1;
-    cursor = addDaysToDateKey(cursor, 1);
-  }
-  return count;
-}
-
-function isFutureHourSlot(dateKey: string, hour: number, todayKey: string): boolean {
-  if (compareDateKeys(dateKey, todayKey) > 0) return true;
-  if (dateKey !== todayKey) return false;
-  return hour > centralLocalHour(new Date().toISOString());
-}
-
 function roundUsage(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
@@ -1147,29 +1131,6 @@ function buildHourlyChartPoints(
       } else {
         points.push({ period_start, value: 0, missing: true });
       }
-    }
-  }
-  return points;
-}
-
-function buildDailyChartPointsFromHourly(
-  hourReadings: StoredReading[],
-  range: { start: string; end: string },
-): UsagePoint[] {
-  const totalsByDate = new Map<string, number>();
-  for (const reading of hourReadings) {
-    const dateKey = centralLocalDateKey(reading.period_start);
-    totalsByDate.set(dateKey, (totalsByDate.get(dateKey) ?? 0) + reading.value);
-  }
-
-  const points: UsagePoint[] = [];
-  for (const dateKey of iterateDateKeys(range.start, range.end)) {
-    const value = totalsByDate.get(dateKey);
-    const period_start = centralHourSlotIso(dateKey, 12);
-    if (value !== undefined) {
-      points.push({ period_start, value: roundUsage(value), missing: false });
-    } else {
-      points.push({ period_start, value: 0, missing: true });
     }
   }
   return points;
@@ -1287,12 +1248,8 @@ export async function getUsageSummary(
   let points: UsagePoint[];
   let pointGranularity: Granularity = effectiveGranularity;
   if (effectiveGranularity === "hour") {
-    if (range && daySpan(range.start, range.end) > HOURLY_CHART_DAY_LIMIT) {
-      points = buildDailyChartPointsFromHourly(hourReadings, range);
-      pointGranularity = "day";
-    } else {
-      points = range ? buildHourlyChartPoints(hourReadings, range) : [];
-    }
+    // Always return true hourly points when Hourly is selected (30/90/365 day ranges included).
+    points = range ? buildHourlyChartPoints(hourReadings, range) : [];
   } else {
     points = dayReadings.map((r) => ({
       period_start: r.period_start,
