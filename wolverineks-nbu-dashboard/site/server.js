@@ -11,7 +11,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.22.0";
+const APP_VERSION = "1.22.1";
 const IS_LOCAL_DEV = process.env.NBU_DEV === "1";
 const EXTENSION_REPO_URL = "https://github.com/wolverineks/umbrel_store/tree/master/wolverineks-nbu-dashboard/chrome-extension";
 const EXTENSION_FOLDER = "wolverineks-nbu-dashboard/chrome-extension";
@@ -1695,9 +1695,13 @@ function dashboardPage(page) {
 
     function fmtShortDate(iso, withYear = false) {
       const opts = withYear
-        ? { month: "short", day: "numeric", year: "numeric" }
-        : { month: "short", day: "numeric" };
+        ? { month: "short", day: "numeric", year: "numeric", timeZone: "America/Chicago" }
+        : { month: "short", day: "numeric", timeZone: "America/Chicago" };
       return new Date(iso).toLocaleDateString(undefined, opts);
+    }
+
+    function fmtAxisDay(iso, withYear = false) {
+      return fmtShortDate(iso, withYear);
     }
 
     function fmtTooltipLabel(iso, granularity) {
@@ -1914,11 +1918,27 @@ function dashboardPage(page) {
       renderChart();
     }
 
-    function chartAxisLabel(point, usage, showYears) {
-      if (usage.date || chartPointGranularity(usage) === "hour") {
-        return fmtHourLabel(point.period_start);
+    function buildChartAxisLabels(usage, showYears) {
+      // Single-day drill-down: hours on the bottom axis.
+      if (usage.date) {
+        return usage.points.map((point) => fmtHourLabel(point.period_start));
       }
-      return fmtShortDate(point.period_start, showYears);
+
+      // Daily view: one day label per bar.
+      if (chartPointGranularity(usage) === "day") {
+        return usage.points.map((point) => fmtAxisDay(point.period_start, showYears));
+      }
+
+      // Multi-day hourly: show a day label at the start of each day only.
+      let lastDayKey = null;
+      return usage.points.map((point) => {
+        const dayKey = centralLocalDateKey(point.period_start);
+        if (dayKey !== lastDayKey) {
+          lastDayKey = dayKey;
+          return fmtAxisDay(point.period_start, showYears);
+        }
+        return "";
+      });
     }
 
     function renderChart() {
@@ -1967,7 +1987,7 @@ function dashboardPage(page) {
         .filter((point) => !point.missing)
         .map((point) => Number(point.value) || 0);
       const max = Math.max(...dataValues, 0.001);
-      const labels = usage.points.map((point) => chartAxisLabel(point, usage, showYears));
+      const labels = buildChartAxisLabels(usage, showYears);
       const values = usage.points.map((point) =>
         point.missing ? max : Number(point.value) || 0,
       );
@@ -1978,14 +1998,16 @@ function dashboardPage(page) {
         point.missing ? "#7f1d1d" : color,
       );
       const fontSize = mode === "fullscreen" ? 14 : mode === "narrow" ? 11 : 12;
-      const tickMax =
-        mode === "narrow"
+      const dayCount = new Set(
+        usage.points.map((point) => centralLocalDateKey(point.period_start)),
+      ).size;
+      const tickMax = usage.date
+        ? mode === "narrow"
           ? 4
-          : usage.date
-            ? 6
-            : usage.points.length > 90
-              ? 8
-              : 12;
+          : 6
+        : mode === "narrow"
+          ? Math.min(4, Math.max(2, dayCount))
+          : Math.min(mode === "fullscreen" ? 14 : 10, Math.max(3, dayCount));
 
       const chartConfig = {
         type: "bar",
@@ -2065,7 +2087,13 @@ function dashboardPage(page) {
                 font: { size: fontSize },
                 maxRotation: 0,
                 autoSkip: true,
+                autoSkipPadding: 8,
                 maxTicksLimit: tickMax,
+                // Prefer day labels; hide empty multi-day hourly slots.
+                callback: function (value) {
+                  const label = this.getLabelForValue(value);
+                  return label ? label : null;
+                },
               },
               border: { color: "#e2e8f0" },
             },
