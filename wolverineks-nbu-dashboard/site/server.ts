@@ -28,7 +28,7 @@ import {
 
 } from "./store";
 
-const APP_VERSION = "1.22.2";
+const APP_VERSION = "1.22.3";
 const IS_LOCAL_DEV = process.env.NBU_DEV === "1";
 const EXTENSION_REPO_URL =
   "https://github.com/wolverineks/umbrel_store/tree/master/wolverineks-nbu-dashboard/chrome-extension";
@@ -1790,6 +1790,22 @@ function dashboardPage(page: DashboardPage): string {
       return chartRangeDayCount(usage) >= 180;
     }
 
+    /** 30/90-day ranges: only label Sundays on the bottom axis. */
+    function chartUsesSundayAxis(usage) {
+      if (usage?.date) return false;
+      if (chartUsesMonthAxis(usage)) return false;
+      const days = chartRangeDayCount(usage);
+      return days >= 20 && days < 180;
+    }
+
+    function isCentralSunday(iso) {
+      const weekday = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago",
+        weekday: "short",
+      }).format(new Date(iso));
+      return weekday === "Sun";
+    }
+
     function fmtTooltipLabel(iso, granularity) {
       const date = new Date(iso);
       if (granularity === "hour") {
@@ -2023,7 +2039,28 @@ function dashboardPage(page: DashboardPage): string {
         });
       }
 
-      // Daily view: one day label per bar.
+      // 30/90-day ranges: label Sundays only (America/Chicago).
+      if (chartUsesSundayAxis(usage)) {
+        if (chartPointGranularity(usage) === "day") {
+          return usage.points.map((point) =>
+            isCentralSunday(point.period_start)
+              ? fmtAxisDay(point.period_start, showYears)
+              : "",
+          );
+        }
+        // Multi-day hourly: Sunday at the start of that day only.
+        let lastDayKey = null;
+        return usage.points.map((point) => {
+          const dayKey = centralLocalDateKey(point.period_start);
+          if (dayKey === lastDayKey) return "";
+          lastDayKey = dayKey;
+          return isCentralSunday(point.period_start)
+            ? fmtAxisDay(point.period_start, showYears)
+            : "";
+        });
+      }
+
+      // Short ranges (e.g. 7 days): one day label per bar.
       if (chartPointGranularity(usage) === "day") {
         return usage.points.map((point) => fmtAxisDay(point.period_start, showYears));
       }
@@ -2098,11 +2135,21 @@ function dashboardPage(page: DashboardPage): string {
       );
       const fontSize = mode === "fullscreen" ? 14 : mode === "narrow" ? 11 : 12;
       const useMonthAxis = chartUsesMonthAxis(usage);
+      const useSundayAxis = chartUsesSundayAxis(usage);
       const dayCount = new Set(
         usage.points.map((point) => centralLocalDateKey(point.period_start)),
       ).size;
       const monthCount = new Set(
         usage.points.map((point) => centralLocalDateKey(point.period_start).slice(0, 7)),
+      ).size;
+      const sundayCount = usage.points.filter((point) =>
+        isCentralSunday(point.period_start),
+      ).length;
+      // For hourly multi-day, count unique Sunday days only once each.
+      const sundayDayCount = new Set(
+        usage.points
+          .filter((point) => isCentralSunday(point.period_start))
+          .map((point) => centralLocalDateKey(point.period_start)),
       ).size;
       const tickMax = usage.date
         ? mode === "narrow"
@@ -2112,9 +2159,13 @@ function dashboardPage(page: DashboardPage): string {
           ? mode === "narrow"
             ? Math.min(6, Math.max(3, monthCount))
             : Math.min(mode === "fullscreen" ? 16 : 13, Math.max(4, monthCount))
-          : mode === "narrow"
-            ? Math.min(4, Math.max(2, dayCount))
-            : Math.min(mode === "fullscreen" ? 14 : 10, Math.max(3, dayCount));
+          : useSundayAxis
+            ? mode === "narrow"
+              ? Math.min(5, Math.max(2, sundayDayCount || sundayCount))
+              : Math.min(mode === "fullscreen" ? 16 : 14, Math.max(3, sundayDayCount || sundayCount))
+            : mode === "narrow"
+              ? Math.min(4, Math.max(2, dayCount))
+              : Math.min(mode === "fullscreen" ? 14 : 10, Math.max(3, dayCount));
 
       const chartConfig = {
         type: "bar",
