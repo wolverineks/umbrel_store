@@ -1075,7 +1075,11 @@ function buildUsageMissing(
   }
 
   if (effectiveGranularity === "day") {
-    const dayDates = new Set(filtered.map((reading) => centralLocalDateKey(reading.period_start)));
+    // Present if we have a day row or any hourly for that date (daily chart rolls up hours).
+    const dayDates = new Set(dayInView.map((reading) => centralLocalDateKey(reading.period_start)));
+    for (const reading of hourInView) {
+      dayDates.add(centralLocalDateKey(reading.period_start));
+    }
     const items = iterateDateKeys(range.start, range.end)
       .filter((dateKey) => !dayDates.has(dateKey))
       .map((dateKey) => ({
@@ -1136,6 +1140,50 @@ function buildHourlyChartPoints(
   return points;
 }
 
+/**
+ * Full-range daily series: prefer stored day readings, else sum hourly, else missing.
+ * Ensures 30/90/365 daily views cover the whole window even when day-granularity
+ * rows only exist for a shorter import history.
+ */
+function buildDailyChartPoints(
+  hourReadings: StoredReading[],
+  dayReadings: StoredReading[],
+  range: { start: string; end: string },
+): UsagePoint[] {
+  const dayTotals = new Map<string, number>();
+  for (const reading of dayReadings) {
+    const dateKey = centralLocalDateKey(reading.period_start);
+    dayTotals.set(dateKey, reading.value);
+  }
+
+  const hourTotals = new Map<string, number>();
+  for (const reading of hourReadings) {
+    const dateKey = centralLocalDateKey(reading.period_start);
+    hourTotals.set(dateKey, (hourTotals.get(dateKey) ?? 0) + reading.value);
+  }
+
+  const points: UsagePoint[] = [];
+  for (const dateKey of iterateDateKeys(range.start, range.end)) {
+    const period_start = centralHourSlotIso(dateKey, 12);
+    if (dayTotals.has(dateKey)) {
+      points.push({
+        period_start,
+        value: roundUsage(dayTotals.get(dateKey) ?? 0),
+        missing: false,
+      });
+    } else if (hourTotals.has(dateKey)) {
+      points.push({
+        period_start,
+        value: roundUsage(hourTotals.get(dateKey) ?? 0),
+        missing: false,
+      });
+    } else {
+      points.push({ period_start, value: 0, missing: true });
+    }
+  }
+  return points;
+}
+
 type CollectedUsageReadings = {
   chartHour: StoredReading[];
   chartDay: StoredReading[];
@@ -1175,13 +1223,20 @@ function collectUsageReadings(
       continue;
     }
 
-    if (reading.granularity === viewGranularity) {
-      source.push(reading);
-    }
-    if (viewGranularity === "hour" && reading.granularity === "hour") {
-      chartHour.push(reading);
-    } else if (viewGranularity === "day" && reading.granularity === "day") {
-      chartDay.push(reading);
+    if (viewGranularity === "hour") {
+      if (reading.granularity === "hour") {
+        chartHour.push(reading);
+        source.push(reading);
+      }
+    } else {
+      // Daily view: keep day rows and hour rows (hours roll up to fill the range).
+      if (reading.granularity === "day") {
+        chartDay.push(reading);
+        source.push(reading);
+      } else if (reading.granularity === "hour") {
+        chartHour.push(reading);
+        source.push(reading);
+      }
     }
   }
 
@@ -1242,7 +1297,9 @@ export async function getUsageSummary(
   );
   const hourReadings = collected.chartHour;
   const dayReadings = collected.chartDay;
-  const chartSeed = effectiveGranularity === "hour" ? hourReadings : dayReadings;
+  // Seed range from all available readings (day view may roll up hours for "All data").
+  const chartSeed =
+    effectiveGranularity === "hour" ? hourReadings : [...dayReadings, ...hourReadings];
   const range = viewRangeKeys(days, date, chartSeed, effectiveGranularity, endDate);
 
   let points: UsagePoint[];
@@ -1251,10 +1308,8 @@ export async function getUsageSummary(
     // Always return true hourly points when Hourly is selected (30/90/365 day ranges included).
     points = range ? buildHourlyChartPoints(hourReadings, range) : [];
   } else {
-    points = dayReadings.map((r) => ({
-      period_start: r.period_start,
-      value: Math.round(r.value * 1000) / 1000,
-    }));
+    // Full window daily series (day rows preferred, else hourly totals).
+    points = range ? buildDailyChartPoints(hourReadings, dayReadings, range) : [];
   }
 
   const dataPoints = points.filter((point) => !point.missing);

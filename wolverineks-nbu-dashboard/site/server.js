@@ -11,7 +11,7 @@ const node_path_1 = __importDefault(require("node:path"));
 const backup_restore_1 = require("./backup-restore");
 const parsers_1 = require("./parsers");
 const store_1 = require("./store");
-const APP_VERSION = "1.22.4";
+const APP_VERSION = "1.22.5";
 const IS_LOCAL_DEV = process.env.NBU_DEV === "1";
 const EXTENSION_REPO_URL = "https://github.com/wolverineks/umbrel_store/tree/master/wolverineks-nbu-dashboard/chrome-extension";
 const EXTENSION_FOLDER = "wolverineks-nbu-dashboard/chrome-extension";
